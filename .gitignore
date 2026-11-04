@@ -361,3 +361,34 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
+
+
+# =========================================================================
+# Unreal Engine Specific Ignores
+# =========================================================================
+
+# Build, Intermediate & Engine Cache Folders
+Binaries/
+Intermediate/
+Saved/
+DerivedDataCache/
+Build/
+
+# Unreal Project File Generator Artifacts
+*.sln
+*.csproj
+*.vcxproj
+*.vcxproj.filters
+
+# Cooked Packages, Dumps & Logs
+*.log
+*.dmp
+*.crashmindump
+/ArchivedBuilds/
+/Windows/
+/Mac/
+/Linux/
+
+# Local Engine & Developer Collections
+Content/Developers/
+Content/Collections/
