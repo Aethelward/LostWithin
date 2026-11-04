@@ -1,0 +1,60 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+/*===========================================================================
+	Generated code exported from UnrealHeaderTool.
+	DO NOT modify this manually! Edit the corresponding .h files instead!
+===========================================================================*/
+
+// IWYU pragma: private, include "LostWithinCameraManager.h"
+
+#ifdef LOSTWITHIN_LostWithinCameraManager_generated_h
+#error "LostWithinCameraManager.generated.h already included, missing '#pragma once' in LostWithinCameraManager.h"
+#endif
+#define LOSTWITHIN_LostWithinCameraManager_generated_h
+
+#include "UObject/ObjectMacros.h"
+#include "UObject/ScriptMacros.h"
+
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+
+// ********** Begin Class ALostWithinCameraManager *************************************************
+LOSTWITHIN_API UClass* Z_Construct_UClass_ALostWithinCameraManager_NoRegister();
+
+#define FID__User_Files_Nextcloud_Documents_Unreal_Projects_LostWithin_Source_LostWithin_LostWithinCameraManager_h_16_INCLASS_NO_PURE_DECLS \
+private: \
+	static void StaticRegisterNativesALostWithinCameraManager(); \
+	friend struct Z_Construct_UClass_ALostWithinCameraManager_Statics; \
+	static UClass* GetPrivateStaticClass(); \
+	friend LOSTWITHIN_API UClass* Z_Construct_UClass_ALostWithinCameraManager_NoRegister(); \
+public: \
+	DECLARE_CLASS2(ALostWithinCameraManager, APlayerCameraManager, COMPILED_IN_FLAGS(0 | CLASS_Transient | CLASS_Config), CASTCLASS_None, TEXT("/Script/LostWithin"), Z_Construct_UClass_ALostWithinCameraManager_NoRegister) \
+	DECLARE_SERIALIZER(ALostWithinCameraManager)
+
+
+#define FID__User_Files_Nextcloud_Documents_Unreal_Projects_LostWithin_Source_LostWithin_LostWithinCameraManager_h_16_ENHANCED_CONSTRUCTORS \
+	/** Deleted move- and copy-constructors, should never be used */ \
+	ALostWithinCameraManager(ALostWithinCameraManager&&) = delete; \
+	ALostWithinCameraManager(const ALostWithinCameraManager&) = delete; \
+	DECLARE_VTABLE_PTR_HELPER_CTOR(NO_API, ALostWithinCameraManager); \
+	DEFINE_VTABLE_PTR_HELPER_CTOR_CALLER(ALostWithinCameraManager); \
+	DEFINE_DEFAULT_CONSTRUCTOR_CALL(ALostWithinCameraManager) \
+	NO_API virtual ~ALostWithinCameraManager();
+
+
+#define FID__User_Files_Nextcloud_Documents_Unreal_Projects_LostWithin_Source_LostWithin_LostWithinCameraManager_h_13_PROLOG
+#define FID__User_Files_Nextcloud_Documents_Unreal_Projects_LostWithin_Source_LostWithin_LostWithinCameraManager_h_16_GENERATED_BODY \
+PRAGMA_DISABLE_DEPRECATION_WARNINGS \
+public: \
+	FID__User_Files_Nextcloud_Documents_Unreal_Projects_LostWithin_Source_LostWithin_LostWithinCameraManager_h_16_INCLASS_NO_PURE_DECLS \
+	FID__User_Files_Nextcloud_Documents_Unreal_Projects_LostWithin_Source_LostWithin_LostWithinCameraManager_h_16_ENHANCED_CONSTRUCTORS \
+private: \
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+
+class ALostWithinCameraManager;
+
+// ********** End Class ALostWithinCameraManager ***************************************************
+
+#undef CURRENT_FILE_ID
+#define CURRENT_FILE_ID FID__User_Files_Nextcloud_Documents_Unreal_Projects_LostWithin_Source_LostWithin_LostWithinCameraManager_h
+
+PRAGMA_ENABLE_DEPRECATION_WARNINGS

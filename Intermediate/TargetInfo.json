@@ -1,0 +1,14 @@
+{
+	"Targets": [
+		{
+			"Name": "LostWithin",
+			"Path": "..\\Source\\LostWithin.Target.cs",
+			"Type": "Game"
+		},
+		{
+			"Name": "LostWithinEditor",
+			"Path": "..\\Source\\LostWithinEditor.Target.cs",
+			"Type": "Editor"
+		}
+	]
+}
