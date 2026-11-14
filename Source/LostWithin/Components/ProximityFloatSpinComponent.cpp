@@ -9,14 +9,17 @@
 #include "Components/LightComponent.h"
 #include "Components/PointLightComponent.h"
 #include "Components/PostProcessComponent.h"
+#include "Components/PrimitiveComponent.h"
 #include "Components/SceneComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Components/SkyAtmosphereComponent.h"
 #include "Components/SkyLightComponent.h"
 #include "Components/SphereComponent.h"
 #include "Components/SpotLightComponent.h"
+#include "Components/StaticMeshComponent.h"
 #include "DrawDebugHelpers.h"
 #include "Engine/SkeletalMesh.h"
+#include "Engine/StaticMesh.h"
 #include "Engine/World.h"
 #include "GameFramework/Actor.h"
 #include "GameFramework/Pawn.h"
@@ -24,9 +27,50 @@
 #include "Interaction/PickupItemActor.h"
 #include "Kismet/GameplayStatics.h"
 #include "LostWithin.h"
+#include "Materials/MaterialInstanceDynamic.h"
+#include "Materials/MaterialInterface.h"
 #include "Sound/SoundAttenuation.h"
 #include "Sound/SoundBase.h"
+#include "Sound/SoundWave.h"
 #include "UObject/UObjectIterator.h"
+
+namespace
+{
+	struct FDiscoShockwaveStage
+	{
+		float TriggerTime = 0.0f;
+		int32 ColorMode = 0;
+		FLinearColor ShockwaveColor = FLinearColor::White;
+		FLinearColor EnvLightTint = FLinearColor::White;
+		FLinearColor EnvSkyTint = FLinearColor::White;
+		FLinearColor PostProcessTint = FLinearColor::White;
+		float HueMinDeg = 0.0f;
+		float HueMaxDeg = 360.0f;
+	};
+
+	const TArray<FDiscoShockwaveStage>& GetDiscoShockwaveStages()
+	{
+		static const TArray<FDiscoShockwaveStage> Stages = {
+			{ 12.46f, 1, FLinearColor(1.00f, 0.14f, 0.85f), FLinearColor(0.95f, 0.14f, 0.85f), FLinearColor(1.00f, 0.20f, 0.92f), FLinearColor(1.00f, 0.72f, 0.96f), 280.0f, 348.0f },
+			{ 14.06f, 2, FLinearColor(1.00f, 0.58f, 0.06f), FLinearColor(1.00f, 0.52f, 0.08f), FLinearColor(1.00f, 0.60f, 0.12f), FLinearColor(1.00f, 0.88f, 0.68f),  22.0f,  56.0f },
+			{ 15.66f, 3, FLinearColor(0.10f, 1.00f, 0.88f), FLinearColor(0.08f, 0.95f, 0.86f), FLinearColor(0.14f, 1.00f, 0.90f), FLinearColor(0.70f, 1.00f, 0.94f), 145.0f, 205.0f },
+			{ 17.26f, 4, FLinearColor(1.00f, 0.08f, 0.20f), FLinearColor(1.00f, 0.08f, 0.18f), FLinearColor(1.00f, 0.12f, 0.24f), FLinearColor(1.00f, 0.66f, 0.70f), 338.0f, 368.0f }
+		};
+		return Stages;
+	}
+
+	const FDiscoShockwaveStage* FindDiscoShockwaveStageByMode(int32 Mode)
+	{
+		for (const FDiscoShockwaveStage& Stage : GetDiscoShockwaveStages())
+		{
+			if (Stage.ColorMode == Mode)
+			{
+				return &Stage;
+			}
+		}
+		return nullptr;
+	}
+}
 
 UProximityFloatSpinComponent::UProximityFloatSpinComponent()
 {
@@ -35,12 +79,13 @@ UProximityFloatSpinComponent::UProximityFloatSpinComponent()
 	SpinTimeWindows = {
 		{ 0.27f, 1.77f, 1.5f },
 		{ 3.12f, 5.10f, 1.0f },
-		{ 6.06f, 43.84f, 1.5f }
+		{ 6.06f, 42.89f, 1.5f }
 	};
 
 	DropItemClass = APickupItemActor::StaticClass();
 
 	InteractionSoundSearchPaths = {
+		FName(TEXT("/Game/NPC/Cat/SFX/Meow")),
 		FName(TEXT("/Game/SoundWave/SoundCue/MetaSound/Cat")),
 		FName(TEXT("/Game/MetaSound/Cat"))
 	};
@@ -66,6 +111,24 @@ void UProximityFloatSpinComponent::BeginPlay()
 	if (bDisableExistingRotatingMovement)
 	{
 		DisableConflictingRotatingMovement(Owner);
+	}
+
+	for (FSpinTimeWindow& Window : SpinTimeWindows)
+	{
+		if (Window.EndTime > 42.89f)
+		{
+			Window.EndTime = 42.89f;
+		}
+	}
+
+	// Tighten legacy serialized vicinity radii so the check stays close around the player
+	if (MorphVicinityRadius >= 750.0f)
+	{
+		MorphVicinityRadius = 180.0f;
+	}
+	if (MorphVicinityDeactivationRadius >= 800.0f)
+	{
+		MorphVicinityDeactivationRadius = 220.0f;
 	}
 
 	BaseLocation = Owner->GetActorLocation();
@@ -108,6 +171,10 @@ void UProximityFloatSpinComponent::BeginPlay()
 	DiscoSpotlights.Reset();
 	DiscoFillPointLight = nullptr;
 	DiscoPostProcessComponent = nullptr;
+	ShockwaveRingSegments.Reset();
+	ShockwaveRingMaterial = nullptr;
+	ShockwaveFlashPointLight = nullptr;
+	ResetTimelineEffects();
 
 	InitializeVisualMeshes(Owner);
 
@@ -122,9 +189,11 @@ void UProximityFloatSpinComponent::BeginPlay()
 
 void UProximityFloatSpinComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	DestroyCatShockwaveVisuals();
 	SetDiscoEnvironmentActive(GetOwner(), false);
 	RestoreWorldSkyAndLights();
 	ResetInteractionSqueeze(GetOwner());
+	ResetTimelineEffects();
 	StopTriggerMusic();
 
 	if (InteractionTraceSphere)
@@ -153,6 +222,12 @@ void UProximityFloatSpinComponent::TickComponent(float DeltaTime, ELevelTick Tic
 	AActor* Owner = GetOwner();
 	if (!Owner)
 	{
+		return;
+	}
+
+	if (bHasDespawnedCat)
+	{
+		ApplyFloatAndSpinTransform(Owner, DeltaTime);
 		return;
 	}
 
@@ -256,11 +331,18 @@ void UProximityFloatSpinComponent::InitializeVisualMeshes(AActor* Owner)
 			if (ChildActor)
 			{
 				ChildActor->SetActorHiddenInGame(true);
+				ChildActor->SetActorEnableCollision(false);
 			}
 		}
 	}
 
-	if (USkeletalMeshComponent* ExistingSkelComp = Owner->FindComponentByClass<USkeletalMeshComponent>())
+	USkeletalMeshComponent* ExistingSkelComp = Owner->FindComponentByClass<USkeletalMeshComponent>();
+	if (!StandbySkeletalMesh && (!ExistingSkelComp || !ExistingSkelComp->GetSkeletalMeshAsset()))
+	{
+		StandbySkeletalMesh = LoadObject<USkeletalMesh>(nullptr, TEXT("/Game/NPC/Cat/SkeletalMeshes/oiiaioooooiai_cat.oiiaioooooiai_cat"));
+	}
+
+	if (ExistingSkelComp)
 	{
 		RuntimeSkeletalMeshComponent = ExistingSkelComp;
 		bOwnsRuntimeSkeletalMesh = false;
@@ -275,7 +357,6 @@ void UProximityFloatSpinComponent::InitializeVisualMeshes(AActor* Owner)
 		if (SkelComp)
 		{
 			SkelComp->SetMobility(EComponentMobility::Movable);
-			SkelComp->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 			SkelComp->SetRelativeTransform(StandbyMeshOffset);
 			SkelComp->AttachToComponent(Owner->GetRootComponent(), FAttachmentTransformRules::KeepRelativeTransform);
 			SkelComp->RegisterComponent();
@@ -286,8 +367,31 @@ void UProximityFloatSpinComponent::InitializeVisualMeshes(AActor* Owner)
 		}
 	}
 
+	if (!StandbyAnimation)
+	{
+		StandbyAnimation = LoadObject<UAnimationAsset>(nullptr, TEXT("/Game/NPC/Cat/SkeletalMeshes/oiiaioooooiai_cat_Anim.oiiaioooooiai_cat_Anim"));
+	}
+
 	if (RuntimeSkeletalMeshComponent)
 	{
+		// Strip the oversized PhysicsAsset and disable all physics/pawn collision so non-uniform squeeze/unstable-matter
+		// scale changes never trigger Chaos depenetration impulses that launch the player out of the world.
+		RuntimeSkeletalMeshComponent->SetSimulatePhysics(false);
+		RuntimeSkeletalMeshComponent->SetPhysicsAsset(nullptr, /*bForceReInit=*/true);
+		RuntimeSkeletalMeshComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		RuntimeSkeletalMeshComponent->SetCollisionResponseToAllChannels(ECR_Ignore);
+		RuntimeSkeletalMeshComponent->SetGenerateOverlapEvents(false);
+		RuntimeSkeletalMeshComponent->bEnablePerPolyCollision = false;
+		RuntimeSkeletalMeshComponent->CanCharacterStepUpOn = ECB_No;
+
+		if (!RuntimeSkeletalMeshComponent->GetMaterial(0))
+		{
+			if (UMaterialInterface* DefaultCatMaterial = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/NPC/Cat/Materials/Muchkin2.Muchkin2")))
+			{
+				RuntimeSkeletalMeshComponent->SetMaterial(0, DefaultCatMaterial);
+			}
+		}
+
 		BaseMeshRelativeLocation = RuntimeSkeletalMeshComponent->GetRelativeLocation();
 		BaseMeshRelativeScale3D = RuntimeSkeletalMeshComponent->GetRelativeScale3D();
 		RuntimeSkeletalMeshComponent->VisibilityBasedAnimTickOption = EVisibilityBasedAnimTickOption::AlwaysTickPoseAndRefreshBones;
@@ -301,35 +405,54 @@ void UProximityFloatSpinComponent::InitializeVisualMeshes(AActor* Owner)
 			}
 
 			CurrentVicinityZOffset = bUseMorphVicinityCheck ? ActiveMorphMeshZOffset : 0.0f;
-			RuntimeSkeletalMeshComponent->SetRelativeLocation(BaseMeshRelativeLocation + FVector(0.0f, 0.0f, CurrentVicinityZOffset));
+			if (RuntimeSkeletalMeshComponent != Owner->GetRootComponent())
+			{
+				RuntimeSkeletalMeshComponent->SetRelativeLocation(BaseMeshRelativeLocation + FVector(0.0f, 0.0f, CurrentVicinityZOffset));
+			}
+			else if (!FMath::IsNearlyZero(CurrentVicinityZOffset))
+			{
+				Owner->SetActorLocation(BaseLocation + FVector(0.0f, 0.0f, CurrentVicinityZOffset), false, nullptr, ETeleportType::TeleportPhysics);
+			}
 		}
 	}
 
 	bWasSpinningLastTick = false;
 	UpdateSpinAnimationState(false);
 
-	// Ensure a reliable query-only trace volume exists for [F] interaction and [LMB] hit traces
+	// Disable physics/blocking collision on any other pre-existing primitive components on the cat actor
+	TArray<UPrimitiveComponent*> PrimitiveComponents;
+	Owner->GetComponents<UPrimitiveComponent>(PrimitiveComponents);
+	for (UPrimitiveComponent* PrimComp : PrimitiveComponents)
+	{
+		if (PrimComp && PrimComp != RuntimeSkeletalMeshComponent)
+		{
+			PrimComp->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+			PrimComp->SetCollisionResponseToAllChannels(ECR_Ignore);
+			PrimComp->SetGenerateOverlapEvents(false);
+			PrimComp->CanCharacterStepUpOn = ECB_No;
+		}
+	}
+
+	// Ensure a reliable query-only hitbox exists solely for [F] interaction and [LMB] hit traces
 	if (USphereComponent* TraceSphere = NewObject<USphereComponent>(Owner))
 	{
 		TraceSphere->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
 		TraceSphere->SetCollisionResponseToAllChannels(ECR_Ignore);
 		TraceSphere->SetCollisionResponseToChannel(ECC_Visibility, ECR_Block);
 		TraceSphere->SetGenerateOverlapEvents(false);
+		TraceSphere->CanCharacterStepUpOn = ECB_No;
 		TraceSphere->SetUsingAbsoluteScale(true);
 		TraceSphere->SetWorldScale3D(FVector::OneVector);
 
-		FVector SphereWorldOrigin = Owner->GetActorLocation() + FVector(0.0f, 0.0f, 25.0f);
-		float DesiredWorldRadius = InteractionTraceRadius;
+		const float DesiredWorldRadius = FMath::Clamp(InteractionTraceRadius, 25.0f, 65.0f);
+		const FVector SphereWorldOrigin = BaseLocation + FVector(0.0f, 0.0f, DesiredWorldRadius * 0.65f);
 
 		if (RuntimeSkeletalMeshComponent)
 		{
 			RuntimeSkeletalMeshComponent->UpdateBounds();
 			const FBoxSphereBounds MeshBounds = RuntimeSkeletalMeshComponent->Bounds;
-			if (MeshBounds.SphereRadius > KINDA_SMALL_NUMBER)
+			if (MeshBounds.SphereRadius > KINDA_SMALL_NUMBER && MeshBounds.SphereRadius < 300.0f)
 			{
-				SphereWorldOrigin = MeshBounds.Origin;
-				DesiredWorldRadius = FMath::Clamp(MeshBounds.SphereRadius * 1.15f, InteractionTraceRadius, 100.0f);
-
 				const float BottomWorldZ = MeshBounds.Origin.Z - MeshBounds.BoxExtent.Z;
 				const float WorldPivotAboveBottom = FMath::Max(0.0f, RuntimeSkeletalMeshComponent->GetComponentLocation().Z - BottomWorldZ);
 				const USceneComponent* AttachParent = RuntimeSkeletalMeshComponent->GetAttachParent();
@@ -380,15 +503,17 @@ void UProximityFloatSpinComponent::UpdateSpinMorphTarget(bool bIsSpinning, float
 	}
 
 	float TargetWeight = InactiveMorphWeight;
-	if (bUseMorphVicinityCheck)
+	if (bIsActive || bHasTriggered)
 	{
-		// Default/far = ActiveMorphWeight (1.0); inside vicinity = InactiveMorphWeight (0.0), optionally overridden while spinning.
-		const bool bShowActiveMorph = !bIsInMorphVicinity || (bIsSpinning && bActiveMorphWhileSpinning);
+		// Once triggered, use ActiveMorphWeight only during active spin windows and keep
+		// InactiveMorphWeight between the floatspins regardless of player vicinity.
+		const bool bShowActiveMorph = (bIsSpinning || bTriggeredPopOutEffect) && bActiveMorphWhileSpinning;
 		TargetWeight = bShowActiveMorph ? ActiveMorphWeight : InactiveMorphWeight;
 	}
-	else
+	else if (bUseMorphVicinityCheck)
 	{
-		TargetWeight = bIsSpinning ? ActiveMorphWeight : InactiveMorphWeight;
+		// Pre-trigger idle: far = ActiveMorphWeight (1.0); inside vicinity = InactiveMorphWeight (0.0).
+		TargetWeight = bIsInMorphVicinity ? InactiveMorphWeight : ActiveMorphWeight;
 	}
 
 	CurrentMorphWeight = (MorphBlendSpeed > 0.0f)
@@ -406,15 +531,28 @@ void UProximityFloatSpinComponent::UpdateVicinityMeshHeight(bool bIsSpinning, fl
 	}
 
 	const bool bShouldLowerForActiveMorph = bUseMorphVicinityCheck
+		&& !bIsActive
+		&& !bHasTriggered
 		&& !bIsInMorphVicinity
 		&& !bIsSpinning
 		&& CurrentHoverHeight <= 0.0f
 		&& JumpOffset <= 0.0f;
 	const float TargetZOffset = bShouldLowerForActiveMorph ? ActiveMorphMeshZOffset : 0.0f;
+	const float PreviousVicinityZOffset = CurrentVicinityZOffset;
 	CurrentVicinityZOffset = FMath::FInterpTo(CurrentVicinityZOffset, TargetZOffset, DeltaTime, MorphHeightBlendSpeed);
 	if (FMath::IsNearlyEqual(CurrentVicinityZOffset, TargetZOffset, KINDA_SMALL_NUMBER))
 	{
 		CurrentVicinityZOffset = TargetZOffset;
+	}
+	if (!FMath::IsNearlyEqual(PreviousVicinityZOffset, CurrentVicinityZOffset, KINDA_SMALL_NUMBER))
+	{
+		bSettledAtRest = false;
+	}
+
+	const AActor* Owner = GetOwner();
+	if (!Owner || RuntimeSkeletalMeshComponent == Owner->GetRootComponent())
+	{
+		return;
 	}
 
 	const float SqueezeZCompensation = -MeshPivotHeightAboveBottom * (SqueezeFraction * InteractionSqueezeScaleZ);
@@ -425,9 +563,46 @@ void UProximityFloatSpinComponent::UpdateVicinityMeshHeight(bool bIsSpinning, fl
 	}
 }
 
+float UProximityFloatSpinComponent::ComputePlayerDistanceSq(const APawn* PlayerPawn) const
+{
+	if (!PlayerPawn)
+	{
+		return BIG_NUMBER;
+	}
+
+	FVector CatWorldCenter = BaseLocation;
+	if (RuntimeSkeletalMeshComponent)
+	{
+		const FBoxSphereBounds MeshBounds = RuntimeSkeletalMeshComponent->Bounds;
+		if (MeshBounds.SphereRadius > KINDA_SMALL_NUMBER && MeshBounds.SphereRadius < 300.0f)
+		{
+			CatWorldCenter = MeshBounds.Origin;
+		}
+		else
+		{
+			CatWorldCenter = RuntimeSkeletalMeshComponent->GetComponentLocation();
+		}
+	}
+	else if (const AActor* Owner = GetOwner())
+	{
+		CatWorldCenter = Owner->GetActorLocation();
+	}
+
+	if (const UPrimitiveComponent* PlayerRootPrim = Cast<UPrimitiveComponent>(PlayerPawn->GetRootComponent()))
+	{
+		FVector ClosestPointOnPlayer = FVector::ZeroVector;
+		if (PlayerRootPrim->GetClosestPointOnCollision(CatWorldCenter, ClosestPointOnPlayer) >= 0.0f)
+		{
+			return FVector::DistSquared(CatWorldCenter, ClosestPointOnPlayer);
+		}
+	}
+
+	return FVector::DistSquaredXY(CatWorldCenter, PlayerPawn->GetActorLocation());
+}
+
 void UProximityFloatSpinComponent::UpdateMorphVicinityState(const APawn* PlayerPawn)
 {
-	const float DistanceSq = FVector::DistSquared(BaseLocation, PlayerPawn->GetActorLocation());
+	const float DistanceSq = ComputePlayerDistanceSq(PlayerPawn);
 	const float EnterRadiusSq = FMath::Square(MorphVicinityRadius);
 	const float EffectiveExitRadius = FMath::Max(MorphVicinityRadius, MorphVicinityDeactivationRadius);
 	const float ExitRadiusSq = FMath::Square(EffectiveExitRadius);
@@ -444,7 +619,7 @@ void UProximityFloatSpinComponent::UpdateMorphVicinityState(const APawn* PlayerP
 
 void UProximityFloatSpinComponent::UpdateProximityState(AActor* Owner, const APawn* PlayerPawn)
 {
-	const float DistanceSq = FVector::DistSquared(BaseLocation, PlayerPawn->GetActorLocation());
+	const float DistanceSq = ComputePlayerDistanceSq(PlayerPawn);
 	const float ActivationRadiusSq = FMath::Square(ActivationRadius);
 	const float EffectiveDeactivationRadius = FMath::Max(ActivationRadius, DeactivationRadius);
 	const float DeactivationRadiusSq = FMath::Square(EffectiveDeactivationRadius);
@@ -462,6 +637,7 @@ void UProximityFloatSpinComponent::UpdateProximityState(AActor* Owner, const APa
 	{
 		bIsActive = false;
 		SetDiscoEnvironmentActive(Owner, false);
+		ResetTimelineEffects();
 		if (bStopMusicOnDeactivate)
 		{
 			StopTriggerMusic();
@@ -478,6 +654,7 @@ void UProximityFloatSpinComponent::TriggerSpinSequence(AActor* Owner)
 	}
 
 	ResetInteractionSqueeze(Owner);
+	ResetTimelineEffects();
 	bIsActive = true;
 	bHasTriggered = true;
 	bSettledAtRest = false;
@@ -488,46 +665,64 @@ void UProximityFloatSpinComponent::TriggerSpinSequence(AActor* Owner)
 
 void UProximityFloatSpinComponent::LoadInteractionSounds()
 {
-	if (!InteractionSounds.IsEmpty())
-	{
-		return;
-	}
-
-	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
-	IAssetRegistry& AssetRegistry = AssetRegistryModule.Get();
-
-#if WITH_EDITOR
-	if (!InteractionSoundSearchPaths.IsEmpty())
-	{
-		TArray<FString> PathsToScan;
-		PathsToScan.Reserve(InteractionSoundSearchPaths.Num());
-		for (const FName& PathName : InteractionSoundSearchPaths)
-		{
-			PathsToScan.Add(PathName.ToString());
-		}
-		AssetRegistry.ScanPathsSynchronous(PathsToScan, false);
-	}
-#endif
-
-	TArray<FAssetData> FoundAssets;
-	if (!InteractionSoundSearchPaths.IsEmpty())
-	{
-		AssetRegistry.GetAssetsByPaths(InteractionSoundSearchPaths, FoundAssets, /*bRecursive=*/true);
-	}
-
-	for (const FAssetData& AssetData : FoundAssets)
-	{
-		if (USoundBase* LoadedSound = Cast<USoundBase>(AssetData.GetAsset()))
-		{
-			InteractionSounds.AddUnique(LoadedSound);
-		}
-	}
-
 	if (InteractionSounds.IsEmpty())
 	{
-		if (USoundBase* DefaultCatSound = LoadObject<USoundBase>(nullptr, TEXT("/Game/SoundWave/SoundCue/MetaSound/Cat/Cat_Meow_SFX_01.Cat_Meow_SFX_01")))
+		FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
+		IAssetRegistry& AssetRegistry = AssetRegistryModule.Get();
+
+#if WITH_EDITOR
+		if (!InteractionSoundSearchPaths.IsEmpty())
 		{
-			InteractionSounds.Add(DefaultCatSound);
+			TArray<FString> PathsToScan;
+			PathsToScan.Reserve(InteractionSoundSearchPaths.Num());
+			for (const FName& PathName : InteractionSoundSearchPaths)
+			{
+				PathsToScan.Add(PathName.ToString());
+			}
+			AssetRegistry.ScanPathsSynchronous(PathsToScan, false);
+		}
+#endif
+
+		TArray<FAssetData> FoundAssets;
+		if (!InteractionSoundSearchPaths.IsEmpty())
+		{
+			AssetRegistry.GetAssetsByPaths(InteractionSoundSearchPaths, FoundAssets, /*bRecursive=*/true);
+		}
+
+		for (const FAssetData& AssetData : FoundAssets)
+		{
+			if (USoundBase* LoadedSound = Cast<USoundBase>(AssetData.GetAsset()))
+			{
+				InteractionSounds.AddUnique(LoadedSound);
+			}
+		}
+
+		if (InteractionSounds.IsEmpty())
+		{
+			static constexpr const TCHAR* DefaultCatMeowPaths[] = {
+				TEXT("/Game/NPC/Cat/SFX/Meow/Cat_Meow_SFX_01.Cat_Meow_SFX_01"),
+				TEXT("/Game/NPC/Cat/SFX/Meow/Cat_Meow_SFX_02.Cat_Meow_SFX_02"),
+				TEXT("/Game/NPC/Cat/SFX/Meow/Cat_Meow_SFX_03.Cat_Meow_SFX_03"),
+				TEXT("/Game/NPC/Cat/SFX/Meow/Cat_Meow_SFX_04.Cat_Meow_SFX_04"),
+				TEXT("/Game/NPC/Cat/SFX/Meow/Cat_Meow_SFX_05.Cat_Meow_SFX_05")
+			};
+
+			for (const TCHAR* AssetPath : DefaultCatMeowPaths)
+			{
+				if (USoundBase* DefaultCatSound = LoadObject<USoundBase>(nullptr, AssetPath))
+				{
+					InteractionSounds.AddUnique(DefaultCatSound);
+				}
+			}
+		}
+	}
+
+	// Ensure one-shot meow SFX never get stuck looping due to imported WAV cue/loop flags
+	for (const TObjectPtr<USoundBase>& Sound : InteractionSounds)
+	{
+		if (USoundWave* SoundWave = Cast<USoundWave>(Sound))
+		{
+			SoundWave->bLooping = false;
 		}
 	}
 }
@@ -588,7 +783,8 @@ float UProximityFloatSpinComponent::UpdateInteractionSqueeze(AActor* Owner, floa
 
 	const float SqueezeZ = SqueezeFraction * InteractionSqueezeScaleZ;
 	const float ExpandXY = SqueezeFraction * InteractionSqueezeHorizontalExpand;
-	const FVector ScaleMultiplier(1.0f + ExpandXY, 1.0f + ExpandXY, FMath::Max(0.25f, 1.0f - SqueezeZ));
+	const FVector SqueezeScale(1.0f + ExpandXY, 1.0f + ExpandXY, FMath::Max(0.25f, 1.0f - SqueezeZ));
+	const FVector ScaleMultiplier = SqueezeScale * UnstableScaleMultiplier * UpdatePopOutScale(DeltaTime);
 
 	if (RuntimeSkeletalMeshComponent)
 	{
@@ -615,11 +811,18 @@ void UProximityFloatSpinComponent::ResetInteractionSqueeze(AActor* Owner)
 	bIsInteractionSqueezing = false;
 	InteractionSqueezeElapsed = 0.0f;
 	CurrentSqueezeFraction = 0.0f;
+	bIsPopOutActive = false;
+	PopOutElapsed = 0.0f;
+	UnstableMatterIntensity = 0.0f;
+	UnstableScaleMultiplier = FVector::OneVector;
 
 	if (RuntimeSkeletalMeshComponent)
 	{
 		RuntimeSkeletalMeshComponent->SetRelativeScale3D(BaseMeshRelativeScale3D);
-		RuntimeSkeletalMeshComponent->SetRelativeLocation(BaseMeshRelativeLocation + FVector(0.0f, 0.0f, CurrentVicinityZOffset));
+		if (!Owner || RuntimeSkeletalMeshComponent != Owner->GetRootComponent())
+		{
+			RuntimeSkeletalMeshComponent->SetRelativeLocation(BaseMeshRelativeLocation + FVector(0.0f, 0.0f, CurrentVicinityZOffset));
+		}
 	}
 	else if (Owner)
 	{
@@ -748,8 +951,20 @@ void UProximityFloatSpinComponent::CacheWorldSkyAndLights()
 void UProximityFloatSpinComponent::ApplyWorldSkyDarkness(float Alpha)
 {
 	const float ClampedAlpha = FMath::Clamp(Alpha, 0.0f, 1.0f);
-	const FLinearColor NightLightTint(0.22f, 0.24f, 0.58f);
-	const FLinearColor NightSkyTint(0.50f, 0.60f, 1.0f);
+	FLinearColor TargetLightTint(0.22f, 0.24f, 0.58f);
+	FLinearColor TargetSkyTint(0.50f, 0.60f, 1.0f);
+	float EnvIntensityBoost = 1.0f;
+
+	if (const FDiscoShockwaveStage* ActiveStage = FindDiscoShockwaveStageByMode(CurrentDiscoColorMode))
+	{
+		TargetLightTint = ActiveStage->EnvLightTint;
+		TargetSkyTint = ActiveStage->EnvSkyTint;
+		EnvIntensityBoost = 3.2f;
+	}
+
+	const float EffectiveWorldLightMult = FMath::Clamp(SkyDarkenTargetWorldLightMultiplier * EnvIntensityBoost, 0.0f, 0.35f);
+	const float EffectiveAtmoMult = FMath::Clamp(SkyDarkenTargetAtmosphereMultiplier * EnvIntensityBoost, 0.0f, 0.12f);
+	const float EffectiveFogMult = FMath::Clamp(SkyDarkenTargetFogMultiplier * EnvIntensityBoost, 0.0f, 0.16f);
 
 	for (const FCachedWorldSkyAndLightState& Cached : CachedWorldSkyAndLights)
 	{
@@ -758,23 +973,23 @@ void UProximityFloatSpinComponent::ApplyWorldSkyDarkness(float Alpha)
 		case ECachedAtmosphereTargetType::DirectionalLight:
 			if (ULightComponent* LightComp = Cached.LightComponent.Get())
 			{
-				LightComp->SetIntensity(FMath::Lerp(Cached.OriginalIntensity, Cached.OriginalIntensity * SkyDarkenTargetWorldLightMultiplier, ClampedAlpha));
-				LightComp->SetLightColor(FMath::Lerp(Cached.OriginalPrimaryColor, NightLightTint, ClampedAlpha));
+				LightComp->SetIntensity(FMath::Lerp(Cached.OriginalIntensity, Cached.OriginalIntensity * EffectiveWorldLightMult, ClampedAlpha));
+				LightComp->SetLightColor(FMath::Lerp(Cached.OriginalPrimaryColor, TargetLightTint, ClampedAlpha));
 			}
 			break;
 
 		case ECachedAtmosphereTargetType::SkyLight:
 			if (USkyLightComponent* SkyComp = Cached.SkyLightComponent.Get())
 			{
-				SkyComp->SetIntensity(FMath::Lerp(Cached.OriginalIntensity, Cached.OriginalIntensity * SkyDarkenTargetWorldLightMultiplier, ClampedAlpha));
-				SkyComp->SetLightColor(FMath::Lerp(Cached.OriginalPrimaryColor, NightLightTint, ClampedAlpha));
+				SkyComp->SetIntensity(FMath::Lerp(Cached.OriginalIntensity, Cached.OriginalIntensity * EffectiveWorldLightMult, ClampedAlpha));
+				SkyComp->SetLightColor(FMath::Lerp(Cached.OriginalPrimaryColor, TargetLightTint, ClampedAlpha));
 			}
 			break;
 
 		case ECachedAtmosphereTargetType::SkyAtmosphere:
 			if (USkyAtmosphereComponent* SkyAtmo = Cached.SkyAtmosphereComponent.Get())
 			{
-				const FLinearColor TargetSkyLuminance = Cached.OriginalPrimaryColor * (NightSkyTint * SkyDarkenTargetAtmosphereMultiplier);
+				const FLinearColor TargetSkyLuminance = Cached.OriginalPrimaryColor * (TargetSkyTint * EffectiveAtmoMult);
 				SkyAtmo->SetSkyLuminanceFactor(FMath::Lerp(Cached.OriginalPrimaryColor, TargetSkyLuminance, ClampedAlpha));
 			}
 			break;
@@ -782,8 +997,8 @@ void UProximityFloatSpinComponent::ApplyWorldSkyDarkness(float Alpha)
 		case ECachedAtmosphereTargetType::ExponentialHeightFog:
 			if (UExponentialHeightFogComponent* FogComp = Cached.ExponentialFogComponent.Get())
 			{
-				const FLinearColor TargetFogColor = Cached.OriginalPrimaryColor * (NightSkyTint * SkyDarkenTargetFogMultiplier);
-				const FLinearColor TargetDirColor = Cached.OriginalSecondaryColor * (NightSkyTint * SkyDarkenTargetFogMultiplier);
+				const FLinearColor TargetFogColor = Cached.OriginalPrimaryColor * (TargetSkyTint * EffectiveFogMult);
+				const FLinearColor TargetDirColor = Cached.OriginalSecondaryColor * (TargetSkyTint * EffectiveFogMult);
 				FogComp->SetFogInscatteringColor(FMath::Lerp(Cached.OriginalPrimaryColor, TargetFogColor, ClampedAlpha));
 				FogComp->SetDirectionalInscatteringColor(FMath::Lerp(Cached.OriginalSecondaryColor, TargetDirColor, ClampedAlpha));
 			}
@@ -846,6 +1061,11 @@ void UProximityFloatSpinComponent::SetDiscoEnvironmentActive(AActor* Owner, bool
 	if (!bActivate)
 	{
 		bIsDiscoActive = false;
+		CurrentDiscoColorMode = 0;
+		if (!bShockwaveVisualActive)
+		{
+			HideCatShockwaveVisuals();
+		}
 
 		for (USpotLightComponent* SpotComp : DiscoSpotlights)
 		{
@@ -875,6 +1095,11 @@ void UProximityFloatSpinComponent::SetDiscoEnvironmentActive(AActor* Owner, bool
 			DiscoRigPivot = nullptr;
 		}
 
+		if (RuntimeSkeletalMeshComponent && !bShockwaveVisualActive && !bHasDespawnedCat)
+		{
+			RuntimeSkeletalMeshComponent->SetCastShadow(true);
+		}
+
 		return;
 	}
 
@@ -888,7 +1113,12 @@ void UProximityFloatSpinComponent::SetDiscoEnvironmentActive(AActor* Owner, bool
 	DiscoElapsedTime = 0.0f;
 	DiscoOrbitYaw = 0.0f;
 
-	// Suspend the sweeping disco rig high above the floating cat so illumination projects downward from overhead
+	if (RuntimeSkeletalMeshComponent)
+	{
+		RuntimeSkeletalMeshComponent->SetCastShadow(false);
+	}
+
+	// Center the sweeping disco rig on the floating cat so beams radiate outward around it
 	DiscoRigPivot = NewObject<USceneComponent>(Owner);
 	if (!DiscoRigPivot)
 	{
@@ -896,7 +1126,7 @@ void UProximityFloatSpinComponent::SetDiscoEnvironmentActive(AActor* Owner, bool
 		return;
 	}
 
-	const FVector RigWorldLocation = BaseLocation + FVector(0.0f, 0.0f, FloatHeight + DiscoRigHeightAboveFloat);
+	const FVector RigWorldLocation = BaseLocation + FVector(0.0f, 0.0f, CurrentHoverHeight + DiscoRigHeightAboveFloat);
 	DiscoRigPivot->SetMobility(EComponentMobility::Movable);
 	DiscoRigPivot->SetUsingAbsoluteLocation(true);
 	DiscoRigPivot->SetUsingAbsoluteRotation(true);
@@ -904,19 +1134,23 @@ void UProximityFloatSpinComponent::SetDiscoEnvironmentActive(AActor* Owner, bool
 	DiscoRigPivot->AttachToComponent(Owner->GetRootComponent(), FAttachmentTransformRules::KeepWorldTransform);
 	DiscoRigPivot->RegisterComponent();
 
+	const float InitialBrightnessMultiplier = ComputeDiscoBrightnessMultiplier(ElapsedTriggeredTime);
 	const int32 LightCount = FMath::Max(1, DiscoSpotlightCount);
 	for (int32 Index = 0; Index < LightCount; ++Index)
 	{
 		if (USpotLightComponent* SpotComp = NewObject<USpotLightComponent>(Owner))
 		{
+			const float NormalizedIndex = static_cast<float>(Index) / static_cast<float>(LightCount);
+			const float AngleRad = NormalizedIndex * 2.0f * PI;
 			SpotComp->SetMobility(EComponentMobility::Movable);
-			SpotComp->SetCastShadows(false);
+			SpotComp->SetCastShadows(true);
 			SpotComp->SetIntensityUnits(ELightUnits::Candelas);
 			SpotComp->SetInnerConeAngle(14.0f);
 			SpotComp->SetOuterConeAngle(32.0f);
 			SpotComp->SetAttenuationRadius(DiscoLightAttenuationRadius);
-			SpotComp->SetIntensity(DiscoSpotlightIntensity);
+			SpotComp->SetIntensity(DiscoSpotlightIntensity * InitialBrightnessMultiplier);
 			SpotComp->AttachToComponent(DiscoRigPivot, FAttachmentTransformRules::SnapToTargetNotIncludingScale);
+			SpotComp->SetRelativeLocation(FVector(FMath::Cos(AngleRad) * 28.0f, FMath::Sin(AngleRad) * 28.0f, 0.0f));
 			SpotComp->RegisterComponent();
 			DiscoSpotlights.Add(SpotComp);
 		}
@@ -925,10 +1159,10 @@ void UProximityFloatSpinComponent::SetDiscoEnvironmentActive(AActor* Owner, bool
 	if (UPointLightComponent* FillComp = NewObject<UPointLightComponent>(Owner))
 	{
 		FillComp->SetMobility(EComponentMobility::Movable);
-		FillComp->SetCastShadows(false);
+		FillComp->SetCastShadows(true);
 		FillComp->SetIntensityUnits(ELightUnits::Candelas);
 		FillComp->SetAttenuationRadius(DiscoLightAttenuationRadius * 1.15f);
-		FillComp->SetIntensity(DiscoSpotlightIntensity * DiscoFillIntensityMultiplier);
+		FillComp->SetIntensity(DiscoSpotlightIntensity * InitialBrightnessMultiplier * DiscoFillIntensityMultiplier);
 		FillComp->SetRelativeLocation(FVector::ZeroVector);
 		FillComp->AttachToComponent(DiscoRigPivot, FAttachmentTransformRules::KeepRelativeTransform);
 		FillComp->RegisterComponent();
@@ -945,10 +1179,14 @@ void UProximityFloatSpinComponent::SetDiscoEnvironmentActive(AActor* Owner, bool
 		PPComp->Settings.bOverride_SceneFringeIntensity = true;
 		PPComp->Settings.bOverride_VignetteIntensity = true;
 		PPComp->Settings.bOverride_ColorSaturation = true;
+		PPComp->Settings.bOverride_SceneColorTint = true;
+		PPComp->Settings.SceneColorTint = FLinearColor::White;
 		PPComp->AttachToComponent(DiscoRigPivot, FAttachmentTransformRules::SnapToTargetNotIncludingScale);
 		PPComp->RegisterComponent();
 		DiscoPostProcessComponent = PPComp;
 	}
+
+	InitializeShockwaveVisuals(Owner);
 }
 
 void UProximityFloatSpinComponent::UpdateDiscoEnvironment(AActor* Owner, bool bShouldBeActive, float DeltaTime)
@@ -963,13 +1201,26 @@ void UProximityFloatSpinComponent::UpdateDiscoEnvironment(AActor* Owner, bool bS
 	DiscoElapsedTime += DeltaTime;
 	DiscoOrbitYaw = FMath::Fmod(DiscoOrbitYaw + DiscoOrbitSpeed * DeltaTime, 360.0f);
 
-	const FVector RigWorldLocation = BaseLocation + FVector(0.0f, 0.0f, FloatHeight + DiscoRigHeightAboveFloat);
+	const FVector RigWorldLocation = BaseLocation + FVector(0.0f, 0.0f, CurrentHoverHeight + DiscoRigHeightAboveFloat);
 	DiscoRigPivot->SetWorldLocationAndRotation(
 		RigWorldLocation,
 		FRotator(0.0f, DiscoOrbitYaw, 0.0f));
 
+	const float ShockwavePulseAlpha = LastShockwavePostProcessAlpha;
+
+	const float BrightnessMultiplier = ComputeDiscoBrightnessMultiplier(ElapsedTriggeredTime);
 	const float BeatSine = 0.5f + 0.5f * FMath::Sin(DiscoElapsedTime * 2.0f * PI * DiscoPulseFrequency);
 	const float BeatPulse = FMath::Square(BeatSine);
+
+	auto ComputeModeHue = [this](float NormalizedIndex, float SpeedScale, float DefaultHue360) -> float
+	{
+		if (const FDiscoShockwaveStage* ActiveStage = FindDiscoShockwaveStageByMode(CurrentDiscoColorMode))
+		{
+			const float Phase = 0.5f + 0.5f * FMath::Sin(DiscoElapsedTime * DiscoColorCycleSpeed * SpeedScale + NormalizedIndex * 2.0f * PI);
+			return FMath::Fmod(FMath::Lerp(ActiveStage->HueMinDeg, ActiveStage->HueMaxDeg, Phase), 360.0f);
+		}
+		return DefaultHue360;
+	};
 
 	const int32 LightCount = FMath::Max(1, DiscoSpotlights.Num());
 	for (int32 Index = 0; Index < DiscoSpotlights.Num(); ++Index)
@@ -977,31 +1228,448 @@ void UProximityFloatSpinComponent::UpdateDiscoEnvironment(AActor* Owner, bool bS
 		if (USpotLightComponent* SpotComp = DiscoSpotlights[Index])
 		{
 			const float NormalizedIndex = static_cast<float>(Index) / static_cast<float>(LightCount);
-			const float Hue360 = FMath::Fmod((DiscoElapsedTime * DiscoColorCycleSpeed + NormalizedIndex) * 360.0f, 360.0f);
+			const float DefaultHue = FMath::Fmod((DiscoElapsedTime * DiscoColorCycleSpeed + NormalizedIndex) * 360.0f, 360.0f);
+			const float Hue360 = ComputeModeHue(NormalizedIndex, 6.0f, DefaultHue);
 			const FLinearColor SpotColor = FLinearColor(Hue360, 0.95f, 1.0f).HSVToLinearRGB();
 
 			const float AngleDeg = NormalizedIndex * 360.0f;
-			const float SweepPitch = -40.0f + 12.0f * FMath::Sin(DiscoElapsedTime * 4.2f + Index * 1.15f);
+			const float AngleRad = NormalizedIndex * 2.0f * PI;
+			const float SweepPitch = -12.0f + 22.0f * FMath::Sin(DiscoElapsedTime * 4.2f + Index * 1.15f);
 
-			SpotComp->SetRelativeRotation(FRotator(SweepPitch, AngleDeg, 0.0f));
+			SpotComp->SetRelativeLocationAndRotation(
+				FVector(FMath::Cos(AngleRad) * 28.0f, FMath::Sin(AngleRad) * 28.0f, 0.0f),
+				FRotator(SweepPitch, AngleDeg, 0.0f));
 			SpotComp->SetLightColor(SpotColor);
-			SpotComp->SetIntensity(DiscoSpotlightIntensity * (0.65f + 0.70f * BeatPulse));
+			SpotComp->SetIntensity(DiscoSpotlightIntensity * BrightnessMultiplier * (0.65f + 0.70f * BeatPulse));
 		}
 	}
 
 	if (DiscoFillPointLight)
 	{
-		const float FillHue = FMath::Fmod(DiscoElapsedTime * DiscoColorCycleSpeed * 180.0f, 360.0f);
+		const float DefaultFillHue = FMath::Fmod(DiscoElapsedTime * DiscoColorCycleSpeed * 180.0f, 360.0f);
+		const float FillHue = ComputeModeHue(0.0f, 4.0f, DefaultFillHue);
 		DiscoFillPointLight->SetLightColor(FLinearColor(FillHue, 0.90f, 1.0f).HSVToLinearRGB());
-		DiscoFillPointLight->SetIntensity(DiscoSpotlightIntensity * DiscoFillIntensityMultiplier * (0.75f + 0.50f * BeatPulse));
+		DiscoFillPointLight->SetIntensity(DiscoSpotlightIntensity * BrightnessMultiplier * DiscoFillIntensityMultiplier * (0.75f + 0.50f * BeatPulse));
 	}
 
 	if (DiscoPostProcessComponent)
 	{
-		DiscoPostProcessComponent->Settings.BloomIntensity = FMath::Lerp(0.9f, 1.7f, BeatPulse);
-		DiscoPostProcessComponent->Settings.SceneFringeIntensity = FMath::Lerp(0.4f, 1.5f, BeatPulse);
-		DiscoPostProcessComponent->Settings.VignetteIntensity = 0.55f;
-		DiscoPostProcessComponent->Settings.ColorSaturation = FVector4(1.25f, 1.25f, 1.25f, 1.0f);
+		const float PPBrightnessScale = FMath::Clamp(0.45f + 0.30f * BrightnessMultiplier, 0.45f, 1.45f);
+		DiscoPostProcessComponent->Settings.BloomIntensity = FMath::Lerp(0.9f, 1.7f, BeatPulse) * PPBrightnessScale + ShockwavePulseAlpha * 2.8f;
+		DiscoPostProcessComponent->Settings.SceneFringeIntensity = FMath::Lerp(0.4f, 1.5f, BeatPulse) * PPBrightnessScale + ShockwavePulseAlpha * 4.8f;
+		DiscoPostProcessComponent->Settings.VignetteIntensity = FMath::Clamp(0.55f + ShockwavePulseAlpha * 0.35f, 0.0f, 1.0f);
+		DiscoPostProcessComponent->Settings.ColorSaturation = (CurrentDiscoColorMode == 0 && BrightnessMultiplier < 0.5f)
+			? FVector4(1.05f, 1.05f, 1.05f, 1.0f)
+			: FVector4(1.25f, 1.25f, 1.25f, 1.0f);
+
+		const FDiscoShockwaveStage* ActiveStage = FindDiscoShockwaveStageByMode(CurrentDiscoColorMode);
+		const FLinearColor EnvTint = ActiveStage ? ActiveStage->PostProcessTint : FLinearColor::White;
+		DiscoPostProcessComponent->Settings.SceneColorTint = FMath::Lerp(EnvTint, ActiveShockwaveColor * 1.15f + FLinearColor(0.25f, 0.25f, 0.25f), ShockwavePulseAlpha * 0.45f);
+	}
+}
+
+void UProximityFloatSpinComponent::ResetTimelineEffects()
+{
+	NextShockwaveStageIndex = 0;
+	CurrentDiscoColorMode = 0;
+	bTriggeredPopOutEffect = false;
+	bIsPopOutActive = false;
+	bHasDespawnedCat = false;
+	PopOutElapsed = 0.0f;
+	LastShockwavePostProcessAlpha = 0.0f;
+	bShockwaveVisualActive = false;
+	ShockwaveElapsed = 0.0f;
+	ShockwaveOrigin = BaseLocation;
+	ActiveShockwaveColor = FLinearColor::White;
+	UnstableMatterIntensity = 0.0f;
+	UnstableScaleMultiplier = FVector::OneVector;
+	HideCatShockwaveVisuals();
+}
+
+void UProximityFloatSpinComponent::EvaluateTimelineKeyframes(AActor* Owner, bool bDiscoShouldRun)
+{
+	if (bIsActive && !bTriggeredPopOutEffect && ElapsedTriggeredTime >= 42.89f)
+	{
+		bTriggeredPopOutEffect = true;
+		bIsPopOutActive = true;
+		PopOutElapsed = 0.0f;
+		bIsInteractionBouncing = false;
+		InteractionBounceElapsed = 0.0f;
+		CurrentDiscoColorMode = 0;
+		SetDiscoEnvironmentActive(Owner, false);
+		RestoreWorldSkyAndLights();
+		TriggerCatShockwave(Owner, FLinearColor(0.85f, 0.96f, 1.0f));
+	}
+
+	if (!bDiscoShouldRun)
+	{
+		CurrentDiscoColorMode = 0;
+		return;
+	}
+
+	const TArray<FDiscoShockwaveStage>& Stages = GetDiscoShockwaveStages();
+	const FDiscoShockwaveStage* NewlyTriggeredStage = nullptr;
+	while (NextShockwaveStageIndex < Stages.Num() && ElapsedTriggeredTime >= Stages[NextShockwaveStageIndex].TriggerTime)
+	{
+		NewlyTriggeredStage = &Stages[NextShockwaveStageIndex];
+		++NextShockwaveStageIndex;
+	}
+
+	if (NewlyTriggeredStage)
+	{
+		CurrentDiscoColorMode = NewlyTriggeredStage->ColorMode;
+		TriggerCatShockwave(Owner, NewlyTriggeredStage->ShockwaveColor);
+	}
+
+	if (ElapsedTriggeredTime >= 18.86f)
+	{
+		// Restore default darkened night environment color & normal rainbow disco palette
+		CurrentDiscoColorMode = 0;
+	}
+}
+
+float UProximityFloatSpinComponent::ComputeDiscoBrightnessMultiplier(float TimeSeconds) const
+{
+	// Relative to the 1.25% (312.5 cd) base (half of previous 625 cd): 0.2x = 62.5 cd, 1.0x = 312.5 cd, 1.5x = 468.75 cd, 2.0x = 625 cd, 3.0x = 937.5 cd
+	if (TimeSeconds >= 31.66f)
+	{
+		return 3.0f;
+	}
+	if (TimeSeconds >= 31.26f)
+	{
+		return 1.5f;
+	}
+	if (TimeSeconds >= 30.06f)
+	{
+		return 0.2f;
+	}
+	if (TimeSeconds >= 18.86f)
+	{
+		return 2.0f;
+	}
+	return 1.0f;
+}
+
+float UProximityFloatSpinComponent::ComputeUnstableMatterIntensity(float TimeSeconds, bool bIsSpinning) const
+{
+	if (!bIsActive || !bIsSpinning || TimeSeconds < 17.26f || TimeSeconds >= 42.89f)
+	{
+		return 0.0f;
+	}
+
+	if (TimeSeconds < 18.86f)
+	{
+		// 17.26s -> 18.86s: slowly ramp up the unstable matter movement effect
+		return FMath::SmoothStep(17.26f, 18.86f, TimeSeconds) * 0.55f;
+	}
+
+	if (TimeSeconds < 30.06f)
+	{
+		// 18.86s -> 30.06s: slight unstable matter movement effect
+		return 0.25f;
+	}
+
+	if (TimeSeconds < 31.66f)
+	{
+		// 30.06s -> 31.66s: unstable matter effect stopped
+		return 0.0f;
+	}
+
+	// 31.66s -> 42.89s: fully crazy unstable matter effect
+	return 1.0f;
+}
+
+void UProximityFloatSpinComponent::ComputeUnstableMatterOffsets(float Intensity, float TimeSeconds, FVector& OutPositionOffset, FRotator& OutRotationOffset, FVector& OutScaleMultiplier) const
+{
+	if (Intensity <= KINDA_SMALL_NUMBER)
+	{
+		OutPositionOffset = FVector::ZeroVector;
+		OutRotationOffset = FRotator::ZeroRotator;
+		OutScaleMultiplier = FVector::OneVector;
+		return;
+	}
+
+	// Blend smoothly between slight shimmer (0.25) and fully crazy matter destabilization (1.0)
+	const float RampIn = FMath::Clamp(Intensity / 0.25f, 0.0f, 1.0f);
+	const float CrazyBlend = FMath::Clamp((Intensity - 0.25f) / 0.75f, 0.0f, 1.0f);
+
+	const float PosAmplitude = FMath::Lerp(6.0f, 42.0f, CrazyBlend) * RampIn;
+	const float ScaleWarpAmp = FMath::Lerp(0.11f, 0.52f, CrazyBlend) * RampIn;
+
+	// High-frequency quantized glitch steps mixed with irrational-ratio sine oscillation
+	const float GlitchRate = FMath::Lerp(16.0f, 36.0f, CrazyBlend);
+	const float GlitchStep = FMath::FloorToFloat(TimeSeconds * GlitchRate);
+	auto StepHash = [GlitchStep](float SeedOffset) -> float
+	{
+		return FMath::Sin(GlitchStep * 12.9898f + SeedOffset * 78.233f);
+	};
+
+	const float SnapWeight = FMath::Lerp(0.22f, 0.58f, CrazyBlend);
+	const float ContWeight = 1.0f - SnapWeight;
+
+	const float OffsetX = (ContWeight * FMath::Sin(TimeSeconds * 37.3f + 0.7f * FMath::Sin(TimeSeconds * 19.1f)) + SnapWeight * StepHash(1.1f)) * PosAmplitude;
+	const float OffsetY = (ContWeight * FMath::Sin(TimeSeconds * 43.7f + 0.8f * FMath::Cos(TimeSeconds * 23.3f)) + SnapWeight * StepHash(2.7f)) * PosAmplitude;
+	const float OffsetZ = (ContWeight * FMath::Sin(TimeSeconds * 53.1f + 0.6f * FMath::Sin(TimeSeconds * 29.9f)) + SnapWeight * StepHash(4.3f)) * (PosAmplitude * 0.65f);
+	OutPositionOffset = FVector(OffsetX, OffsetY, OffsetZ);
+
+	OutRotationOffset = FRotator::ZeroRotator;
+
+	const float ScaleWaveX = ContWeight * FMath::Sin(TimeSeconds * 31.7f) + SnapWeight * StepHash(13.7f);
+	const float ScaleWaveY = ContWeight * FMath::Sin(TimeSeconds * 47.9f + 2.1f) + SnapWeight * StepHash(17.5f);
+	const float ScaleWaveZ = ContWeight * FMath::Cos(TimeSeconds * 67.3f + 4.2f) + SnapWeight * StepHash(21.9f);
+
+	OutScaleMultiplier = FVector(
+		FMath::Clamp(1.0f + ScaleWaveX * ScaleWarpAmp, 0.42f, 1.65f),
+		FMath::Clamp(1.0f + ScaleWaveY * ScaleWarpAmp, 0.42f, 1.65f),
+		FMath::Clamp(1.0f + ScaleWaveZ * ScaleWarpAmp, 0.42f, 1.65f));
+}
+
+FVector UProximityFloatSpinComponent::UpdatePopOutScale(float DeltaTime)
+{
+	if (bHasDespawnedCat)
+	{
+		return FVector(0.01f, 0.01f, 0.01f);
+	}
+
+	if (!bIsPopOutActive)
+	{
+		return FVector::OneVector;
+	}
+
+	PopOutElapsed += DeltaTime;
+	if (PopOutDuration <= 0.0f || PopOutElapsed >= PopOutDuration)
+	{
+		bIsPopOutActive = false;
+		bHasDespawnedCat = true;
+		PopOutElapsed = 0.0f;
+		return FVector(0.01f, 0.01f, 0.01f);
+	}
+
+	const float Alpha = FMath::Clamp(PopOutElapsed / PopOutDuration, 0.0f, 1.0f);
+	float PopScale = 1.0f;
+	if (Alpha < 0.45f)
+	{
+		const float ExpandAlpha = FMath::Clamp(Alpha / 0.45f, 0.0f, 1.0f);
+		PopScale = FMath::Lerp(1.0f, 1.38f, FMath::Sin(ExpandAlpha * PI * 0.5f));
+	}
+	else
+	{
+		const float ImplodeAlpha = FMath::Clamp((Alpha - 0.45f) / 0.55f, 0.0f, 1.0f);
+		PopScale = FMath::Lerp(1.38f, 0.01f, ImplodeAlpha * ImplodeAlpha);
+	}
+	return FVector(PopScale, PopScale, PopScale);
+}
+
+void UProximityFloatSpinComponent::InitializeShockwaveVisuals(AActor* Owner)
+{
+	if (!Owner || !Owner->GetRootComponent() || !ShockwaveRingSegments.IsEmpty())
+	{
+		return;
+	}
+
+	UStaticMesh* CubeMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube"));
+	UMaterialInterface* BaseMaterial = LoadObject<UMaterialInterface>(nullptr, TEXT("/Engine/EngineMaterials/EmissiveMeshMaterial.EmissiveMeshMaterial"));
+	if (!BaseMaterial)
+	{
+		BaseMaterial = LoadObject<UMaterialInterface>(nullptr, TEXT("/Engine/BasicShapes/BasicShapeMaterial.BasicShapeMaterial"));
+	}
+
+	if (CubeMesh && BaseMaterial)
+	{
+		ShockwaveRingMaterial = UMaterialInstanceDynamic::Create(BaseMaterial, this);
+		if (ShockwaveRingMaterial)
+		{
+			ShockwaveRingMaterial->SetVectorParameterValue(TEXT("Color"), FLinearColor::Black);
+		}
+
+		static constexpr int32 NumRingSegments = 24;
+		ShockwaveRingSegments.Reserve(NumRingSegments);
+		for (int32 Index = 0; Index < NumRingSegments; ++Index)
+		{
+			if (UStaticMeshComponent* SegComp = NewObject<UStaticMeshComponent>(Owner))
+			{
+				SegComp->SetStaticMesh(CubeMesh);
+				SegComp->SetMobility(EComponentMobility::Movable);
+				SegComp->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+				SegComp->SetCastShadow(false);
+				SegComp->SetGenerateOverlapEvents(false);
+				SegComp->SetUsingAbsoluteLocation(true);
+				SegComp->SetUsingAbsoluteRotation(true);
+				SegComp->SetUsingAbsoluteScale(true);
+				if (ShockwaveRingMaterial)
+				{
+					SegComp->SetMaterial(0, ShockwaveRingMaterial);
+				}
+				SegComp->SetVisibility(false);
+				SegComp->SetHiddenInGame(true);
+				SegComp->AttachToComponent(Owner->GetRootComponent(), FAttachmentTransformRules::KeepWorldTransform);
+				SegComp->RegisterComponent();
+				ShockwaveRingSegments.Add(SegComp);
+			}
+		}
+	}
+
+	if (!ShockwaveFlashPointLight)
+	{
+		if (UPointLightComponent* FlashLight = NewObject<UPointLightComponent>(Owner))
+		{
+			FlashLight->SetMobility(EComponentMobility::Movable);
+			FlashLight->SetCastShadows(true);
+			FlashLight->SetIntensityUnits(ELightUnits::Candelas);
+			FlashLight->SetAttenuationRadius(1200.0f);
+			FlashLight->SetIntensity(0.0f);
+			FlashLight->SetUsingAbsoluteLocation(true);
+			FlashLight->SetVisibility(false);
+			FlashLight->SetHiddenInGame(true);
+			FlashLight->AttachToComponent(Owner->GetRootComponent(), FAttachmentTransformRules::KeepWorldTransform);
+			FlashLight->RegisterComponent();
+			ShockwaveFlashPointLight = FlashLight;
+		}
+	}
+}
+
+void UProximityFloatSpinComponent::TriggerCatShockwave(AActor* Owner, const FLinearColor& WaveColor)
+{
+	if (!Owner)
+	{
+		return;
+	}
+
+	if (ShockwaveRingSegments.IsEmpty())
+	{
+		InitializeShockwaveVisuals(Owner);
+	}
+
+	ShockwaveOrigin = Owner->GetActorLocation();
+	ActiveShockwaveColor = WaveColor;
+	ShockwaveElapsed = 0.0f;
+	bShockwaveVisualActive = true;
+
+	if (RuntimeSkeletalMeshComponent)
+	{
+		RuntimeSkeletalMeshComponent->SetCastShadow(false);
+	}
+
+	for (UStaticMeshComponent* SegComp : ShockwaveRingSegments)
+	{
+		if (SegComp)
+		{
+			SegComp->SetHiddenInGame(false);
+			SegComp->SetVisibility(true);
+		}
+	}
+
+	if (ShockwaveFlashPointLight)
+	{
+		ShockwaveFlashPointLight->SetWorldLocation(ShockwaveOrigin);
+		ShockwaveFlashPointLight->SetLightColor(ActiveShockwaveColor);
+		ShockwaveFlashPointLight->SetHiddenInGame(false);
+		ShockwaveFlashPointLight->SetVisibility(true);
+	}
+}
+
+void UProximityFloatSpinComponent::UpdateCatShockwave(float DeltaTime, float& OutPostProcessPulseAlpha)
+{
+	OutPostProcessPulseAlpha = 0.0f;
+	if (!bShockwaveVisualActive)
+	{
+		return;
+	}
+
+	ShockwaveElapsed += DeltaTime;
+	if (ShockwaveDuration <= 0.0f || ShockwaveElapsed >= ShockwaveDuration)
+	{
+		HideCatShockwaveVisuals();
+		return;
+	}
+
+	const float WaveProgress = FMath::Clamp(ShockwaveElapsed / ShockwaveDuration, 0.0f, 1.0f);
+	const float RadiusProgress = 1.0f - FMath::Pow(1.0f - WaveProgress, 2.6f);
+	const float CurrentRadius = FMath::Lerp(35.0f, ShockwaveMaxRadius, RadiusProgress);
+	const float IntensityFade = FMath::Pow(1.0f - WaveProgress, 1.5f);
+	OutPostProcessPulseAlpha = FMath::Pow(1.0f - WaveProgress, 2.0f) * 0.0625f;
+
+	if (ShockwaveRingMaterial)
+	{
+		ShockwaveRingMaterial->SetVectorParameterValue(TEXT("Color"), ActiveShockwaveColor * (1.125f * IntensityFade));
+	}
+
+	const int32 SegCount = ShockwaveRingSegments.Num();
+	if (SegCount > 0)
+	{
+		const float ChordLength = (2.0f * PI * CurrentRadius / static_cast<float>(SegCount)) * 1.08f;
+		const float RadialThickness = FMath::Lerp(16.0f, 44.0f, RadiusProgress) * FMath::Lerp(0.35f, 1.0f, IntensityFade);
+		const float VerticalHeight = FMath::Lerp(14.0f, 26.0f, IntensityFade);
+		const FVector SegmentScale(RadialThickness / 100.0f, ChordLength / 100.0f, VerticalHeight / 100.0f);
+
+		for (int32 Index = 0; Index < SegCount; ++Index)
+		{
+			if (UStaticMeshComponent* SegComp = ShockwaveRingSegments[Index])
+			{
+				const float AngleRad = (2.0f * PI * static_cast<float>(Index)) / static_cast<float>(SegCount);
+				const FVector SegmentLoc = ShockwaveOrigin + FVector(FMath::Cos(AngleRad) * CurrentRadius, FMath::Sin(AngleRad) * CurrentRadius, 0.0f);
+				const FRotator SegmentRot(0.0f, FMath::RadiansToDegrees(AngleRad), 0.0f);
+				SegComp->SetWorldLocationAndRotation(SegmentLoc, SegmentRot);
+				SegComp->SetWorldScale3D(SegmentScale);
+			}
+		}
+	}
+
+	if (ShockwaveFlashPointLight)
+	{
+		ShockwaveFlashPointLight->SetWorldLocation(ShockwaveOrigin);
+		ShockwaveFlashPointLight->SetLightColor(ActiveShockwaveColor);
+		ShockwaveFlashPointLight->SetAttenuationRadius(FMath::Max(600.0f, CurrentRadius * 1.25f));
+		ShockwaveFlashPointLight->SetIntensity(4062.5f * IntensityFade);
+	}
+}
+
+void UProximityFloatSpinComponent::HideCatShockwaveVisuals()
+{
+	bShockwaveVisualActive = false;
+	ShockwaveElapsed = 0.0f;
+
+	if (RuntimeSkeletalMeshComponent && !bIsDiscoActive && !bHasDespawnedCat)
+	{
+		RuntimeSkeletalMeshComponent->SetCastShadow(true);
+	}
+
+	for (UStaticMeshComponent* SegComp : ShockwaveRingSegments)
+	{
+		if (SegComp)
+		{
+			SegComp->SetVisibility(false);
+			SegComp->SetHiddenInGame(true);
+		}
+	}
+
+	if (ShockwaveFlashPointLight)
+	{
+		ShockwaveFlashPointLight->SetIntensity(0.0f);
+		ShockwaveFlashPointLight->SetVisibility(false);
+		ShockwaveFlashPointLight->SetHiddenInGame(true);
+	}
+}
+
+void UProximityFloatSpinComponent::DestroyCatShockwaveVisuals()
+{
+	bShockwaveVisualActive = false;
+	ShockwaveElapsed = 0.0f;
+
+	for (UStaticMeshComponent* SegComp : ShockwaveRingSegments)
+	{
+		if (SegComp)
+		{
+			SegComp->DestroyComponent();
+		}
+	}
+	ShockwaveRingSegments.Reset();
+	ShockwaveRingMaterial = nullptr;
+
+	if (ShockwaveFlashPointLight)
+	{
+		ShockwaveFlashPointLight->DestroyComponent();
+		ShockwaveFlashPointLight = nullptr;
 	}
 }
 
@@ -1082,7 +1750,7 @@ FText UProximityFloatSpinComponent::GetInteractionPrompt_Implementation() const
 
 bool UProximityFloatSpinComponent::CanInteract_Implementation(AActor* Interactor) const
 {
-	return !bIsActive && !bHasTriggered;
+	return !bIsActive && !bHasTriggered && !bHasDespawnedCat;
 }
 
 float UProximityFloatSpinComponent::GetActiveSpinSpeedMultiplier(float TimeSeconds, bool& bOutIsSpinning, int32& OutWindowIndex) const
@@ -1111,11 +1779,46 @@ bool UProximityFloatSpinComponent::IsWithinSpinWindow(float TimeSeconds) const
 	return bIsSpinning;
 }
 
+bool UProximityFloatSpinComponent::IsSpinMusicActive() const
+{
+	if (ActiveAudioComponent && ActiveAudioComponent->IsPlaying())
+	{
+		return true;
+	}
+
+	if (!bIsActive || bTriggeredPopOutEffect || bHasDespawnedCat)
+	{
+		return false;
+	}
+
+	if (bUseSpinTimeWindows && !SpinTimeWindows.IsEmpty())
+	{
+		return ElapsedTriggeredTime <= SpinTimeWindows.Last().EndTime;
+	}
+
+	return true;
+}
+
 void UProximityFloatSpinComponent::StartTriggerMusic(AActor* Owner)
 {
-	if (!TriggerMusic || !Owner || !Owner->GetRootComponent())
+	if (!Owner || !Owner->GetRootComponent())
 	{
 		return;
+	}
+
+	if (!TriggerMusic)
+	{
+		TriggerMusic = LoadObject<USoundBase>(nullptr, TEXT("/Game/NPC/Cat/SFX/Oiiai_Psytrance.Oiiai_Psytrance"));
+	}
+
+	if (!TriggerMusic)
+	{
+		return;
+	}
+
+	if (USoundWave* TriggerWave = Cast<USoundWave>(TriggerMusic))
+	{
+		TriggerWave->bLooping = bLoopMusic;
 	}
 
 	StopTriggerMusic();
@@ -1178,9 +1881,23 @@ void UProximityFloatSpinComponent::StopTriggerMusic()
 
 void UProximityFloatSpinComponent::HandleMusicFinished()
 {
+	if (bHasDespawnedCat)
+	{
+		StopTriggerMusic();
+		if (!bShockwaveVisualActive)
+		{
+			if (AActor* Owner = GetOwner())
+			{
+				Owner->Destroy();
+			}
+		}
+		return;
+	}
+
 	if (bLoopMusic && bIsActive && ActiveAudioComponent)
 	{
 		ElapsedTriggeredTime = 0.0f;
+		ResetTimelineEffects();
 		ActiveAudioComponent->Play(0.0f);
 	}
 }
@@ -1218,6 +1935,17 @@ float UProximityFloatSpinComponent::ComputeJumpOffset(float TimeSeconds) const
 
 void UProximityFloatSpinComponent::ApplyFloatAndSpinTransform(AActor* Owner, float DeltaTime)
 {
+	if (bHasDespawnedCat)
+	{
+		UpdateCatShockwave(DeltaTime, LastShockwavePostProcessAlpha);
+		const bool bMusicStillPlaying = ActiveAudioComponent && ActiveAudioComponent->IsPlaying();
+		if (!bShockwaveVisualActive && !bMusicStillPlaying && Owner)
+		{
+			Owner->Destroy();
+		}
+		return;
+	}
+
 	if (bIsActive)
 	{
 		ElapsedTriggeredTime += DeltaTime;
@@ -1231,21 +1959,39 @@ void UProximityFloatSpinComponent::ApplyFloatAndSpinTransform(AActor* Owner, flo
 		ActiveSpinMultiplier = GetActiveSpinSpeedMultiplier(ElapsedTriggeredTime, bShouldSpin, ActiveWindowIndex);
 	}
 
+	if (bTriggeredPopOutEffect || (bIsActive && ElapsedTriggeredTime >= 42.89f))
+	{
+		bShouldSpin = false;
+		ActiveWindowIndex = INDEX_NONE;
+	}
+
 	const bool bDiscoShouldRun = bEnableDiscoEnvironmentOnSpinWindow
 		&& bIsActive
 		&& bShouldSpin
 		&& bUseSpinTimeWindows
 		&& ActiveWindowIndex == DiscoSpinWindowIndex;
-	UpdateSkyDarkening(DeltaTime);
-	UpdateDiscoEnvironment(Owner, bDiscoShouldRun, DeltaTime);
 
-	// Float only while spinning; fall rapidly to ground using real gravity acceleration when spinning stops.
+	UnstableMatterIntensity = ComputeUnstableMatterIntensity(ElapsedTriggeredTime, bShouldSpin);
+	FVector UnstablePositionOffset = FVector::ZeroVector;
+	FRotator UnstableRotationOffset = FRotator::ZeroRotator;
+	ComputeUnstableMatterOffsets(UnstableMatterIntensity, ElapsedTriggeredTime, UnstablePositionOffset, UnstableRotationOffset, UnstableScaleMultiplier);
+
+	EvaluateTimelineKeyframes(Owner, bDiscoShouldRun);
+	UpdateCatShockwave(DeltaTime, LastShockwavePostProcessAlpha);
+	UpdateSkyDarkening(DeltaTime);
+	UpdateDiscoEnvironment(Owner, bDiscoShouldRun && !bTriggeredPopOutEffect, DeltaTime);
+
+	// Float only while spinning; hold hover height while popping out to despawn; otherwise fall rapidly to ground.
 	if (bShouldSpin)
 	{
 		FallVelocity = 0.0f;
 		BobPhase = FMath::Fmod(BobPhase + DeltaTime * 2.0f * PI * BobFrequency, 2.0f * PI);
 		const float TargetHoverZ = FloatHeight + FMath::Sin(BobPhase) * BobAmplitude;
 		CurrentHoverHeight = FMath::FInterpTo(CurrentHoverHeight, TargetHoverZ, DeltaTime, BlendSpeed);
+	}
+	else if (bTriggeredPopOutEffect)
+	{
+		FallVelocity = 0.0f;
 	}
 	else
 	{
@@ -1288,9 +2034,10 @@ void UProximityFloatSpinComponent::ApplyFloatAndSpinTransform(AActor* Owner, flo
 
 	if (bShouldSpin)
 	{
-		CurrentSpinOffsetYaw = FMath::Fmod(CurrentSpinOffsetYaw + SpinSpeed * ActiveSpinMultiplier * DeltaTime, 360.0f);
+		const float YawStep = FMath::Min(FMath::Abs(SpinSpeed) * ActiveSpinMultiplier * DeltaTime, 150.0f);
+		CurrentSpinOffsetYaw = FMath::Fmod(CurrentSpinOffsetYaw + YawStep, 360.0f);
 	}
-	else if (bResetRotationWhenSpinStops)
+	else if (bResetRotationWhenSpinStops && !bTriggeredPopOutEffect)
 	{
 		CurrentSpinOffsetYaw = 0.0f;
 	}
@@ -1300,9 +2047,40 @@ void UProximityFloatSpinComponent::ApplyFloatAndSpinTransform(AActor* Owner, flo
 		UpdateSpinAnimationState(bShouldSpin);
 	}
 	CurrentSqueezeFraction = UpdateInteractionSqueeze(Owner, DeltaTime);
+	if (bHasDespawnedCat)
+	{
+		TArray<UPrimitiveComponent*> Primitives;
+		Owner->GetComponents<UPrimitiveComponent>(Primitives);
+		for (UPrimitiveComponent* PrimComp : Primitives)
+		{
+			if (PrimComp && !ShockwaveRingSegments.Contains(Cast<UStaticMeshComponent>(PrimComp)))
+			{
+				PrimComp->SetVisibility(false, false);
+				PrimComp->SetHiddenInGame(true);
+			}
+		}
+		if (InteractionTraceSphere)
+		{
+			InteractionTraceSphere->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+			InteractionTraceSphere->SetCollisionResponseToAllChannels(ECR_Ignore);
+		}
+		bIsActive = false;
+
+		const bool bMusicStillPlaying = ActiveAudioComponent && ActiveAudioComponent->IsPlaying();
+		if (!bShockwaveVisualActive && !bMusicStillPlaying)
+		{
+			Owner->Destroy();
+		}
+		return;
+	}
 	UpdateSpinMorphTarget(bShouldSpin, DeltaTime);
 	UpdateVicinityMeshHeight(bShouldSpin, TotalJumpOffset, CurrentSqueezeFraction, DeltaTime);
 
+	const bool bSkelMeshIsRoot = RuntimeSkeletalMeshComponent && (RuntimeSkeletalMeshComponent == Owner->GetRootComponent());
+	const float RootSqueezeOffsetZ = bSkelMeshIsRoot
+		? (-MeshPivotHeightAboveBottom * (CurrentSqueezeFraction * InteractionSqueezeScaleZ))
+		: 0.0f;
+	const float RootVicinityOffsetZ = bSkelMeshIsRoot ? CurrentVicinityZOffset : 0.0f;
 	const float ActorSqueezeOffsetZ = (!RuntimeSkeletalMeshComponent)
 		? (-ActorPivotHeightAboveBottom * (CurrentSqueezeFraction * InteractionSqueezeScaleZ))
 		: 0.0f;
@@ -1311,7 +2089,10 @@ void UProximityFloatSpinComponent::ApplyFloatAndSpinTransform(AActor* Owner, flo
 		&& CurrentHoverHeight <= 0.0f
 		&& TotalJumpOffset <= 0.0f
 		&& !bIsInteractionSqueezing
-		&& FMath::IsNearlyZero(CurrentSqueezeFraction);
+		&& FMath::IsNearlyZero(CurrentSqueezeFraction)
+		&& !bIsPopOutActive
+		&& !bShockwaveVisualActive
+		&& UnstableMatterIntensity <= KINDA_SMALL_NUMBER;
 	if (bAtGroundRest)
 	{
 		if (bSettledAtRest)
@@ -1320,15 +2101,18 @@ void UProximityFloatSpinComponent::ApplyFloatAndSpinTransform(AActor* Owner, flo
 		}
 
 		bSettledAtRest = true;
+		const FVector RestLocation = BaseLocation + FVector(0.0f, 0.0f, RootVicinityOffsetZ);
 		const FQuat YawSpinQuat(FVector::UpVector, FMath::DegreesToRadians(CurrentSpinOffsetYaw));
 		const FRotator RestRotation = (YawSpinQuat * BaseRotation.Quaternion()).Rotator();
-		Owner->SetActorLocationAndRotation(BaseLocation, RestRotation);
+		Owner->SetActorLocationAndRotation(RestLocation, RestRotation, false, nullptr, ETeleportType::TeleportPhysics);
 		return;
 	}
 
 	bSettledAtRest = false;
-	const FVector NewLocation = BaseLocation + FVector(0.0f, 0.0f, CurrentHoverHeight + TotalJumpOffset + ActorSqueezeOffsetZ);
+	const FVector NewLocation = BaseLocation
+		+ FVector(0.0f, 0.0f, CurrentHoverHeight + TotalJumpOffset + RootSqueezeOffsetZ + RootVicinityOffsetZ + ActorSqueezeOffsetZ)
+		+ UnstablePositionOffset;
 	const FQuat YawSpinQuat(FVector::UpVector, FMath::DegreesToRadians(CurrentSpinOffsetYaw));
-	const FRotator NewRotation = (YawSpinQuat * BaseRotation.Quaternion()).Rotator();
-	Owner->SetActorLocationAndRotation(NewLocation, NewRotation);
+	const FRotator NewRotation = (UnstableRotationOffset.Quaternion() * YawSpinQuat * BaseRotation.Quaternion()).Rotator();
+	Owner->SetActorLocationAndRotation(NewLocation, NewRotation, false, nullptr, ETeleportType::TeleportPhysics);
 }

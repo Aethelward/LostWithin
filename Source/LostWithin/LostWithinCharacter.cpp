@@ -3,8 +3,10 @@
 #include "LostWithinCharacter.h"
 #include "Animation/AnimInstance.h"
 #include "Camera/CameraComponent.h"
+#include "Components/AudioComponent.h"
 #include "Components/CapsuleComponent.h"
 #include "Components/PrimitiveComponent.h"
+#include "Components/ProximityFloatSpinComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Engine/LocalPlayer.h"
 #include "Engine/World.h"
@@ -23,10 +25,52 @@
 #include "Inventory/InventoryComponent.h"
 #include "Kismet/GameplayStatics.h"
 #include "LostWithin.h"
+#include "Sound/SoundBase.h"
+#include "Sound/SoundWave.h"
 #include "UI/InventoryWidget.h"
+#include "UObject/UObjectIterator.h"
 
 namespace
 {
+	void EnsureSoundArrayLoaded(TArray<TObjectPtr<USoundBase>>& OutSounds, TConstArrayView<const TCHAR*> AssetPaths)
+	{
+		if (OutSounds.IsEmpty())
+		{
+			for (const TCHAR* AssetPath : AssetPaths)
+			{
+				if (USoundBase* LoadedSound = LoadObject<USoundBase>(nullptr, AssetPath))
+				{
+					OutSounds.AddUnique(LoadedSound);
+				}
+			}
+		}
+
+		// Clear looping flags on loaded waves so one-shot SFX stop cleanly and BGM tracks trigger OnAudioFinished
+		for (const TObjectPtr<USoundBase>& Sound : OutSounds)
+		{
+			if (USoundWave* SoundWave = Cast<USoundWave>(Sound))
+			{
+				SoundWave->bLooping = false;
+			}
+		}
+	}
+
+	USoundBase* PickRandomSoundNoRepeat(const TArray<TObjectPtr<USoundBase>>& Sounds, int32& InOutLastIndex)
+	{
+		if (Sounds.IsEmpty())
+		{
+			return nullptr;
+		}
+
+		int32 ChosenIndex = FMath::RandRange(0, Sounds.Num() - 1);
+		if (Sounds.Num() > 1 && ChosenIndex == InOutLastIndex)
+		{
+			ChosenIndex = (ChosenIndex + 1) % Sounds.Num();
+		}
+		InOutLastIndex = ChosenIndex;
+		return Sounds[ChosenIndex];
+	}
+
 	UObject* ResolveInteractableFromHit(const FHitResult& Hit)
 	{
 		if (UPrimitiveComponent* HitComp = Hit.GetComponent())
@@ -133,6 +177,7 @@ void ALostWithinCharacter::BeginPlay()
 
 	ApplyPOVState();
 	UpdateMovementSpeed();
+	EnsureDefaultAudioAssets();
 	RegisterRuntimeInputMappingContext();
 
 	if (IsLocallyControlled())
@@ -150,11 +195,18 @@ void ALostWithinCharacter::BeginPlay()
 				ApplyInventoryInputState();
 			}
 		}
+
+		if (bEnableExplorationBGM)
+		{
+			StartExplorationBGM();
+		}
 	}
 }
 
 void ALostWithinCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	StopExplorationBGM();
+
 	if (bIsInventoryOpen)
 	{
 		bIsInventoryOpen = false;
@@ -200,10 +252,23 @@ void ALostWithinCharacter::Tick(float DeltaTime)
 		ThirdPersonCameraBoom->SetRelativeLocation(DesiredBoomLocation);
 	}
 
-	if (IsLocallyControlled() && InventoryWidget)
+	if (IsLocallyControlled())
 	{
-		UpdateInteractionPrompt();
+		if (InventoryWidget)
+		{
+			UpdateInteractionPrompt();
+		}
+		UpdateExplorationBGM(DeltaTime);
 	}
+
+	UpdateFootstepAudio(DeltaTime);
+}
+
+void ALostWithinCharacter::Landed(const FHitResult& Hit)
+{
+	Super::Landed(Hit);
+	FootstepTimer = 0.0f;
+	PlayRandomSoundAtFeet(LandingSounds, LastLandingSoundIndex, LandingSoundVolume, 0.96f, 1.04f);
 }
 
 void ALostWithinCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
@@ -686,4 +751,253 @@ void ALostWithinCharacter::UpdateInteractionPrompt()
 	{
 		InventoryWidget->SetInteractionPrompt(FText::GetEmpty());
 	}
+}
+
+void ALostWithinCharacter::EnsureDefaultAudioAssets()
+{
+	static constexpr const TCHAR* DefaultStepPaths[] = {
+		TEXT("/Game/Audio/SFX/Character/Steps/Step_01.Step_01"),
+		TEXT("/Game/Audio/SFX/Character/Steps/Step_02.Step_02"),
+		TEXT("/Game/Audio/SFX/Character/Steps/Step_03.Step_03"),
+		TEXT("/Game/Audio/SFX/Character/Steps/Step_04.Step_04")
+	};
+
+	static constexpr const TCHAR* DefaultLandingPaths[] = {
+		TEXT("/Game/Audio/SFX/Character/Landing/Landing_01.Landing_01"),
+		TEXT("/Game/Audio/SFX/Character/Landing/Landing_02.Landing_02"),
+		TEXT("/Game/Audio/SFX/Character/Landing/Landing_03.Landing_03"),
+		TEXT("/Game/Audio/SFX/Character/Landing/Landing_04.Landing_04")
+	};
+
+	static constexpr const TCHAR* DefaultBGMPaths[] = {
+		TEXT("/Game/Audio/BGM/01_Exploration/BGM_01.BGM_01"),
+		TEXT("/Game/Audio/BGM/01_Exploration/BGM_02.BGM_02"),
+		TEXT("/Game/Audio/BGM/01_Exploration/BGM_03.BGM_03")
+	};
+
+	EnsureSoundArrayLoaded(FootstepSounds, DefaultStepPaths);
+	EnsureSoundArrayLoaded(LandingSounds, DefaultLandingPaths);
+	EnsureSoundArrayLoaded(ExplorationBGMTracks, DefaultBGMPaths);
+}
+
+void ALostWithinCharacter::UpdateFootstepAudio(float DeltaTime)
+{
+	const UCharacterMovementComponent* MoveComp = GetCharacterMovement();
+	if (!MoveComp || !MoveComp->IsMovingOnGround() || FootstepSounds.IsEmpty())
+	{
+		FootstepTimer = 0.0f;
+		return;
+	}
+
+	const float Speed2D = GetVelocity().Size2D();
+	if (Speed2D <= 30.0f)
+	{
+		FootstepTimer = 0.0f;
+		return;
+	}
+
+	float StepInterval = RunStepInterval;
+	float StepVolume = RunStepVolume;
+
+	const bool bIsSprintGait = (bUseCustomMovementSpeeds && bIsSprintingHeld && !bIsWalking && !bIsCrouched)
+		|| (!bUseCustomMovementSpeeds && Speed2D > 400.0f);
+	if (bIsSprintGait)
+	{
+		StepInterval = SprintStepInterval;
+		StepVolume = SprintStepVolume;
+	}
+	else if (bIsWalking || bIsCrouched || Speed2D <= (SlowWalkSpeed + 25.0f))
+	{
+		StepInterval = WalkStepInterval;
+		StepVolume = WalkStepVolume;
+	}
+
+	const float SafeInterval = FMath::Max(0.05f, StepInterval);
+	FootstepTimer += DeltaTime;
+	if (FootstepTimer >= SafeInterval)
+	{
+		FootstepTimer = FMath::Fmod(FootstepTimer, SafeInterval);
+		PlayRandomSoundAtFeet(FootstepSounds, LastFootstepSoundIndex, StepVolume, 0.95f, 1.05f);
+	}
+}
+
+void ALostWithinCharacter::PlayRandomSoundAtFeet(const TArray<TObjectPtr<USoundBase>>& Sounds, int32& InOutLastIndex, float VolumeMultiplier, float MinPitch, float MaxPitch)
+{
+	if (VolumeMultiplier <= 0.0f)
+	{
+		return;
+	}
+
+	if (USoundBase* SelectedSound = PickRandomSoundNoRepeat(Sounds, InOutLastIndex))
+	{
+		const float HalfHeight = GetCapsuleComponent() ? GetCapsuleComponent()->GetScaledCapsuleHalfHeight() : 88.0f;
+		const FVector FeetLocation = GetActorLocation() - FVector(0.0f, 0.0f, HalfHeight);
+		UGameplayStatics::PlaySoundAtLocation(
+			this,
+			SelectedSound,
+			FeetLocation,
+			VolumeMultiplier,
+			FMath::FRandRange(MinPitch, MaxPitch));
+	}
+}
+
+float ALostWithinCharacter::GetEffectiveExplorationBGMVolume() const
+{
+	return (ExplorationBGMVolume > 0.0f)
+		? FMath::Max(0.001f, ExplorationBGMVolume * CurrentBGMVolumeFactor)
+		: 0.0f;
+}
+
+void ALostWithinCharacter::StartExplorationBGM()
+{
+	EnsureDefaultAudioAssets();
+	if (!bEnableExplorationBGM || ExplorationBGMTracks.IsEmpty())
+	{
+		return;
+	}
+
+	StopExplorationBGM();
+
+	UAudioComponent* BGMComp = NewObject<UAudioComponent>(this);
+	if (!BGMComp)
+	{
+		return;
+	}
+
+	BGMComp->bAutoActivate = false;
+	BGMComp->bAutoDestroy = false;
+	BGMComp->bStopWhenOwnerDestroyed = true;
+	BGMComp->bAllowSpatialization = false;
+	BGMComp->bIsUISound = true;
+	BGMComp->AttachToComponent(GetRootComponent(), FAttachmentTransformRules::KeepRelativeTransform);
+	BGMComp->RegisterComponent();
+	BGMComp->OnAudioFinished.AddDynamic(this, &ALostWithinCharacter::HandleExplorationBGMFinished);
+
+	ExplorationBGMComponent = BGMComp;
+	CurrentBGMTrackIndex = 0;
+	CurrentBGMVolumeFactor = 1.0f;
+	bBGMPausedForCatSpin = false;
+	bSuppressBGMFinishedAdvance = false;
+
+	PlayCurrentExplorationBGMTrack();
+}
+
+void ALostWithinCharacter::StopExplorationBGM()
+{
+	bSuppressBGMFinishedAdvance = true;
+	bBGMPausedForCatSpin = false;
+
+	if (ExplorationBGMComponent)
+	{
+		ExplorationBGMComponent->OnAudioFinished.RemoveDynamic(this, &ALostWithinCharacter::HandleExplorationBGMFinished);
+		ExplorationBGMComponent->Stop();
+		ExplorationBGMComponent->DestroyComponent();
+		ExplorationBGMComponent = nullptr;
+	}
+}
+
+void ALostWithinCharacter::UpdateExplorationBGM(float DeltaTime)
+{
+	const UWorld* World = GetWorld();
+	if (!ExplorationBGMComponent || !bEnableExplorationBGM || !World)
+	{
+		return;
+	}
+
+	bool bAnySpinMusicActive = false;
+	for (TObjectIterator<UProximityFloatSpinComponent> It; It; ++It)
+	{
+		const UProximityFloatSpinComponent* SpinComp = *It;
+		if (SpinComp && SpinComp->GetWorld() == World && SpinComp->IsSpinMusicActive())
+		{
+			bAnySpinMusicActive = true;
+			break;
+		}
+	}
+
+	const float TargetFactor = bAnySpinMusicActive ? 0.0f : 1.0f;
+	const float PreviousFactor = CurrentBGMVolumeFactor;
+	CurrentBGMVolumeFactor = FMath::FInterpTo(CurrentBGMVolumeFactor, TargetFactor, DeltaTime, ExplorationBGMFadeSpeed);
+	if (FMath::IsNearlyEqual(CurrentBGMVolumeFactor, TargetFactor, 0.002f))
+	{
+		CurrentBGMVolumeFactor = TargetFactor;
+	}
+
+	if (bAnySpinMusicActive)
+	{
+		if (CurrentBGMVolumeFactor <= 0.01f)
+		{
+			CurrentBGMVolumeFactor = 0.0f;
+			if (!bBGMPausedForCatSpin)
+			{
+				ExplorationBGMComponent->SetPaused(true);
+				bBGMPausedForCatSpin = true;
+			}
+		}
+	}
+	else if (bBGMPausedForCatSpin)
+	{
+		bBGMPausedForCatSpin = false;
+		if (ExplorationBGMComponent->IsPlaying())
+		{
+			ExplorationBGMComponent->SetPaused(false);
+		}
+		else
+		{
+			PlayCurrentExplorationBGMTrack();
+		}
+	}
+
+	if (!FMath::IsNearlyEqual(CurrentBGMVolumeFactor, PreviousFactor, KINDA_SMALL_NUMBER))
+	{
+		ExplorationBGMComponent->SetVolumeMultiplier(GetEffectiveExplorationBGMVolume());
+	}
+}
+
+void ALostWithinCharacter::PlayCurrentExplorationBGMTrack()
+{
+	if (!ExplorationBGMComponent || ExplorationBGMTracks.IsEmpty())
+	{
+		return;
+	}
+
+	const int32 TrackCount = ExplorationBGMTracks.Num();
+	USoundBase* SelectedTrack = nullptr;
+	for (int32 Offset = 0; Offset < TrackCount; ++Offset)
+	{
+		const int32 CandidateIndex = (CurrentBGMTrackIndex + Offset) % TrackCount;
+		if (USoundBase* Candidate = ExplorationBGMTracks[CandidateIndex])
+		{
+			CurrentBGMTrackIndex = CandidateIndex;
+			SelectedTrack = Candidate;
+			break;
+		}
+	}
+
+	if (!SelectedTrack)
+	{
+		return;
+	}
+
+	bSuppressBGMFinishedAdvance = true;
+	ExplorationBGMComponent->SetSound(SelectedTrack);
+	ExplorationBGMComponent->SetVolumeMultiplier(GetEffectiveExplorationBGMVolume());
+	bSuppressBGMFinishedAdvance = false;
+
+	ExplorationBGMComponent->Play(0.0f);
+	if (bBGMPausedForCatSpin)
+	{
+		ExplorationBGMComponent->SetPaused(true);
+	}
+}
+
+void ALostWithinCharacter::HandleExplorationBGMFinished()
+{
+	if (bSuppressBGMFinishedAdvance || !bEnableExplorationBGM || bBGMPausedForCatSpin || ExplorationBGMTracks.IsEmpty())
+	{
+		return;
+	}
+
+	CurrentBGMTrackIndex = (CurrentBGMTrackIndex + 1) % ExplorationBGMTracks.Num();
+	PlayCurrentExplorationBGMTrack();
 }

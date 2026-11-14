@@ -9,6 +9,7 @@
 #include "PickupItemActor.generated.h"
 
 class USphereComponent;
+class USoundBase;
 class UStaticMeshComponent;
 
 /**
@@ -48,6 +49,14 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Pickup|Animation", meta = (Units = "deg/s"))
 	float IdleSpinRate = 90.0f;
 
+	/** Sound variations played immediately when this item is dropped */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Pickup|Audio")
+	TArray<TObjectPtr<USoundBase>> DropSounds;
+
+	/** Volume multiplier for item drop SFX */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Pickup|Audio", meta = (ClampMin = "0.0", ClampMax = "4.0"))
+	float DropSoundVolume = 0.85f;
+
 	/** Starts a smooth parabolic drop arc from StartLocation to TargetLocation */
 	UFUNCTION(BlueprintCallable, Category = "Pickup")
 	void StartDropArc(const FVector& StartLocation, const FVector& TargetLocation, float ArcHeight = 55.0f, float Duration = 0.45f);
@@ -73,6 +82,12 @@ private:
 	/** Ensures MeshComponent has a fallback mesh assigned if none was set in Blueprint */
 	void EnsureDefaultMesh();
 
+	/** Populates DropSounds with default item drop SFX and clears looping flags */
+	void EnsureDefaultDropSounds();
+
+	/** Plays a random drop sound at the pickup's current world location */
+	void PlayRandomDropSound();
+
 	/** Traces downward from DesiredPoint to settle cleanly above floor geometry */
 	FVector FindGroundLocation(const FVector& DesiredPoint, const TArray<AActor*>& ActorsToIgnore) const;
 
@@ -85,5 +100,6 @@ private:
 
 	FVector RestLocation = FVector::ZeroVector;
 	float IdleTime = 0.0f;
+	int32 LastDropSoundIndex = INDEX_NONE;
 };
 

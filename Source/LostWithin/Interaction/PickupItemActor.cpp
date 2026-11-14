@@ -5,6 +5,9 @@
 #include "Components/StaticMeshComponent.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/World.h"
+#include "Kismet/GameplayStatics.h"
+#include "Sound/SoundBase.h"
+#include "Sound/SoundWave.h"
 
 APickupItemActor::APickupItemActor()
 {
@@ -40,6 +43,7 @@ void APickupItemActor::BeginPlay()
 {
 	Super::BeginPlay();
 	EnsureDefaultMesh();
+	EnsureDefaultDropSounds();
 
 	if (!bIsDropping)
 	{
@@ -101,6 +105,7 @@ void APickupItemActor::StartDropArc(const FVector& StartLocation, const FVector&
 	bIsDropping = true;
 
 	SetActorLocation(DropStartLocation);
+	PlayRandomDropSound();
 }
 
 void APickupItemActor::OnInteract_Implementation(AActor* Interactor)
@@ -182,6 +187,60 @@ void APickupItemActor::EnsureDefaultMesh()
 	if (FallbackMesh)
 	{
 		MeshComponent->SetStaticMesh(FallbackMesh);
+	}
+}
+
+void APickupItemActor::EnsureDefaultDropSounds()
+{
+	if (DropSounds.IsEmpty())
+	{
+		static constexpr const TCHAR* DefaultDropSoundPaths[] = {
+			TEXT("/Game/Item/SFX/Drop_01.Drop_01"),
+			TEXT("/Game/Item/SFX/Drop_02.Drop_02"),
+			TEXT("/Game/Item/SFX/Drop_03.Drop_03")
+		};
+
+		for (const TCHAR* AssetPath : DefaultDropSoundPaths)
+		{
+			if (USoundBase* LoadedSound = LoadObject<USoundBase>(nullptr, AssetPath))
+			{
+				DropSounds.AddUnique(LoadedSound);
+			}
+		}
+	}
+
+	for (const TObjectPtr<USoundBase>& Sound : DropSounds)
+	{
+		if (USoundWave* SoundWave = Cast<USoundWave>(Sound))
+		{
+			SoundWave->bLooping = false;
+		}
+	}
+}
+
+void APickupItemActor::PlayRandomDropSound()
+{
+	EnsureDefaultDropSounds();
+	if (DropSounds.IsEmpty() || DropSoundVolume <= 0.0f)
+	{
+		return;
+	}
+
+	int32 ChosenIndex = FMath::RandRange(0, DropSounds.Num() - 1);
+	if (DropSounds.Num() > 1 && ChosenIndex == LastDropSoundIndex)
+	{
+		ChosenIndex = (ChosenIndex + 1) % DropSounds.Num();
+	}
+	LastDropSoundIndex = ChosenIndex;
+
+	if (USoundBase* SelectedSound = DropSounds[ChosenIndex])
+	{
+		UGameplayStatics::PlaySoundAtLocation(
+			this,
+			SelectedSound,
+			GetActorLocation(),
+			DropSoundVolume,
+			FMath::FRandRange(0.96f, 1.04f));
 	}
 }
 

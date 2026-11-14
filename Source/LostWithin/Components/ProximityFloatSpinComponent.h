@@ -12,6 +12,7 @@ class UAnimationAsset;
 class UAudioComponent;
 class UExponentialHeightFogComponent;
 class ULightComponent;
+class UMaterialInstanceDynamic;
 class UPointLightComponent;
 class UPostProcessComponent;
 class USceneComponent;
@@ -23,6 +24,7 @@ class USoundAttenuation;
 class USoundBase;
 class USphereComponent;
 class USpotLightComponent;
+class UStaticMeshComponent;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnProximityFloatStateChanged, bool, bIsActive);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnCatInteracted, int32, NewInteractionCount);
@@ -59,13 +61,13 @@ class LOSTWITHIN_API UProximityFloatSpinComponent : public UActorComponent, publ
 public:
 	UProximityFloatSpinComponent();
 
-	/** Inner distance from the resting position at which the jump, timed spin, and 3D audio trigger */
+	/** Inner distance from the cat to the player's collision at which the jump, timed spin, and 3D audio trigger */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Proximity", meta = (ClampMin = "0.0", Units = "cm"))
-	float ActivationRadius = 250.0f;
+	float ActivationRadius = 120.0f;
 
-	/** Distance at which floating deactivates if bStayActiveOnceTriggered is false */
+	/** Distance from the cat to the player's collision at which floating deactivates if bStayActiveOnceTriggered is false */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Proximity", meta = (ClampMin = "0.0", Units = "cm"))
-	float DeactivationRadius = 350.0f;
+	float DeactivationRadius = 160.0f;
 
 	/** If true, once triggered the actor continues floating even if the player leaves */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Proximity")
@@ -147,13 +149,13 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Morph Animation", meta = (EditCondition = "bDriveSpinMorphTarget"))
 	bool bUseMorphVicinityCheck = true;
 
-	/** Outer vicinity distance at which the morph switches from active (1.0) to inactive (0.0); larger than ActivationRadius */
+	/** Outer vicinity distance from the cat to the player's collision at which the morph switches from active (1.0) to inactive (0.0) */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Morph Animation", meta = (ClampMin = "0.0", Units = "cm", EditCondition = "bDriveSpinMorphTarget && bUseMorphVicinityCheck"))
-	float MorphVicinityRadius = 800.0f;
+	float MorphVicinityRadius = 180.0f;
 
-	/** Outer vicinity distance at which the morph switches back to active (1.0) when the player moves away */
+	/** Outer vicinity distance from the cat to the player's collision at which the morph switches back to active (1.0) when the player moves away */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Morph Animation", meta = (ClampMin = "0.0", Units = "cm", EditCondition = "bDriveSpinMorphTarget && bUseMorphVicinityCheck"))
-	float MorphVicinityDeactivationRadius = 850.0f;
+	float MorphVicinityDeactivationRadius = 220.0f;
 
 	/** Vertical Z offset applied to the skeletal mesh in the active morph state (far from player); inactive morph inside vicinity uses 0 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Morph Animation", meta = (Units = "cm", EditCondition = "bDriveSpinMorphTarget && bUseMorphVicinityCheck"))
@@ -315,13 +317,13 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Disco", meta = (ClampMin = "0.0", Units = "Hz", EditCondition = "bEnableDiscoEnvironmentOnSpinWindow"))
 	float DiscoPulseFrequency = 7.5f;
 
-	/** Base intensity (candelas) of each overhead disco spotlight (6250 = 25% of original 25000 cd) */
+	/** Base intensity (candelas) of each disco spotlight (312.5 = 1.25% of original 25000 cd) */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Disco", meta = (ClampMin = "0.0", EditCondition = "bEnableDiscoEnvironmentOnSpinWindow"))
-	float DiscoSpotlightIntensity = 6250.0f;
+	float DiscoSpotlightIntensity = 312.5f;
 
-	/** Extra height above FloatHeight at which the overhead disco rig is suspended */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Disco", meta = (ClampMin = "0.0", Units = "cm", EditCondition = "bEnableDiscoEnvironmentOnSpinWindow"))
-	float DiscoRigHeightAboveFloat = 160.0f;
+	/** Vertical offset relative to the cat's floating center at which the disco rig is positioned (0 = centered on the cat) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Disco", meta = (Units = "cm", EditCondition = "bEnableDiscoEnvironmentOnSpinWindow"))
+	float DiscoRigHeightAboveFloat = 0.0f;
 
 	/** Intensity fraction of DiscoSpotlightIntensity used by the overhead central fill light */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Disco", meta = (ClampMin = "0.0", ClampMax = "1.0", EditCondition = "bEnableDiscoEnvironmentOnSpinWindow"))
@@ -345,7 +347,7 @@ public:
 
 	/** Volume multiplier for cat meow SFX played on interaction/hit */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Interaction", meta = (ClampMin = "0.0", ClampMax = "4.0"))
-	float InteractionSoundVolume = 0.5f;
+	float InteractionSoundVolume = 0.25f;
 
 	/** Actor class spawned when InteractionCount reaches ItemDropInteractionThreshold */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Interaction")
@@ -362,6 +364,10 @@ public:
 	/** Returns true if currently active */
 	UFUNCTION(BlueprintPure, Category = "Float & Spin")
 	bool IsFloatSpinActive() const { return bIsActive; }
+
+	/** Returns true while the cat's floatspin music sequence is actively playing */
+	UFUNCTION(BlueprintPure, Category = "Float & Spin|Audio")
+	bool IsSpinMusicActive() const;
 
 	/** Returns the number of times the player has interacted with the cat via [F] */
 	UFUNCTION(BlueprintPure, Category = "Float & Spin|Interaction")
@@ -399,6 +405,9 @@ private:
 
 	/** Smoothly lowers/raises the skeletal mesh Z offset and applies floor-anchored squeeze compensation */
 	void UpdateVicinityMeshHeight(bool bIsSpinning, float JumpOffset, float SqueezeFraction, float DeltaTime);
+
+	/** Computes squared distance from the cat's visual center to the closest point on PlayerPawn's collision */
+	float ComputePlayerDistanceSq(const APawn* PlayerPawn) const;
 
 	/** Evaluates outer vicinity distance to player pawn for morph switching */
 	void UpdateMorphVicinityState(const APawn* PlayerPawn);
@@ -444,6 +453,39 @@ private:
 
 	/** Animates sweeping multi-color overhead spotlights and post-process beat pulse during the disco spin window */
 	void UpdateDiscoEnvironment(AActor* Owner, bool bShouldBeActive, float DeltaTime);
+
+	/** Resets timed shockwave, color mode, and unstable matter state */
+	void ResetTimelineEffects();
+
+	/** Evaluates Oiiai_Psytrance timeframe triggers (shockwaves, environment/disco color shifts) */
+	void EvaluateTimelineKeyframes(AActor* Owner, bool bDiscoShouldRun);
+
+	/** Returns the disco spotlight intensity multiplier relative to the 5% base for ElapsedTriggeredTime */
+	float ComputeDiscoBrightnessMultiplier(float TimeSeconds) const;
+
+	/** Returns normalized unstable matter movement intensity [0..1] for ElapsedTriggeredTime */
+	float ComputeUnstableMatterIntensity(float TimeSeconds, bool bIsSpinning) const;
+
+	/** Computes per-frame unstable matter position, rotation, and scale warp offsets */
+	void ComputeUnstableMatterOffsets(float Intensity, float TimeSeconds, FVector& OutPositionOffset, FRotator& OutRotationOffset, FVector& OutScaleMultiplier) const;
+
+	/** Advances the 42.89s pop-out elastic scale rebound and returns its 3D scale multiplier */
+	FVector UpdatePopOutScale(float DeltaTime);
+
+	/** Pre-creates hidden shockwave ring segments and radial flash light */
+	void InitializeShockwaveVisuals(AActor* Owner);
+
+	/** Triggers a cat-centered neon shockwave ring & flash light burst */
+	void TriggerCatShockwave(AActor* Owner, const FLinearColor& WaveColor);
+
+	/** Advances active shockwave ring expansion and outputs normalized post-process impact alpha [0..1] */
+	void UpdateCatShockwave(float DeltaTime, float& OutPostProcessPulseAlpha);
+
+	/** Hides active shockwave components without destroying the reusable pool */
+	void HideCatShockwaveVisuals();
+
+	/** Destroys pooled shockwave components and material references */
+	void DestroyCatShockwaveVisuals();
 
 	/** Spawns the placeholder pickup item in front of the cat toward Interactor */
 	void SpawnDroppedItem(AActor* Owner, AActor* Interactor);
@@ -527,6 +569,25 @@ private:
 	float DiscoElapsedTime = 0.0f;
 	float DiscoOrbitYaw = 0.0f;
 
+	int32 NextShockwaveStageIndex = 0;
+	int32 CurrentDiscoColorMode = 0;
+	bool bTriggeredPopOutEffect = false;
+	bool bIsPopOutActive = false;
+	bool bHasDespawnedCat = false;
+	float PopOutElapsed = 0.0f;
+	float PopOutDuration = 0.15f;
+	float LastShockwavePostProcessAlpha = 0.0f;
+
+	bool bShockwaveVisualActive = false;
+	float ShockwaveElapsed = 0.0f;
+	float ShockwaveDuration = 0.90f;
+	float ShockwaveMaxRadius = 2200.0f;
+	FVector ShockwaveOrigin = FVector::ZeroVector;
+	FLinearColor ActiveShockwaveColor = FLinearColor::White;
+
+	float UnstableMatterIntensity = 0.0f;
+	FVector UnstableScaleMultiplier = FVector::OneVector;
+
 	UPROPERTY(Transient)
 	TObjectPtr<UAudioComponent> ActiveAudioComponent = nullptr;
 
@@ -547,4 +608,13 @@ private:
 
 	UPROPERTY(Transient)
 	TObjectPtr<UPostProcessComponent> DiscoPostProcessComponent = nullptr;
+
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UStaticMeshComponent>> ShockwaveRingSegments;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInstanceDynamic> ShockwaveRingMaterial = nullptr;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UPointLightComponent> ShockwaveFlashPointLight = nullptr;
 };

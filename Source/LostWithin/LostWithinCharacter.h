@@ -7,6 +7,7 @@
 #include "Logging/LogMacros.h"
 #include "LostWithinCharacter.generated.h"
 
+class UAudioComponent;
 class UCameraComponent;
 class UInputAction;
 class UInputComponent;
@@ -14,6 +15,7 @@ class UInputMappingContext;
 class UInventoryComponent;
 class UInventoryWidget;
 class USkeletalMeshComponent;
+class USoundBase;
 class USpringArmComponent;
 struct FHitResult;
 struct FInputActionValue;
@@ -146,6 +148,58 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="UI")
 	TSubclassOf<UInventoryWidget> InventoryWidgetClass;
 
+	/** Footstep sound variations played while walking, running, or sprinting */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Audio|Character")
+	TArray<TObjectPtr<USoundBase>> FootstepSounds;
+
+	/** Landing sound variations played when touching down from a jump or fall */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Audio|Character")
+	TArray<TObjectPtr<USoundBase>> LandingSounds;
+
+	/** Quietest footstep loudness when walking ([Left Shift] / crouched) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Audio|Character", meta = (ClampMin = "0.0", ClampMax = "4.0"))
+	float WalkStepVolume = 0.175f;
+
+	/** Medium footstep loudness during normal running */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Audio|Character", meta = (ClampMin = "0.0", ClampMax = "4.0"))
+	float RunStepVolume = 0.325f;
+
+	/** Loudest footstep loudness while sprinting ([Left Ctrl]) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Audio|Character", meta = (ClampMin = "0.0", ClampMax = "4.0"))
+	float SprintStepVolume = 0.50f;
+
+	/** Time between footstep sounds while walking */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Audio|Character", meta = (ClampMin = "0.05", Units = "s"))
+	float WalkStepInterval = 0.58f;
+
+	/** Time between footstep sounds during normal running */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Audio|Character", meta = (ClampMin = "0.05", Units = "s"))
+	float RunStepInterval = 0.42f;
+
+	/** Time between footstep sounds while sprinting */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Audio|Character", meta = (ClampMin = "0.05", Units = "s"))
+	float SprintStepInterval = 0.30f;
+
+	/** Volume multiplier for landing SFX */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Audio|Character", meta = (ClampMin = "0.0", ClampMax = "4.0"))
+	float LandingSoundVolume = 0.85f;
+
+	/** If true, plays ExplorationBGMTracks sequentially in a rotating loop */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Audio|BGM")
+	bool bEnableExplorationBGM = true;
+
+	/** Exploration BGM tracks played sequentially in a rotating loop */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Audio|BGM")
+	TArray<TObjectPtr<USoundBase>> ExplorationBGMTracks;
+
+	/** Base volume multiplier for exploration BGM */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Audio|BGM", meta = (ClampMin = "0.0", ClampMax = "4.0"))
+	float ExplorationBGMVolume = 0.35f;
+
+	/** Fade speed when pausing/resuming exploration BGM for the Oiiai cat spin sequence */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Audio|BGM", meta = (ClampMin = "0.1"))
+	float ExplorationBGMFadeSpeed = 2.0f;
+
 public:
 
 	ALostWithinCharacter();
@@ -159,6 +213,7 @@ protected:
 public:
 
 	virtual void Tick(float DeltaTime) override;
+	virtual void Landed(const FHitResult& Hit) override;
 
 protected:
 
@@ -273,19 +328,57 @@ private:
 	UFUNCTION()
 	void HandleInventoryCloseRequested();
 
+	/** Ensures default footstep, landing, and exploration BGM assets are loaded with looping disabled */
+	void EnsureDefaultAudioAssets();
+
+	/** Drives periodic footstep SFX scaled cleanly across Walk, Run, and Sprint gaits */
+	void UpdateFootstepAudio(float DeltaTime);
+
+	/** Plays a non-repeating random sound at the character's feet with randomized pitch */
+	void PlayRandomSoundAtFeet(const TArray<TObjectPtr<USoundBase>>& Sounds, int32& InOutLastIndex, float VolumeMultiplier, float MinPitch, float MaxPitch);
+
+	/** Computes the effective BGM volume multiplier from base volume and active fade factor */
+	float GetEffectiveExplorationBGMVolume() const;
+
+	/** Initializes and starts sequential exploration BGM playback for the local player */
+	void StartExplorationBGM();
+
+	/** Stops and cleans up the exploration BGM audio component */
+	void StopExplorationBGM();
+
+	/** Fades and pauses exploration BGM while the Oiiai cat spin music is playing */
+	void UpdateExplorationBGM(float DeltaTime);
+
+	/** Starts playing ExplorationBGMTracks[CurrentBGMTrackIndex] */
+	void PlayCurrentExplorationBGMTrack();
+
+	/** Advances to the next exploration BGM track in sequence when the current track ends */
+	UFUNCTION()
+	void HandleExplorationBGMFinished();
+
 	UPROPERTY(Transient)
 	TObjectPtr<UInputMappingContext> RuntimeExtraMappingContext = nullptr;
 
 	UPROPERTY(Transient)
 	TObjectPtr<UInventoryWidget> InventoryWidget = nullptr;
 
+	UPROPERTY(Transient)
+	TObjectPtr<UAudioComponent> ExplorationBGMComponent = nullptr;
+
 	FVector DefaultFirstPersonMeshRelativeLocation = FVector::ZeroVector;
 	FVector DefaultThirdPersonBoomRelativeLocation = FVector::ZeroVector;
 	FVector CurrentHitPunchOffset = FVector::ZeroVector;
 
 	float CurrentCrouchCameraOffset = 0.0f;
+	float FootstepTimer = 0.0f;
+	int32 LastFootstepSoundIndex = INDEX_NONE;
+	int32 LastLandingSoundIndex = INDEX_NONE;
+	int32 CurrentBGMTrackIndex = 0;
+	float CurrentBGMVolumeFactor = 1.0f;
 	bool bIsThirdPerson = false;
 	bool bIsInventoryOpen = false;
 	bool bIsWalking = false;
 	bool bIsSprintingHeld = false;
+	bool bBGMPausedForCatSpin = false;
+	bool bSuppressBGMFinishedAdvance = false;
 };
