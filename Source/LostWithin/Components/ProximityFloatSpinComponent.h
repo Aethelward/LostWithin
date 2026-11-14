@@ -1,0 +1,550 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+#pragma once
+
+#include "CoreMinimal.h"
+#include "Components/ActorComponent.h"
+#include "Interaction/InteractableInterface.h"
+#include "ProximityFloatSpinComponent.generated.h"
+
+class APickupItemActor;
+class UAnimationAsset;
+class UAudioComponent;
+class UExponentialHeightFogComponent;
+class ULightComponent;
+class UPointLightComponent;
+class UPostProcessComponent;
+class USceneComponent;
+class USkeletalMesh;
+class USkeletalMeshComponent;
+class USkyAtmosphereComponent;
+class USkyLightComponent;
+class USoundAttenuation;
+class USoundBase;
+class USphereComponent;
+class USpotLightComponent;
+
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnProximityFloatStateChanged, bool, bIsActive);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnCatInteracted, int32, NewInteractionCount);
+
+/**
+ *  Inclusive elapsed-time window (seconds after trigger) during which spinning is active.
+ */
+USTRUCT(BlueprintType)
+struct FSpinTimeWindow
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin", meta = (ClampMin = "0.0", Units = "s"))
+	float StartTime = 0.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin", meta = (ClampMin = "0.0", Units = "s"))
+	float EndTime = 0.0f;
+
+	/** Multiplier applied to SpinSpeed during this window */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin", meta = (ClampMin = "0.0"))
+	float SpinSpeedMultiplier = 1.0f;
+};
+
+/**
+ *  Smoothly floats and spins the owning actor midair when the player pawn approaches within ActivationRadius,
+ *  drives a morph target based on an outer vicinity check (default 1.0 when far, 0.0 when closer) and spin state,
+ *  performs a pre-spin jump, floats strictly while spinning, and plays 3D spatialized audio attached to the owner.
+ */
+UCLASS(ClassGroup=(Custom), meta=(BlueprintSpawnableComponent))
+class LOSTWITHIN_API UProximityFloatSpinComponent : public UActorComponent, public IInteractableInterface
+{
+	GENERATED_BODY()
+
+public:
+	UProximityFloatSpinComponent();
+
+	/** Inner distance from the resting position at which the jump, timed spin, and 3D audio trigger */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Proximity", meta = (ClampMin = "0.0", Units = "cm"))
+	float ActivationRadius = 250.0f;
+
+	/** Distance at which floating deactivates if bStayActiveOnceTriggered is false */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Proximity", meta = (ClampMin = "0.0", Units = "cm"))
+	float DeactivationRadius = 350.0f;
+
+	/** If true, once triggered the actor continues floating even if the player leaves */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Proximity")
+	bool bStayActiveOnceTriggered = true;
+
+	/** Target height above the resting Z position when active */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Motion", meta = (Units = "cm"))
+	float FloatHeight = 85.0f;
+
+	/** Vertical sine-wave bobbing amplitude while floating */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Motion", meta = (ClampMin = "0.0", Units = "cm"))
+	float BobAmplitude = 12.0f;
+
+	/** Vertical bobbing frequency in cycles per second */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Motion", meta = (ClampMin = "0.0", Units = "Hz"))
+	float BobFrequency = 0.8f;
+
+	/** Yaw rotation speed when spinning is active */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Motion", meta = (Units = "deg/s"))
+	float SpinSpeed = 1440.0f;
+
+	/** Interpolation speed for rising into the floating state */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Motion", meta = (ClampMin = "0.1"))
+	float BlendSpeed = 4.0f;
+
+	/** Downward gravity acceleration applied immediately when spinning stops so the actor drops rapidly to ground */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Motion", meta = (ClampMin = "1.0", Units = "cm/s^2"))
+	float FallGravity = 980.0f;
+
+	/** If true, performs an upward hop before spinning and returns to the ground */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Jump")
+	bool bJumpBeforeSpin = true;
+
+	/** Peak vertical offset above the ground during the pre-spin jump */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Jump", meta = (ClampMin = "0.0", Units = "cm", EditCondition = "bJumpBeforeSpin"))
+	float JumpHeight = 70.0f;
+
+	/** Duration of the pre-spin jump arc (seconds; matches 0.27s pre-spin beat by default) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Jump", meta = (ClampMin = "0.01", Units = "s", EditCondition = "bJumpBeforeSpin"))
+	float JumpDuration = 0.27f;
+
+	/** If true, jumps right before every SpinTimeWindows entry instead of only on initial trigger */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Jump", meta = (EditCondition = "bJumpBeforeSpin"))
+	bool bJumpBeforeEverySpinWindow = false;
+
+	/** If true, spinning only occurs during SpinTimeWindows (measured in seconds since trigger) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Timing")
+	bool bUseSpinTimeWindows = true;
+
+	/** Time ranges (seconds after trigger) during which aggressive spinning is active */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Timing", meta = (EditCondition = "bUseSpinTimeWindows"))
+	TArray<FSpinTimeWindow> SpinTimeWindows;
+
+	/** If true, resets Z (Yaw) rotation back to its initial resting orientation whenever spinning stops */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Timing")
+	bool bResetRotationWhenSpinStops = true;
+
+	/** Drive the skeletal mesh morph target directly (0 = idle, 1 = spinning) instead of playing a looping AnimSequence */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Morph Animation")
+	bool bDriveSpinMorphTarget = true;
+
+	/** Morph target name on the skeletal mesh (oiiaioooooiai_cat uses oiiaioooooiai_cat_mesh_0_0_MorphTarget) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Morph Animation", meta = (EditCondition = "bDriveSpinMorphTarget"))
+	FName SpinMorphTargetName = TEXT("oiiaioooooiai_cat_mesh_0_0_MorphTarget");
+
+	/** Morph target weight when inactive (player is inside MorphVicinityRadius and not spinning) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Morph Animation", meta = (ClampMin = "0.0", ClampMax = "1.0", EditCondition = "bDriveSpinMorphTarget"))
+	float InactiveMorphWeight = 0.0f;
+
+	/** Morph target weight when active (default/far from player, or while spinning) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Morph Animation", meta = (ClampMin = "0.0", ClampMax = "1.0", EditCondition = "bDriveSpinMorphTarget"))
+	float ActiveMorphWeight = 1.0f;
+
+	/** Blend speed for morph target transitions (0 = instant snap on beat) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Morph Animation", meta = (ClampMin = "0.0", EditCondition = "bDriveSpinMorphTarget"))
+	float MorphBlendSpeed = 8.0f;
+
+	/** If true, uses an outer vicinity check where far = ActiveMorphWeight (default) and close = InactiveMorphWeight */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Morph Animation", meta = (EditCondition = "bDriveSpinMorphTarget"))
+	bool bUseMorphVicinityCheck = true;
+
+	/** Outer vicinity distance at which the morph switches from active (1.0) to inactive (0.0); larger than ActivationRadius */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Morph Animation", meta = (ClampMin = "0.0", Units = "cm", EditCondition = "bDriveSpinMorphTarget && bUseMorphVicinityCheck"))
+	float MorphVicinityRadius = 800.0f;
+
+	/** Outer vicinity distance at which the morph switches back to active (1.0) when the player moves away */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Morph Animation", meta = (ClampMin = "0.0", Units = "cm", EditCondition = "bDriveSpinMorphTarget && bUseMorphVicinityCheck"))
+	float MorphVicinityDeactivationRadius = 850.0f;
+
+	/** Vertical Z offset applied to the skeletal mesh in the active morph state (far from player); inactive morph inside vicinity uses 0 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Morph Animation", meta = (Units = "cm", EditCondition = "bDriveSpinMorphTarget && bUseMorphVicinityCheck"))
+	float ActiveMorphMeshZOffset = -15.0f;
+
+	/** Blend speed for lowering/raising the skeletal mesh between active and inactive morph states */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Morph Animation", meta = (ClampMin = "0.1", EditCondition = "bDriveSpinMorphTarget && bUseMorphVicinityCheck"))
+	float MorphHeightBlendSpeed = 8.0f;
+
+	/** If true, forces ActiveMorphWeight during active spin windows even while inside MorphVicinityRadius */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Morph Animation", meta = (EditCondition = "bDriveSpinMorphTarget"))
+	bool bActiveMorphWhileSpinning = true;
+
+	/** Skeletal mesh displayed by this actor (e.g., oiiaioooooiai_cat) if the owner has no SkeletalMeshComponent */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Visuals")
+	TObjectPtr<USkeletalMesh> StandbySkeletalMesh = nullptr;
+
+	/** Optional animation used only when bDriveSpinMorphTarget is false */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Visuals", meta = (EditCondition = "!bDriveSpinMorphTarget"))
+	TObjectPtr<UAnimationAsset> StandbyAnimation = nullptr;
+
+	/** Whether StandbyAnimation loops while idle (when bDriveSpinMorphTarget is false) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Visuals", meta = (EditCondition = "!bDriveSpinMorphTarget"))
+	bool bLoopStandbyAnimation = true;
+
+	/** If true, stops StandbyAnimation while spinning (when bDriveSpinMorphTarget is false) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Visuals", meta = (EditCondition = "!bDriveSpinMorphTarget"))
+	bool bStopAnimationWhileSpinning = true;
+
+	/** Relative offset applied when spawning the runtime skeletal mesh component */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Visuals")
+	FTransform StandbyMeshOffset = FTransform::Identity;
+
+	/** Hides any attached child mesh actors on the owner at BeginPlay (useful for hiding leftover Maxwell child actors) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Visuals")
+	bool bHideAttachedChildActors = true;
+
+	/** 3D music asset to play attached to this actor when triggered */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Audio")
+	TObjectPtr<USoundBase> TriggerMusic = nullptr;
+
+	/** Optional attenuation asset for 3D music; if unset, uses MusicInnerRadius and MusicFalloffDistance */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Audio")
+	TObjectPtr<USoundAttenuation> MusicAttenuation = nullptr;
+
+	/** Full-volume sphere radius around the actor when MusicAttenuation is unset */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Audio", meta = (ClampMin = "0.0", Units = "cm", EditCondition = "MusicAttenuation == nullptr"))
+	float MusicInnerRadius = 250.0f;
+
+	/** Distance over which 3D music attenuates to silence when MusicAttenuation is unset */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Audio", meta = (ClampMin = "1.0", Units = "cm", EditCondition = "MusicAttenuation == nullptr"))
+	float MusicFalloffDistance = 1800.0f;
+
+	/** If true, replays TriggerMusic from the start when it finishes and resets the spin timeline */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Audio")
+	bool bLoopMusic = false;
+
+	/** Volume multiplier for TriggerMusic */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Audio", meta = (ClampMin = "0.0", ClampMax = "4.0"))
+	float MusicVolume = 1.0f;
+
+	/** Optional fade-in duration when TriggerMusic starts (0.0 for immediate start) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Audio", meta = (ClampMin = "0.0", Units = "s"))
+	float MusicFadeInDuration = 0.0f;
+
+	/** If bStayActiveOnceTriggered is false, whether to fade out music when player leaves */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Audio")
+	bool bStopMusicOnDeactivate = true;
+
+	/** Automatically switch Static components on the owner and attached child actors to Movable at BeginPlay */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Setup")
+	bool bAutoSetHierarchyMovable = true;
+
+	/** Automatically disable any existing URotatingMovementComponent on the owner at BeginPlay */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Setup")
+	bool bDisableExistingRotatingMovement = true;
+
+	/** Draw debug spheres in PIE to visualize ActivationRadius and DeactivationRadius */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Debug")
+	bool bDrawDebugRadius = false;
+
+	/** If true, spinning triggers after SpinTriggerInteractionThreshold [F] interactions instead of near-distance proximity */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Interaction")
+	bool bTriggerSpinByInteractionCount = true;
+
+	/** Number of [F] interactions required to trigger the spin sequence (replaces inner near-distance trigger) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Interaction", meta = (ClampMin = "1", EditCondition = "bTriggerSpinByInteractionCount"))
+	int32 SpinTriggerInteractionThreshold = 20;
+
+	/** Number of [F] interactions required before the cat drops a placeholder pickup item */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Interaction", meta = (ClampMin = "1"))
+	int32 ItemDropInteractionThreshold = 5;
+
+	/** Vertical bounce height when hit via [LMB] */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Interaction", meta = (ClampMin = "0.0", Units = "cm"))
+	float InteractionBounceHeight = 45.0f;
+
+	/** Duration of each [LMB] hit bounce arc */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Interaction", meta = (ClampMin = "0.01", Units = "s"))
+	float InteractionBounceDuration = 0.35f;
+
+	/** Fractional vertical compression at the peak of an [F] petting squeeze (0.22 = squishes to 78% Z height) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Interaction", meta = (ClampMin = "0.0", ClampMax = "0.75"))
+	float InteractionSqueezeScaleZ = 0.22f;
+
+	/** Fractional X/Y expansion at the peak of an [F] petting squeeze for squash-and-stretch volume preservation */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Interaction", meta = (ClampMin = "0.0", ClampMax = "0.5"))
+	float InteractionSqueezeHorizontalExpand = 0.08f;
+
+	/** Duration of each [F] petting squeeze pulse */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Interaction", meta = (ClampMin = "0.01", Units = "s"))
+	float InteractionSqueezeDuration = 0.28f;
+
+	/** If true, smoothly darkens sky atmosphere, horizon fog, and world lights starting on SkyDarkenStartWindowIndex */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Sky & Lighting")
+	bool bDarkenSkyOnSpinWindow = true;
+
+	/** 0-based index into SpinTimeWindows where smooth sky darkening begins (1 = 2nd spin window: 3.12s - 5.10s) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Sky & Lighting", meta = (ClampMin = "0", EditCondition = "bDarkenSkyOnSpinWindow"))
+	int32 SkyDarkenStartWindowIndex = 1;
+
+	/** Target SkyAtmosphere luminance multiplier when fully darkened (0.015 = deep night sky) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Sky & Lighting", meta = (ClampMin = "0.0", ClampMax = "1.0", EditCondition = "bDarkenSkyOnSpinWindow"))
+	float SkyDarkenTargetAtmosphereMultiplier = 0.015f;
+
+	/** Target ExponentialHeightFog inscattering multiplier when fully darkened */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Sky & Lighting", meta = (ClampMin = "0.0", ClampMax = "1.0", EditCondition = "bDarkenSkyOnSpinWindow"))
+	float SkyDarkenTargetFogMultiplier = 0.03f;
+
+	/** Target Directional/Sky light intensity multiplier when fully darkened */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Sky & Lighting", meta = (ClampMin = "0.0", ClampMax = "1.0", EditCondition = "bDarkenSkyOnSpinWindow"))
+	float SkyDarkenTargetWorldLightMultiplier = 0.06f;
+
+	/** Smooth interpolation speed when restoring daylight after the floatspin sequence completes */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Sky & Lighting", meta = (ClampMin = "0.1", EditCondition = "bDarkenSkyOnSpinWindow"))
+	float SkyRestoreSpeed = 1.5f;
+
+	/** If true, transforms the surrounding environment into a disco during the configured spin window */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Disco")
+	bool bEnableDiscoEnvironmentOnSpinWindow = true;
+
+	/** 0-based index into SpinTimeWindows that activates disco lights & post-processing (2 = 3rd spin window: 6.06s - 43.84s) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Disco", meta = (ClampMin = "0", EditCondition = "bEnableDiscoEnvironmentOnSpinWindow"))
+	int32 DiscoSpinWindowIndex = 2;
+
+	/** Number of sweeping colored spotlights spawned above the cat during disco mode */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Disco", meta = (ClampMin = "1", ClampMax = "12", EditCondition = "bEnableDiscoEnvironmentOnSpinWindow"))
+	int32 DiscoSpotlightCount = 6;
+
+	/** Rotation speed of the sweeping disco spotlight rig */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Disco", meta = (Units = "deg/s", EditCondition = "bEnableDiscoEnvironmentOnSpinWindow"))
+	float DiscoOrbitSpeed = 240.0f;
+
+	/** HSV hue cycles per second across the disco lights */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Disco", meta = (ClampMin = "0.0", EditCondition = "bEnableDiscoEnvironmentOnSpinWindow"))
+	float DiscoColorCycleSpeed = 1.35f;
+
+	/** Beat pulse frequency in cycles per second for disco lights and post-processing */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Disco", meta = (ClampMin = "0.0", Units = "Hz", EditCondition = "bEnableDiscoEnvironmentOnSpinWindow"))
+	float DiscoPulseFrequency = 7.5f;
+
+	/** Base intensity (candelas) of each overhead disco spotlight (6250 = 25% of original 25000 cd) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Disco", meta = (ClampMin = "0.0", EditCondition = "bEnableDiscoEnvironmentOnSpinWindow"))
+	float DiscoSpotlightIntensity = 6250.0f;
+
+	/** Extra height above FloatHeight at which the overhead disco rig is suspended */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Disco", meta = (ClampMin = "0.0", Units = "cm", EditCondition = "bEnableDiscoEnvironmentOnSpinWindow"))
+	float DiscoRigHeightAboveFloat = 160.0f;
+
+	/** Intensity fraction of DiscoSpotlightIntensity used by the overhead central fill light */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Disco", meta = (ClampMin = "0.0", ClampMax = "1.0", EditCondition = "bEnableDiscoEnvironmentOnSpinWindow"))
+	float DiscoFillIntensityMultiplier = 0.15f;
+
+	/** Attenuation radius for disco spotlights and central fill light */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Disco", meta = (ClampMin = "100.0", Units = "cm", EditCondition = "bEnableDiscoEnvironmentOnSpinWindow"))
+	float DiscoLightAttenuationRadius = 1600.0f;
+
+	/** Radius of the query-only trace sphere added to the owner for [F]/[LMB] targeting when no mesh collision exists */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Interaction", meta = (ClampMin = "10.0", Units = "cm"))
+	float InteractionTraceRadius = 55.0f;
+
+	/** Sound assets played at random on [F] interaction; auto-populated from InteractionSoundSearchPaths if empty */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Interaction")
+	TArray<TObjectPtr<USoundBase>> InteractionSounds;
+
+	/** Content paths searched at BeginPlay to gather cat SFX assets (e.g. MetaSound/Cat/*) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Interaction")
+	TArray<FName> InteractionSoundSearchPaths;
+
+	/** Volume multiplier for cat meow SFX played on interaction/hit */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Interaction", meta = (ClampMin = "0.0", ClampMax = "4.0"))
+	float InteractionSoundVolume = 0.5f;
+
+	/** Actor class spawned when InteractionCount reaches ItemDropInteractionThreshold */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Interaction")
+	TSubclassOf<APickupItemActor> DropItemClass;
+
+	/** Broadcast whenever proximity activation state changes */
+	UPROPERTY(BlueprintAssignable, Category = "Float & Spin|Events")
+	FOnProximityFloatStateChanged OnProximityFloatStateChanged;
+
+	/** Broadcast whenever the cat is interacted with via [F] */
+	UPROPERTY(BlueprintAssignable, Category = "Float & Spin|Events")
+	FOnCatInteracted OnCatInteracted;
+
+	/** Returns true if currently active */
+	UFUNCTION(BlueprintPure, Category = "Float & Spin")
+	bool IsFloatSpinActive() const { return bIsActive; }
+
+	/** Returns the number of times the player has interacted with the cat via [F] */
+	UFUNCTION(BlueprintPure, Category = "Float & Spin|Interaction")
+	int32 GetInteractionCount() const { return InteractionCount; }
+
+	//~ Begin IInteractableInterface
+	virtual void OnInteract_Implementation(AActor* Interactor) override;
+	virtual void OnHit_Implementation(AActor* Attacker, const FHitResult& HitResult) override;
+	virtual FText GetInteractionPrompt_Implementation() const override;
+	virtual bool CanInteract_Implementation(AActor* Interactor) const override;
+	//~ End IInteractableInterface
+
+protected:
+	virtual void BeginPlay() override;
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+
+public:
+	virtual void TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
+
+private:
+	/** Ensures the owner and all recursively attached child actors use Movable mobility */
+	void EnsureHierarchyMovable(AActor* Owner) const;
+
+	/** Deactivates any URotatingMovementComponent on the owner so it does not spin unconditionally */
+	void DisableConflictingRotatingMovement(AActor* Owner) const;
+
+	/** Initializes or spawns the skeletal mesh component and hides leftover attached child actors if configured */
+	void InitializeVisualMeshes(AActor* Owner);
+
+	/** Switches between the idle animation and static spinning pose when bDriveSpinMorphTarget is false */
+	void UpdateSpinAnimationState(bool bIsSpinning);
+
+	/** Drives SpinMorphTargetName based on outer vicinity state and active spin state */
+	void UpdateSpinMorphTarget(bool bIsSpinning, float DeltaTime);
+
+	/** Smoothly lowers/raises the skeletal mesh Z offset and applies floor-anchored squeeze compensation */
+	void UpdateVicinityMeshHeight(bool bIsSpinning, float JumpOffset, float SqueezeFraction, float DeltaTime);
+
+	/** Evaluates outer vicinity distance to player pawn for morph switching */
+	void UpdateMorphVicinityState(const APawn* PlayerPawn);
+
+	/** Evaluates inner trigger distance to player pawn and updates bIsActive / audio trigger */
+	void UpdateProximityState(AActor* Owner, const APawn* PlayerPawn);
+
+	/** Activates floating, spinning, and TriggerMusic */
+	void TriggerSpinSequence(AActor* Owner);
+
+	/** Loads all USoundBase assets found in InteractionSoundSearchPaths when InteractionSounds is empty */
+	void LoadInteractionSounds();
+
+	/** Plays a random 3D sound from InteractionSounds at the owner's location */
+	void PlayRandomInteractionSound(AActor* Owner) const;
+
+	/** Triggers a short parabolic bounce in response to [LMB] hit */
+	void TriggerInteractionBounce();
+
+	/** Triggers a brief vertical squash animation in response to [F] petting */
+	void TriggerInteractionSqueeze();
+
+	/** Advances or clears the [F] petting squash animation and returns current fractional squeeze [0..1] */
+	float UpdateInteractionSqueeze(AActor* Owner, float DeltaTime);
+
+	/** Immediately restores base mesh/actor scale and clears any active squeeze animation */
+	void ResetInteractionSqueeze(AActor* Owner);
+
+	/** Updates smooth sky/fog/world light darkening from the 2nd spin window through sequence completion */
+	void UpdateSkyDarkening(float DeltaTime);
+
+	/** Caches original sky atmosphere, fog, and non-static directional/sky lights before modifying them */
+	void CacheWorldSkyAndLights();
+
+	/** Applies interpolated sky darkness alpha [0..1] across all cached world atmosphere/light components */
+	void ApplyWorldSkyDarkness(float Alpha);
+
+	/** Restores all cached sky atmosphere, fog, and world lights to their exact original values */
+	void RestoreWorldSkyAndLights();
+
+	/** Spawns or cleans up overhead disco spotlights and post-process effects */
+	void SetDiscoEnvironmentActive(AActor* Owner, bool bActivate);
+
+	/** Animates sweeping multi-color overhead spotlights and post-process beat pulse during the disco spin window */
+	void UpdateDiscoEnvironment(AActor* Owner, bool bShouldBeActive, float DeltaTime);
+
+	/** Spawns the placeholder pickup item in front of the cat toward Interactor */
+	void SpawnDroppedItem(AActor* Owner, AActor* Interactor);
+
+	/** Computes parabolic pre-spin jump Z offset for the given elapsed trigger time */
+	float ComputeJumpOffset(float TimeSeconds) const;
+
+	/** Evaluates whether TimeSeconds is inside a spin window and outputs its speed multiplier and window index */
+	float GetActiveSpinSpeedMultiplier(float TimeSeconds, bool& bOutIsSpinning, int32& OutWindowIndex) const;
+
+	/** Returns true if TimeSeconds falls inside any configured SpinTimeWindows entry */
+	bool IsWithinSpinWindow(float TimeSeconds) const;
+
+	/** Spawns and starts 3D spatialized music attached to the owner's root component */
+	void StartTriggerMusic(AActor* Owner);
+
+	/** Stops and cleans up any active 3D music component */
+	void StopTriggerMusic();
+
+	/** Loops TriggerMusic and resets the spin timeline if bLoopMusic is enabled */
+	UFUNCTION()
+	void HandleMusicFinished();
+
+	/** Applies interpolated height, sine bobbing, timed yaw spin, and morph/animation state to the owner */
+	void ApplyFloatAndSpinTransform(AActor* Owner, float DeltaTime);
+
+	FVector BaseLocation = FVector::ZeroVector;
+	FRotator BaseRotation = FRotator::ZeroRotator;
+	FVector BaseActorScale3D = FVector::OneVector;
+	FVector BaseMeshRelativeLocation = FVector::ZeroVector;
+	FVector BaseMeshRelativeScale3D = FVector::OneVector;
+	float MeshPivotHeightAboveBottom = 0.0f;
+	float ActorPivotHeightAboveBottom = 0.0f;
+
+	bool bIsActive = false;
+	bool bHasTriggered = false;
+	bool bIsInMorphVicinity = false;
+	bool bSettledAtRest = true;
+	bool bWasSpinningLastTick = false;
+	bool bOwnsRuntimeSkeletalMesh = false;
+	float CurrentHoverHeight = 0.0f;
+	float FallVelocity = 0.0f;
+	float CurrentVicinityZOffset = 0.0f;
+	float CurrentMorphWeight = 0.0f;
+	float BobPhase = 0.0f;
+	float ElapsedTriggeredTime = 0.0f;
+	float CurrentSpinOffsetYaw = 0.0f;
+
+	int32 InteractionCount = 0;
+	bool bHasDroppedItem = false;
+	bool bIsInteractionBouncing = false;
+	float InteractionBounceElapsed = 0.0f;
+	bool bIsInteractionSqueezing = false;
+	float InteractionSqueezeElapsed = 0.0f;
+	float CurrentSqueezeFraction = 0.0f;
+
+	enum class ECachedAtmosphereTargetType : uint8
+	{
+		DirectionalLight,
+		SkyLight,
+		SkyAtmosphere,
+		ExponentialHeightFog
+	};
+
+	struct FCachedWorldSkyAndLightState
+	{
+		ECachedAtmosphereTargetType TargetType = ECachedAtmosphereTargetType::DirectionalLight;
+		TWeakObjectPtr<ULightComponent> LightComponent;
+		TWeakObjectPtr<USkyLightComponent> SkyLightComponent;
+		TWeakObjectPtr<USkyAtmosphereComponent> SkyAtmosphereComponent;
+		TWeakObjectPtr<UExponentialHeightFogComponent> ExponentialFogComponent;
+		float OriginalIntensity = 1.0f;
+		FLinearColor OriginalPrimaryColor = FLinearColor::White;
+		FLinearColor OriginalSecondaryColor = FLinearColor::White;
+	};
+
+	TArray<FCachedWorldSkyAndLightState> CachedWorldSkyAndLights;
+	bool bWorldSkyAndLightsCached = false;
+	float CurrentSkyDarknessAlpha = 0.0f;
+	bool bIsDiscoActive = false;
+	float DiscoElapsedTime = 0.0f;
+	float DiscoOrbitYaw = 0.0f;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UAudioComponent> ActiveAudioComponent = nullptr;
+
+	UPROPERTY(Transient)
+	TObjectPtr<USkeletalMeshComponent> RuntimeSkeletalMeshComponent = nullptr;
+
+	UPROPERTY(Transient)
+	TObjectPtr<USphereComponent> InteractionTraceSphere = nullptr;
+
+	UPROPERTY(Transient)
+	TObjectPtr<USceneComponent> DiscoRigPivot = nullptr;
+
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<USpotLightComponent>> DiscoSpotlights;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UPointLightComponent> DiscoFillPointLight = nullptr;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UPostProcessComponent> DiscoPostProcessComponent = nullptr;
+};

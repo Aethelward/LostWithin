@@ -12,6 +12,9 @@
 
 AHorrorCharacter::AHorrorCharacter()
 {
+	// Horror variant manages its own stamina-based Walk/Sprint speeds
+	bUseCustomMovementSpeeds = false;
+
 	// create the spotlight
 	SpotLight = CreateDefaultSubobject<USpotLightComponent>(TEXT("SpotLight"));
 	SpotLight->SetupAttachment(GetFirstPersonCameraComponent());

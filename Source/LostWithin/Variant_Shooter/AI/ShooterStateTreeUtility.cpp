@@ -6,7 +6,9 @@
 #include "ShooterNPC.h"
 #include "Camera/CameraComponent.h"
 #include "AIController.h"
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 #include "Perception/AIPerceptionComponent.h"
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 #include "ShooterAIController.h"
 #include "StateTreeAsyncExecutionContext.h"
 

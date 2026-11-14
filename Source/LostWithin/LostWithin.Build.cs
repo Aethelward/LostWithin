@@ -18,13 +18,19 @@ public class LostWithin : ModuleRules
 			"StateTreeModule",
 			"GameplayStateTreeModule",
 			"UMG",
-			"Slate"
+			"Slate",
+			"SlateCore",
+			"AssetRegistry"
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[] { });
 
 		PublicIncludePaths.AddRange(new string[] {
 			"LostWithin",
+			"LostWithin/Components",
+			"LostWithin/Interaction",
+			"LostWithin/Inventory",
+			"LostWithin/UI",
 			"LostWithin/Variant_Horror",
 			"LostWithin/Variant_Horror/UI",
 			"LostWithin/Variant_Shooter",

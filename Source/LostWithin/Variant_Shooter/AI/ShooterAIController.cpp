@@ -4,7 +4,9 @@
 #include "Variant_Shooter/AI/ShooterAIController.h"
 #include "ShooterNPC.h"
 #include "Components/StateTreeAIComponent.h"
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 #include "Perception/AIPerceptionComponent.h"
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 #include "Navigation/PathFollowingComponent.h"
 #include "AI/Navigation/PathFollowingAgentInterface.h"
 
