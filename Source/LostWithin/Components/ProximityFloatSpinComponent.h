@@ -28,6 +28,28 @@ class UStaticMeshComponent;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnProximityFloatStateChanged, bool, bIsActive);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnCatInteracted, int32, NewInteractionCount);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnDirectedPathWaypointReached, int32, WaypointIndex);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnDirectedPathCompleted);
+
+/**
+ *  Controls when the cat automatically begins moving along PathWaypoints.
+ */
+UENUM(BlueprintType)
+enum class EDirectedPathTriggerMode : uint8
+{
+	/** Only moves when started explicitly via StartDirectedPath / StartDirectedPathWithWaypoints / MoveToDirectedLocation */
+	Manual UMETA(DisplayName = "Manual (Blueprint / C++ Call)"),
+	/** Starts following PathWaypoints immediately at BeginPlay */
+	OnBeginPlay UMETA(DisplayName = "On BeginPlay"),
+	/** Starts following PathWaypoints on the player's first [LMB] interaction */
+	OnFirstInteract UMETA(DisplayName = "On First Interact"),
+	/** Starts following PathWaypoints when InteractionCount drops the item */
+	OnItemDropped UMETA(DisplayName = "On Item Dropped"),
+	/** Starts following PathWaypoints when the float/spin sequence triggers */
+	OnSpinTriggered UMETA(DisplayName = "On Spin Triggered"),
+	/** Starts following PathWaypoints once when the float/spin sequence reaches DirectedPathSpinWindowIndex */
+	OnSpinWindow UMETA(DisplayName = "On Spin Window Start")
+};
 
 /**
  *  Inclusive elapsed-time window (seconds after trigger) during which spinning is active.
@@ -237,35 +259,87 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Debug")
 	bool bDrawDebugRadius = false;
 
-	/** If true, spinning triggers after SpinTriggerInteractionThreshold [F] interactions instead of near-distance proximity */
+	/** Draw debug waypoint markers and path lines in PIE */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Debug")
+	bool bDrawDebugPath = false;
+
+	/** Enable directed waypoint movement along PathWaypoints */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Path")
+	bool bEnableDirectedPath = false;
+
+	/** Controls when the cat automatically begins moving along PathWaypoints */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Path")
+	EDirectedPathTriggerMode DirectedPathTriggerMode = EDirectedPathTriggerMode::OnSpinWindow;
+
+	/** Zero-based SpinTimeWindows entry whose StartTime triggers the directed path once (2 = 3rd spin start at 6.06s by default) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Path", meta = (ClampMin = "0", EditCondition = "DirectedPathTriggerMode == EDirectedPathTriggerMode::OnSpinWindow"))
+	int32 DirectedPathSpinWindowIndex = 2;
+
+	/** Ordered 3D waypoints relative to the cat's initial unscaled actor transform (editable with viewport gizmos; moves once and stops at the final waypoint) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Path", meta = (MakeEditWidget = true))
+	TArray<FVector> PathWaypoints;
+
+	/** Linear movement speed along directed path segments */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Path", meta = (ClampMin = "0.0", Units = "cm/s"))
+	float PathMoveSpeed = 150.0f;
+
+	/** Distance threshold to consider the active waypoint reached */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Path", meta = (ClampMin = "0.1", Units = "cm"))
+	float WaypointAcceptanceRadius = 5.0f;
+
+	/** Smoothly turn BaseRotation.Yaw to face the current path movement direction */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Path")
+	bool bFacePathDirection = true;
+
+	/** Angular interpolation speed when turning BaseRotation.Yaw toward the path direction */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Path", meta = (ClampMin = "0.1", EditCondition = "bFacePathDirection"))
+	float PathTurnSpeed = 6.0f;
+
+	/** Optional yaw offset added when facing the movement vector (e.g., +/-90 deg if the cat mesh forward differs from actor +X) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Path", meta = (Units = "deg", EditCondition = "bFacePathDirection"))
+	float PathFacingYawOffset = 0.0f;
+
+	/** If true, pauses advancing along PathWaypoints while the cat is actively spinning/hovering */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Path")
+	bool bPausePathWhileSpinning = false;
+
+	/** If true, performs a downward line trace to keep BaseLocation.Z aligned with ground geometry along the path */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Path")
+	bool bSnapPathToGround = false;
+
+	/** Vertical half-extent above and below the current path point used when tracing for ground geometry */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Path", meta = (ClampMin = "10.0", Units = "cm", EditCondition = "bSnapPathToGround"))
+	float GroundTraceHalfHeight = 250.0f;
+
+	/** Height offset applied above the traced ground impact point when bSnapPathToGround is enabled */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Path", meta = (Units = "cm", EditCondition = "bSnapPathToGround"))
+	float GroundHeightOffset = 0.0f;
+
+	/** Collision channel traced downward when bSnapPathToGround is enabled (defaults to WorldStatic to ignore pawns/pickups) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Path", meta = (EditCondition = "bSnapPathToGround"))
+	TEnumAsByte<ECollisionChannel> GroundTraceChannel = ECC_WorldStatic;
+
+	/** If true, spinning triggers after SpinTriggerInteractionThreshold [LMB] interactions instead of near-distance proximity */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Interaction")
 	bool bTriggerSpinByInteractionCount = true;
 
-	/** Number of [F] interactions required to trigger the spin sequence (replaces inner near-distance trigger) */
+	/** Number of [LMB] interactions required to trigger the spin sequence (replaces inner near-distance trigger) */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Interaction", meta = (ClampMin = "1", EditCondition = "bTriggerSpinByInteractionCount"))
 	int32 SpinTriggerInteractionThreshold = 20;
 
-	/** Number of [F] interactions required before the cat drops a placeholder pickup item */
+	/** Number of [LMB] interactions required before the cat drops the Fairy Tale Kitty Key pickup item */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Interaction", meta = (ClampMin = "1"))
 	int32 ItemDropInteractionThreshold = 5;
 
-	/** Vertical bounce height when hit via [LMB] */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Interaction", meta = (ClampMin = "0.0", Units = "cm"))
-	float InteractionBounceHeight = 45.0f;
-
-	/** Duration of each [LMB] hit bounce arc */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Interaction", meta = (ClampMin = "0.01", Units = "s"))
-	float InteractionBounceDuration = 0.35f;
-
-	/** Fractional vertical compression at the peak of an [F] petting squeeze (0.22 = squishes to 78% Z height) */
+	/** Fractional vertical compression at the peak of an [LMB] petting squeeze (0.22 = squishes to 78% Z height) */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Interaction", meta = (ClampMin = "0.0", ClampMax = "0.75"))
 	float InteractionSqueezeScaleZ = 0.22f;
 
-	/** Fractional X/Y expansion at the peak of an [F] petting squeeze for squash-and-stretch volume preservation */
+	/** Fractional X/Y expansion at the peak of an [LMB] petting squeeze for squash-and-stretch volume preservation */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Interaction", meta = (ClampMin = "0.0", ClampMax = "0.5"))
 	float InteractionSqueezeHorizontalExpand = 0.08f;
 
-	/** Duration of each [F] petting squeeze pulse */
+	/** Duration of each [LMB] petting squeeze pulse */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Interaction", meta = (ClampMin = "0.01", Units = "s"))
 	float InteractionSqueezeDuration = 0.28f;
 
@@ -333,11 +407,11 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Disco", meta = (ClampMin = "100.0", Units = "cm", EditCondition = "bEnableDiscoEnvironmentOnSpinWindow"))
 	float DiscoLightAttenuationRadius = 1600.0f;
 
-	/** Radius of the query-only trace sphere added to the owner for [F]/[LMB] targeting when no mesh collision exists */
+	/** Radius of the query-only trace sphere added to the owner for [LMB] interaction targeting when no mesh collision exists */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Interaction", meta = (ClampMin = "10.0", Units = "cm"))
 	float InteractionTraceRadius = 55.0f;
 
-	/** Sound assets played at random on [F] interaction; auto-populated from InteractionSoundSearchPaths if empty */
+	/** Sound assets played at random on [LMB] interaction; auto-populated from InteractionSoundSearchPaths if empty */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Interaction")
 	TArray<TObjectPtr<USoundBase>> InteractionSounds;
 
@@ -345,7 +419,7 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Interaction")
 	TArray<FName> InteractionSoundSearchPaths;
 
-	/** Volume multiplier for cat meow SFX played on interaction/hit */
+	/** Volume multiplier for cat meow SFX played on interaction */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Interaction", meta = (ClampMin = "0.0", ClampMax = "4.0"))
 	float InteractionSoundVolume = 0.25f;
 
@@ -357,9 +431,56 @@ public:
 	UPROPERTY(BlueprintAssignable, Category = "Float & Spin|Events")
 	FOnProximityFloatStateChanged OnProximityFloatStateChanged;
 
-	/** Broadcast whenever the cat is interacted with via [F] */
+	/** Broadcast whenever the cat is interacted with via [LMB] */
 	UPROPERTY(BlueprintAssignable, Category = "Float & Spin|Events")
 	FOnCatInteracted OnCatInteracted;
+
+	/** Broadcast whenever a directed path waypoint index is reached */
+	UPROPERTY(BlueprintAssignable, Category = "Float & Spin|Events")
+	FOnDirectedPathWaypointReached OnDirectedPathWaypointReached;
+
+	/** Broadcast once the cat reaches the final directed path waypoint and stops */
+	UPROPERTY(BlueprintAssignable, Category = "Float & Spin|Events")
+	FOnDirectedPathCompleted OnDirectedPathCompleted;
+
+	/** Starts (or restarts) moving along the configured PathWaypoints */
+	UFUNCTION(BlueprintCallable, Category = "Float & Spin|Path")
+	void StartDirectedPath(bool bRestartFromBeginning = true);
+
+	/** Starts moving once through an explicit sequence of world-space waypoints */
+	UFUNCTION(BlueprintCallable, Category = "Float & Spin|Path")
+	void StartDirectedPathWithWaypoints(const TArray<FVector>& WorldWaypoints);
+
+	/** Moves directly from current BaseLocation to a single world-space destination and stops */
+	UFUNCTION(BlueprintCallable, Category = "Float & Spin|Path")
+	void MoveToDirectedLocation(const FVector& WorldDestination);
+
+	/** Temporarily pauses directed path movement while retaining current waypoint progress */
+	UFUNCTION(BlueprintCallable, Category = "Float & Spin|Path")
+	void PauseDirectedPath();
+
+	/** Resumes paused directed path movement */
+	UFUNCTION(BlueprintCallable, Category = "Float & Spin|Path")
+	void ResumeDirectedPath();
+
+	/** Stops directed path movement and optionally resets progress back to waypoint 0 */
+	UFUNCTION(BlueprintCallable, Category = "Float & Spin|Path")
+	void StopDirectedPath(bool bResetWaypointIndex = true);
+
+	/** Returns true while actively moving along directed path waypoints */
+	UFUNCTION(BlueprintPure, Category = "Float & Spin|Path")
+	bool IsFollowingDirectedPath() const { return bIsFollowingPath && !bPathPaused && !bHasCompletedPath; }
+
+	/** Returns true once the final directed path waypoint has been reached */
+	UFUNCTION(BlueprintPure, Category = "Float & Spin|Path")
+	bool HasCompletedDirectedPath() const { return bHasCompletedPath; }
+
+	/** Returns the 0-based index of the active target waypoint */
+	UFUNCTION(BlueprintPure, Category = "Float & Spin|Path")
+	int32 GetCurrentWaypointIndex() const { return CurrentWaypointIndex; }
+
+	/** Returns the unscaled world transform anchored at Owner's location and rotation for resolving local PathWaypoints */
+	static FTransform GetDirectedPathAnchorTransform(const AActor* Owner);
 
 	/** Returns true if currently active */
 	UFUNCTION(BlueprintPure, Category = "Float & Spin")
@@ -369,13 +490,12 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Float & Spin|Audio")
 	bool IsSpinMusicActive() const;
 
-	/** Returns the number of times the player has interacted with the cat via [F] */
+	/** Returns the number of times the player has interacted with the cat via [LMB] */
 	UFUNCTION(BlueprintPure, Category = "Float & Spin|Interaction")
 	int32 GetInteractionCount() const { return InteractionCount; }
 
 	//~ Begin IInteractableInterface
 	virtual void OnInteract_Implementation(AActor* Interactor) override;
-	virtual void OnHit_Implementation(AActor* Attacker, const FHitResult& HitResult) override;
 	virtual FText GetInteractionPrompt_Implementation() const override;
 	virtual bool CanInteract_Implementation(AActor* Interactor) const override;
 	//~ End IInteractableInterface
@@ -424,13 +544,10 @@ private:
 	/** Plays a random 3D sound from InteractionSounds at the owner's location */
 	void PlayRandomInteractionSound(AActor* Owner) const;
 
-	/** Triggers a short parabolic bounce in response to [LMB] hit */
-	void TriggerInteractionBounce();
-
-	/** Triggers a brief vertical squash animation in response to [F] petting */
+	/** Triggers a brief vertical squash animation in response to [LMB] petting */
 	void TriggerInteractionSqueeze();
 
-	/** Advances or clears the [F] petting squash animation and returns current fractional squeeze [0..1] */
+	/** Advances or clears the [LMB] petting squash animation and returns current fractional squeeze [0..1] */
 	float UpdateInteractionSqueeze(AActor* Owner, float DeltaTime);
 
 	/** Immediately restores base mesh/actor scale and clears any active squeeze animation */
@@ -496,6 +613,9 @@ private:
 	/** Evaluates whether TimeSeconds is inside a spin window and outputs its speed multiplier and window index */
 	float GetActiveSpinSpeedMultiplier(float TimeSeconds, bool& bOutIsSpinning, int32& OutWindowIndex) const;
 
+	/** Evaluates whether spinning should currently run given bIsActive, SpinTimeWindows, and despawn/cutoff state */
+	bool EvaluateShouldSpin(int32& OutActiveWindowIndex, float& OutActiveSpinMultiplier) const;
+
 	/** Returns true if TimeSeconds falls inside any configured SpinTimeWindows entry */
 	bool IsWithinSpinWindow(float TimeSeconds) const;
 
@@ -511,6 +631,21 @@ private:
 
 	/** Applies interpolated height, sine bobbing, timed yaw spin, and morph/animation state to the owner */
 	void ApplyFloatAndSpinTransform(AActor* Owner, float DeltaTime);
+
+	/** Converts local PathWaypoints relative to Owner's initial unscaled transform into RuntimeWorldWaypoints */
+	void ResolveConfiguredWaypointsToWorld(const AActor* Owner);
+
+	/** Starts configured directed path automatically if TriggerMode matches EventMode and path hasn't run yet */
+	void TryTriggerDirectedPath(EDirectedPathTriggerMode EventMode);
+
+	/** Advances BaseLocation (and optionally BaseRotation.Yaw) along RuntimeWorldWaypoints before ApplyFloatAndSpinTransform */
+	void UpdateDirectedPathMovement(AActor* Owner, float DeltaTime);
+
+	/** Traces downward to align InOutWorldLocation.Z with ground geometry when bSnapPathToGround is enabled */
+	bool SnapLocationToGround(const AActor* Owner, FVector& InOutWorldLocation) const;
+
+	/** Draws PIE debug visualization for RuntimeWorldWaypoints when bDrawDebugPath is true */
+	void DrawDirectedPathDebug() const;
 
 	FVector BaseLocation = FVector::ZeroVector;
 	FRotator BaseRotation = FRotator::ZeroRotator;
@@ -534,10 +669,18 @@ private:
 	float ElapsedTriggeredTime = 0.0f;
 	float CurrentSpinOffsetYaw = 0.0f;
 
+	TArray<FVector> RuntimeWorldWaypoints;
+	FTransform CachedPathAnchorTransform = FTransform::Identity;
+	bool bHasCachedPathAnchorTransform = false;
+	bool bUsingRuntimeOverrideWaypoints = false;
+	int32 CurrentWaypointIndex = 0;
+	bool bIsFollowingPath = false;
+	bool bPathPaused = false;
+	bool bHasCompletedPath = false;
+	bool bHasAutoTriggeredDirectedPath = false;
+
 	int32 InteractionCount = 0;
 	bool bHasDroppedItem = false;
-	bool bIsInteractionBouncing = false;
-	float InteractionBounceElapsed = 0.0f;
 	bool bIsInteractionSqueezing = false;
 	float InteractionSqueezeElapsed = 0.0f;
 	float CurrentSqueezeFraction = 0.0f;

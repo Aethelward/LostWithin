@@ -13,6 +13,7 @@
 #include "Components/VerticalBox.h"
 #include "Components/VerticalBoxSlot.h"
 #include "InputCoreTypes.h"
+#include "Interaction/PickupItemActor.h"
 #include "Inventory/InventoryComponent.h"
 #include "Styling/CoreStyle.h"
 #include "Styling/SlateTypes.h"
@@ -119,6 +120,81 @@ void UInventoryWidget::SetInteractionPrompt(const FText& PromptText)
 	}
 }
 
+FString UInventoryWidget::FormatBatteryBayPercentString(float BayPercent)
+{
+	if (BayPercent < 0.0f)
+	{
+		return TEXT("Empty");
+	}
+	return FString::Printf(TEXT("%d%%"), FMath::Clamp(FMath::RoundToInt(BayPercent), 0, 100));
+}
+
+void UInventoryWidget::UpdateFlashlightBatteryHUD(
+	bool bHasFlashlight,
+	bool bIsOn,
+	int32 InstalledCount,
+	float CombinedPercent,
+	float Slot1Percent,
+	float Slot2Percent)
+{
+	if (!FlashlightBatteryBorder || !FlashlightBatteryText)
+	{
+		return;
+	}
+
+	if (!bHasFlashlight)
+	{
+		FlashlightBatteryBorder->SetVisibility(ESlateVisibility::Collapsed);
+		return;
+	}
+
+	const FString Cell1Label = FormatBatteryBayPercentString(Slot1Percent);
+	const FString Cell2Label = FormatBatteryBayPercentString(Slot2Percent);
+	const int32 RoundedTotal = FMath::Clamp(FMath::RoundToInt(CombinedPercent), 0, 100);
+
+	FString StatusString;
+	FLinearColor TextTint(0.95f, 0.90f, 0.72f, 1.0f);
+	if (InstalledCount < 2)
+	{
+		StatusString = FString::Printf(TEXT("Flashlight: Need 2 Batteries (%d/2)  [%s | %s]  [R] Load"), InstalledCount, *Cell1Label, *Cell2Label);
+		TextTint = FLinearColor(0.96f, 0.54f, 0.42f, 1.0f);
+	}
+	else if (CombinedPercent <= KINDA_SMALL_NUMBER)
+	{
+		StatusString = FString::Printf(TEXT("Flashlight: Depleted (0%%)  [%s | %s]  [R] Replace"), *Cell1Label, *Cell2Label);
+		TextTint = FLinearColor(0.96f, 0.44f, 0.36f, 1.0f);
+	}
+	else
+	{
+		StatusString = FString::Printf(
+			TEXT("Flashlight [%s]: %d%%  (%s | %s)"),
+			bIsOn ? TEXT("ON") : TEXT("OFF"),
+			RoundedTotal,
+			*Cell1Label,
+			*Cell2Label);
+		if (CombinedPercent <= 25.0f)
+		{
+			TextTint = FLinearColor(0.98f, 0.74f, 0.36f, 1.0f);
+		}
+		else
+		{
+			TextTint = FLinearColor(0.86f, 0.96f, 0.80f, 1.0f);
+		}
+	}
+
+	FlashlightBatteryText->SetText(FText::FromString(StatusString));
+	FlashlightBatteryText->SetColorAndOpacity(FSlateColor(TextTint));
+	FlashlightBatteryBorder->SetVisibility(ESlateVisibility::HitTestInvisible);
+}
+
+void UInventoryWidget::HandleBatteryDroppedOnFlashlight(int32 BatterySlotIndex)
+{
+	if (UInventoryComponent* Inventory = BoundInventory.Get())
+	{
+		Inventory->ReplaceFlashlightBatteryWithSlot(BatterySlotIndex);
+	}
+}
+
 void UInventoryWidget::HandleInventoryUpdated()
 {
 	RefreshInventory();
@@ -151,7 +227,7 @@ void UInventoryWidget::RefreshInventory()
 	if (Items.IsEmpty())
 	{
 		UTextBlock* EmptyText = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass());
-		EmptyText->SetText(NSLOCTEXT("LostWithin", "EmptyInventory", "Placeholder Inventory is empty. Pick up items with [F]."));
+		EmptyText->SetText(NSLOCTEXT("LostWithin", "EmptyInventory", "Placeholder Inventory is empty. Pick up items with [LMB]."));
 		EmptyText->SetFont(FCoreStyle::GetDefaultFontStyle("Italic", 13));
 		EmptyText->SetColorAndOpacity(FSlateColor(FLinearColor(0.75f, 0.78f, 0.85f, 1.0f)));
 		EmptyText->SetAutoWrapText(true);
@@ -186,7 +262,7 @@ void UInventoryWidget::RefreshInventory()
 
 void UInventoryWidget::OpenItemContextMenu(int32 SlotIndex, const FVector2D& ScreenSpacePosition)
 {
-	if (!bIsInventoryOpen || !ContextMenuBorder || !ContextDropPrimaryButton || !ContextDropPrimaryText || !ContextDropAllButton)
+	if (!bIsInventoryOpen || !ContextMenuBorder || !ContextChangeBatteryButton || !ContextChangeBatteryText || !ContextDropPrimaryButton || !ContextDropPrimaryText || !ContextDropAllButton)
 	{
 		return;
 	}
@@ -204,9 +280,35 @@ void UInventoryWidget::OpenItemContextMenu(int32 SlotIndex, const FVector2D& Scr
 
 	if (ContextItemTitleText)
 	{
-		const FText DisplayName = Item.DisplayName.IsEmpty() ? FText::FromName(Item.ItemID) : Item.DisplayName;
+		FText DisplayName = Item.DisplayName.IsEmpty() ? FText::FromName(Item.ItemID) : Item.DisplayName;
+		if (Item.ItemID == APickupItemActor::BatteryItemID)
+		{
+			DisplayName = FText::FromString(FString::Printf(TEXT("%s (%s)"), *DisplayName.ToString(), *FormatBatteryBayPercentString(Item.BatteryChargePercent)));
+		}
 		ContextItemTitleText->SetText(DisplayName);
 	}
+
+	bool bShowBatteryAction = false;
+	if (Item.ItemID == APickupItemActor::FlashlightItemID && Inventory->CanReloadFlashlight())
+	{
+		bShowBatteryAction = true;
+		ContextChangeBatteryText->SetText(NSLOCTEXT("LostWithin", "ContextChangeBattery", "Change Battery"));
+	}
+	else if (Item.ItemID == APickupItemActor::BatteryItemID
+		&& Inventory->HasItem(APickupItemActor::FlashlightItemID)
+		&& Inventory->CanReloadFlashlight(SlotIndex))
+	{
+		bShowBatteryAction = true;
+		int32 InstalledCount = 0;
+		float UnusedCombined = 0.0f;
+		float UnusedSlot1 = 0.0f;
+		float UnusedSlot2 = 0.0f;
+		Inventory->GetFlashlightBatteryState(InstalledCount, UnusedCombined, UnusedSlot1, UnusedSlot2);
+		ContextChangeBatteryText->SetText(InstalledCount < 2
+			? NSLOCTEXT("LostWithin", "ContextLoadBattery", "Load into Flashlight")
+			: NSLOCTEXT("LostWithin", "ContextSwapBattery", "Swap Battery"));
+	}
+	ContextChangeBatteryButton->SetVisibility(bShowBatteryAction ? ESlateVisibility::Visible : ESlateVisibility::Collapsed);
 
 	if (Item.Quantity > 1)
 	{
@@ -223,7 +325,8 @@ void UInventoryWidget::OpenItemContextMenu(int32 SlotIndex, const FVector2D& Scr
 	{
 		const FGeometry& WidgetGeometry = GetCachedGeometry();
 		const FVector2D ViewportLocalSize = WidgetGeometry.GetLocalSize();
-		const FVector2D EstimatedMenuSize(170.0f, Item.Quantity > 1 ? 116.0f : 80.0f);
+		const float EstimatedHeight = 80.0f + (Item.Quantity > 1 ? 36.0f : 0.0f) + (bShowBatteryAction ? 36.0f : 0.0f);
+		const FVector2D EstimatedMenuSize(185.0f, EstimatedHeight);
 
 		FVector2D DesiredPos = WidgetGeometry.AbsoluteToLocal(ScreenSpacePosition) + FVector2D(4.0f, 4.0f);
 		if (ViewportLocalSize.X > EstimatedMenuSize.X + 16.0f)
@@ -366,6 +469,33 @@ bool UInventoryWidget::NativeOnDrop(const FGeometry& InGeometry, const FDragDrop
 	return true;
 }
 
+void UInventoryWidget::HandleContextChangeBatteryClicked()
+{
+	const int32 TargetSlotIndex = ContextMenuSlotIndex;
+	CloseItemContextMenu();
+
+	if (TargetSlotIndex == INDEX_NONE)
+	{
+		return;
+	}
+
+	if (UInventoryComponent* Inventory = BoundInventory.Get())
+	{
+		if (Inventory->GetItems().IsValidIndex(TargetSlotIndex))
+		{
+			const FInventoryItem& ClickedItem = Inventory->GetItems()[TargetSlotIndex];
+			if (ClickedItem.ItemID == APickupItemActor::FlashlightItemID)
+			{
+				Inventory->ReloadBestBatteryIntoFlashlight();
+			}
+			else if (ClickedItem.ItemID == APickupItemActor::BatteryItemID)
+			{
+				Inventory->ReplaceFlashlightBatteryWithSlot(TargetSlotIndex);
+			}
+		}
+	}
+}
+
 void UInventoryWidget::HandleContextDropPrimaryClicked()
 {
 	ExecuteContextDrop(1);
@@ -486,7 +616,7 @@ void UInventoryWidget::BuildWidgetTreeIfNeeded()
 	ControlsHintBorder->SetPadding(FMargin(10.0f, 6.0f));
 	ControlsHintBorder->SetVisibility(ESlateVisibility::HitTestInvisible);
 	UTextBlock* ControlsHintText = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), TEXT("ControlsHintText"));
-	ControlsHintText->SetText(NSLOCTEXT("LostWithin", "ControlsHint", "[Tab] Placeholder Inventory  |  [F] Interact  |  [LMB] Hit  |  [F5] Switch POV  |  [Shift] Walk  |  [Ctrl] Sprint  |  [C] Crouch"));
+	ControlsHintText->SetText(NSLOCTEXT("LostWithin", "ControlsHint", "[Tab] Placeholder Inventory  |  [LMB] Interact  |  [F] Flashlight  |  [R] Change Battery  |  [Shift] Walk  |  [Ctrl] Sprint  |  [C] Crouch"));
 	ControlsHintText->SetFont(FCoreStyle::GetDefaultFontStyle("Regular", 10));
 	ControlsHintText->SetColorAndOpacity(FSlateColor(FLinearColor(0.85f, 0.88f, 0.94f, 0.85f)));
 	ControlsHintText->SetVisibility(ESlateVisibility::HitTestInvisible);
@@ -496,6 +626,24 @@ void UInventoryWidget::BuildWidgetTreeIfNeeded()
 		HintSlot->SetAnchors(FAnchors(0.0f, 0.0f, 0.0f, 0.0f));
 		HintSlot->SetPosition(FVector2D(16.0f, 16.0f));
 		HintSlot->SetAutoSize(true);
+	}
+
+	// Top-right HUD flashlight battery status readout
+	FlashlightBatteryBorder = WidgetTree->ConstructWidget<UBorder>(UBorder::StaticClass(), TEXT("FlashlightBatteryBorder"));
+	FlashlightBatteryBorder->SetBrushColor(FLinearColor(0.03f, 0.04f, 0.06f, 0.65f));
+	FlashlightBatteryBorder->SetPadding(FMargin(12.0f, 6.0f));
+	FlashlightBatteryBorder->SetVisibility(ESlateVisibility::Collapsed);
+	FlashlightBatteryText = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), TEXT("FlashlightBatteryText"));
+	FlashlightBatteryText->SetFont(FCoreStyle::GetDefaultFontStyle("Bold", 11));
+	FlashlightBatteryText->SetColorAndOpacity(FSlateColor(FLinearColor(0.86f, 0.96f, 0.80f, 1.0f)));
+	FlashlightBatteryText->SetVisibility(ESlateVisibility::HitTestInvisible);
+	FlashlightBatteryBorder->SetContent(FlashlightBatteryText);
+	if (UCanvasPanelSlot* BatterySlot = RootCanvas->AddChildToCanvas(FlashlightBatteryBorder))
+	{
+		BatterySlot->SetAnchors(FAnchors(1.0f, 0.0f, 1.0f, 0.0f));
+		BatterySlot->SetAlignment(FVector2D(1.0f, 0.0f));
+		BatterySlot->SetPosition(FVector2D(-16.0f, 16.0f));
+		BatterySlot->SetAutoSize(true);
 	}
 
 	// Bottom-center contextual interaction prompt
@@ -547,7 +695,7 @@ void UInventoryWidget::BuildWidgetTreeIfNeeded()
 	}
 
 	UTextBlock* ActionHintText = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), TEXT("InventoryActionHintText"));
-	ActionHintText->SetText(NSLOCTEXT("LostWithin", "InventoryActionHint", "[RMB] an item to Drop  |  Drag outside panel to Drop"));
+	ActionHintText->SetText(NSLOCTEXT("LostWithin", "InventoryActionHint", "[RMB] an item to Use / Drop  |  Drag Battery onto Flashlight  |  Drag outside panel to Drop"));
 	ActionHintText->SetFont(FCoreStyle::GetDefaultFontStyle("Regular", 11));
 	ActionHintText->SetColorAndOpacity(FSlateColor(FLinearColor(0.60f, 0.66f, 0.76f, 1.0f)));
 	ActionHintText->SetVisibility(ESlateVisibility::HitTestInvisible);
@@ -610,6 +758,14 @@ void UInventoryWidget::BuildWidgetTreeIfNeeded()
 	{
 		TitleSlot->SetPadding(FMargin(8.0f, 2.0f, 8.0f, 6.0f));
 	}
+
+	ContextChangeBatteryButton = CreateContextMenuButton(
+		MenuLayout,
+		TEXT("ContextChangeBatteryButton"),
+		NSLOCTEXT("LostWithin", "ContextChangeBattery", "Change Battery"),
+		&ContextChangeBatteryText);
+	ContextChangeBatteryButton->OnClicked.AddDynamic(this, &UInventoryWidget::HandleContextChangeBatteryClicked);
+	ContextChangeBatteryButton->SetVisibility(ESlateVisibility::Collapsed);
 
 	ContextDropPrimaryButton = CreateContextMenuButton(
 		MenuLayout,

@@ -3,6 +3,7 @@
 #include "Components/ProximityFloatSpinComponent.h"
 #include "Animation/AnimationAsset.h"
 #include "AssetRegistry/AssetRegistryModule.h"
+#include "CollisionQueryParams.h"
 #include "Components/AudioComponent.h"
 #include "Components/DirectionalLightComponent.h"
 #include "Components/ExponentialHeightFogComponent.h"
@@ -18,9 +19,11 @@
 #include "Components/SpotLightComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "DrawDebugHelpers.h"
+#include "Engine/HitResult.h"
 #include "Engine/SkeletalMesh.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/World.h"
+#include "EngineUtils.h"
 #include "GameFramework/Actor.h"
 #include "GameFramework/Pawn.h"
 #include "GameFramework/RotatingMovementComponent.h"
@@ -133,6 +136,15 @@ void UProximityFloatSpinComponent::BeginPlay()
 
 	BaseLocation = Owner->GetActorLocation();
 	BaseRotation = Owner->GetActorRotation();
+	CachedPathAnchorTransform = FTransform(BaseRotation, BaseLocation, FVector::OneVector);
+	bHasCachedPathAnchorTransform = true;
+	RuntimeWorldWaypoints.Reset();
+	bUsingRuntimeOverrideWaypoints = false;
+	CurrentWaypointIndex = 0;
+	bIsFollowingPath = false;
+	bPathPaused = false;
+	bHasCompletedPath = false;
+	bHasAutoTriggeredDirectedPath = false;
 	BaseActorScale3D = Owner->GetActorScale3D();
 	BaseMeshRelativeLocation = FVector::ZeroVector;
 	BaseMeshRelativeScale3D = FVector::OneVector;
@@ -153,8 +165,6 @@ void UProximityFloatSpinComponent::BeginPlay()
 	CurrentSpinOffsetYaw = 0.0f;
 	InteractionCount = 0;
 	bHasDroppedItem = false;
-	bIsInteractionBouncing = false;
-	InteractionBounceElapsed = 0.0f;
 	bIsInteractionSqueezing = false;
 	InteractionSqueezeElapsed = 0.0f;
 	CurrentSqueezeFraction = 0.0f;
@@ -185,6 +195,9 @@ void UProximityFloatSpinComponent::BeginPlay()
 	}
 
 	LoadInteractionSounds();
+
+	ResolveConfiguredWaypointsToWorld(Owner);
+	TryTriggerDirectedPath(EDirectedPathTriggerMode::OnBeginPlay);
 }
 
 void UProximityFloatSpinComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
@@ -242,6 +255,13 @@ void UProximityFloatSpinComponent::TickComponent(float DeltaTime, ELevelTick Tic
 		{
 			UpdateProximityState(Owner, PlayerPawn);
 		}
+	}
+
+	UpdateDirectedPathMovement(Owner, DeltaTime);
+
+	if (bDrawDebugPath)
+	{
+		DrawDirectedPathDebug();
 	}
 
 	if (bDrawDebugRadius)
@@ -661,6 +681,7 @@ void UProximityFloatSpinComponent::TriggerSpinSequence(AActor* Owner)
 	ElapsedTriggeredTime = 0.0f;
 	StartTriggerMusic(Owner);
 	OnProximityFloatStateChanged.Broadcast(true);
+	TryTriggerDirectedPath(EDirectedPathTriggerMode::OnSpinTriggered);
 }
 
 void UProximityFloatSpinComponent::LoadInteractionSounds()
@@ -747,13 +768,6 @@ void UProximityFloatSpinComponent::PlayRandomInteractionSound(AActor* Owner) con
 			0.0f,
 			MusicAttenuation);
 	}
-}
-
-void UProximityFloatSpinComponent::TriggerInteractionBounce()
-{
-	bIsInteractionBouncing = true;
-	InteractionBounceElapsed = 0.0f;
-	bSettledAtRest = false;
 }
 
 void UProximityFloatSpinComponent::TriggerInteractionSqueeze()
@@ -1293,8 +1307,6 @@ void UProximityFloatSpinComponent::EvaluateTimelineKeyframes(AActor* Owner, bool
 		bTriggeredPopOutEffect = true;
 		bIsPopOutActive = true;
 		PopOutElapsed = 0.0f;
-		bIsInteractionBouncing = false;
-		InteractionBounceElapsed = 0.0f;
 		CurrentDiscoColorMode = 0;
 		SetDiscoEnvironmentActive(Owner, false);
 		RestoreWorldSkyAndLights();
@@ -1682,7 +1694,6 @@ void UProximityFloatSpinComponent::SpawnDroppedItem(AActor* Owner, AActor* Inter
 	}
 
 	UClass* SpawnClass = DropItemClass ? DropItemClass.Get() : APickupItemActor::StaticClass();
-	const FVector SpawnOrigin = Owner->GetActorLocation() + FVector(0.0f, 0.0f, 50.0f);
 
 	FVector TossDirection = Interactor
 		? (Interactor->GetActorLocation() - Owner->GetActorLocation()).GetSafeNormal2D()
@@ -1696,7 +1707,20 @@ void UProximityFloatSpinComponent::SpawnDroppedItem(AActor* Owner, AActor* Inter
 		TossDirection = FVector::ForwardVector;
 	}
 
-	const FVector TargetDropLocation = Owner->GetActorLocation() + TossDirection * 95.0f;
+	const FVector CatCenter = Owner->GetActorLocation() + FVector(0.0f, 0.0f, 55.0f);
+	float ForwardOffset = 42.0f;
+	FCollisionQueryParams WallQueryParams(SCENE_QUERY_STAT(CatDropTrace), false, Owner);
+	if (Interactor)
+	{
+		WallQueryParams.AddIgnoredActor(Interactor);
+	}
+	FHitResult WallHit;
+	if (World->LineTraceSingleByChannel(WallHit, CatCenter, CatCenter + TossDirection * 60.0f, ECC_Visibility, WallQueryParams))
+	{
+		ForwardOffset = FMath::Max(12.0f, WallHit.Distance - 20.0f);
+	}
+
+	const FVector SpawnOrigin = CatCenter + TossDirection * ForwardOffset;
 
 	FActorSpawnParameters SpawnParams;
 	SpawnParams.Owner = Owner;
@@ -1705,7 +1729,9 @@ void UProximityFloatSpinComponent::SpawnDroppedItem(AActor* Owner, AActor* Inter
 
 	if (APickupItemActor* DroppedItem = World->SpawnActor<APickupItemActor>(SpawnClass, SpawnOrigin, FRotator::ZeroRotator, SpawnParams))
 	{
-		DroppedItem->StartDropArc(SpawnOrigin, TargetDropLocation);
+		DroppedItem->ConfigureAsFairyTaleKittyKey();
+		const FVector LaunchVelocity = TossDirection * 180.0f + FVector(0.0f, 0.0f, 220.0f);
+		DroppedItem->DropWithPhysics(SpawnOrigin, LaunchVelocity, { Owner });
 	}
 }
 
@@ -1721,11 +1747,13 @@ void UProximityFloatSpinComponent::OnInteract_Implementation(AActor* Interactor)
 	TriggerInteractionSqueeze();
 	PlayRandomInteractionSound(Owner);
 	OnCatInteracted.Broadcast(InteractionCount);
+	TryTriggerDirectedPath(EDirectedPathTriggerMode::OnFirstInteract);
 
 	if (InteractionCount >= ItemDropInteractionThreshold && !bHasDroppedItem)
 	{
 		bHasDroppedItem = true;
 		SpawnDroppedItem(Owner, Interactor);
+		TryTriggerDirectedPath(EDirectedPathTriggerMode::OnItemDropped);
 	}
 
 	if (bTriggerSpinByInteractionCount && InteractionCount >= SpinTriggerInteractionThreshold && !bIsActive)
@@ -1734,18 +1762,9 @@ void UProximityFloatSpinComponent::OnInteract_Implementation(AActor* Interactor)
 	}
 }
 
-void UProximityFloatSpinComponent::OnHit_Implementation(AActor* Attacker, const FHitResult& HitResult)
-{
-	if (AActor* Owner = GetOwner())
-	{
-		TriggerInteractionBounce();
-		PlayRandomInteractionSound(Owner);
-	}
-}
-
 FText UProximityFloatSpinComponent::GetInteractionPrompt_Implementation() const
 {
-	return NSLOCTEXT("LostWithin", "CatInteractionPrompt", "[F] Pet Cat");
+	return NSLOCTEXT("LostWithin", "CatInteractionPrompt", "[LMB] Pet Cat");
 }
 
 bool UProximityFloatSpinComponent::CanInteract_Implementation(AActor* Interactor) const
@@ -1769,6 +1788,26 @@ float UProximityFloatSpinComponent::GetActiveSpinSpeedMultiplier(float TimeSecon
 	bOutIsSpinning = false;
 	OutWindowIndex = INDEX_NONE;
 	return 0.0f;
+}
+
+bool UProximityFloatSpinComponent::EvaluateShouldSpin(int32& OutActiveWindowIndex, float& OutActiveSpinMultiplier) const
+{
+	bool bShouldSpin = bIsActive;
+	OutActiveWindowIndex = INDEX_NONE;
+	OutActiveSpinMultiplier = 1.0f;
+
+	if (bIsActive && bUseSpinTimeWindows)
+	{
+		OutActiveSpinMultiplier = GetActiveSpinSpeedMultiplier(ElapsedTriggeredTime, bShouldSpin, OutActiveWindowIndex);
+	}
+
+	if (bTriggeredPopOutEffect || (bIsActive && ElapsedTriggeredTime >= 42.89f))
+	{
+		bShouldSpin = false;
+		OutActiveWindowIndex = INDEX_NONE;
+	}
+
+	return bShouldSpin;
 }
 
 bool UProximityFloatSpinComponent::IsWithinSpinWindow(float TimeSeconds) const
@@ -1951,18 +1990,17 @@ void UProximityFloatSpinComponent::ApplyFloatAndSpinTransform(AActor* Owner, flo
 		ElapsedTriggeredTime += DeltaTime;
 	}
 
-	bool bShouldSpin = bIsActive;
 	int32 ActiveWindowIndex = INDEX_NONE;
 	float ActiveSpinMultiplier = 1.0f;
-	if (bIsActive && bUseSpinTimeWindows)
-	{
-		ActiveSpinMultiplier = GetActiveSpinSpeedMultiplier(ElapsedTriggeredTime, bShouldSpin, ActiveWindowIndex);
-	}
+	const bool bShouldSpin = EvaluateShouldSpin(ActiveWindowIndex, ActiveSpinMultiplier);
 
-	if (bTriggeredPopOutEffect || (bIsActive && ElapsedTriggeredTime >= 42.89f))
+	if (bIsActive
+		&& bUseSpinTimeWindows
+		&& !bTriggeredPopOutEffect
+		&& SpinTimeWindows.IsValidIndex(DirectedPathSpinWindowIndex)
+		&& ElapsedTriggeredTime >= SpinTimeWindows[DirectedPathSpinWindowIndex].StartTime)
 	{
-		bShouldSpin = false;
-		ActiveWindowIndex = INDEX_NONE;
+		TryTriggerDirectedPath(EDirectedPathTriggerMode::OnSpinWindow);
 	}
 
 	const bool bDiscoShouldRun = bEnableDiscoEnvironmentOnSpinWindow
@@ -2012,25 +2050,7 @@ void UProximityFloatSpinComponent::ApplyFloatAndSpinTransform(AActor* Owner, flo
 		}
 	}
 
-	const float JumpOffset = ComputeJumpOffset(ElapsedTriggeredTime);
-
-	float InteractionBounceOffset = 0.0f;
-	if (bIsInteractionBouncing)
-	{
-		InteractionBounceElapsed += DeltaTime;
-		if (InteractionBounceElapsed >= InteractionBounceDuration || InteractionBounceDuration <= 0.0f)
-		{
-			bIsInteractionBouncing = false;
-			InteractionBounceElapsed = 0.0f;
-		}
-		else
-		{
-			const float Alpha = FMath::Clamp(InteractionBounceElapsed / InteractionBounceDuration, 0.0f, 1.0f);
-			InteractionBounceOffset = 4.0f * Alpha * (1.0f - Alpha) * InteractionBounceHeight;
-		}
-	}
-
-	const float TotalJumpOffset = JumpOffset + InteractionBounceOffset;
+	const float TotalJumpOffset = ComputeJumpOffset(ElapsedTriggeredTime);
 
 	if (bShouldSpin)
 	{
@@ -2115,4 +2135,274 @@ void UProximityFloatSpinComponent::ApplyFloatAndSpinTransform(AActor* Owner, flo
 	const FQuat YawSpinQuat(FVector::UpVector, FMath::DegreesToRadians(CurrentSpinOffsetYaw));
 	const FRotator NewRotation = (UnstableRotationOffset.Quaternion() * YawSpinQuat * BaseRotation.Quaternion()).Rotator();
 	Owner->SetActorLocationAndRotation(NewLocation, NewRotation, false, nullptr, ETeleportType::TeleportPhysics);
+}
+
+FTransform UProximityFloatSpinComponent::GetDirectedPathAnchorTransform(const AActor* Owner)
+{
+	if (!Owner)
+	{
+		return FTransform::Identity;
+	}
+
+	return FTransform(Owner->GetActorRotation(), Owner->GetActorLocation(), FVector::OneVector);
+}
+
+void UProximityFloatSpinComponent::StartDirectedPath(bool bRestartFromBeginning)
+{
+	if (!bUsingRuntimeOverrideWaypoints)
+	{
+		ResolveConfiguredWaypointsToWorld(GetOwner());
+	}
+
+	if (bRestartFromBeginning)
+	{
+		CurrentWaypointIndex = 0;
+		bHasCompletedPath = false;
+	}
+
+	if (RuntimeWorldWaypoints.IsValidIndex(CurrentWaypointIndex) && !bHasCompletedPath)
+	{
+		bIsFollowingPath = true;
+		bPathPaused = false;
+		bSettledAtRest = false;
+	}
+	else
+	{
+		bIsFollowingPath = false;
+	}
+}
+
+void UProximityFloatSpinComponent::StartDirectedPathWithWaypoints(const TArray<FVector>& WorldWaypoints)
+{
+	RuntimeWorldWaypoints = WorldWaypoints;
+	bUsingRuntimeOverrideWaypoints = true;
+	CurrentWaypointIndex = 0;
+	bHasCompletedPath = false;
+	bPathPaused = false;
+	bIsFollowingPath = !RuntimeWorldWaypoints.IsEmpty();
+	if (bIsFollowingPath)
+	{
+		bSettledAtRest = false;
+	}
+}
+
+void UProximityFloatSpinComponent::MoveToDirectedLocation(const FVector& WorldDestination)
+{
+	StartDirectedPathWithWaypoints({ WorldDestination });
+}
+
+void UProximityFloatSpinComponent::PauseDirectedPath()
+{
+	if (bIsFollowingPath)
+	{
+		bPathPaused = true;
+	}
+}
+
+void UProximityFloatSpinComponent::ResumeDirectedPath()
+{
+	if (bIsFollowingPath && !bHasCompletedPath && RuntimeWorldWaypoints.IsValidIndex(CurrentWaypointIndex))
+	{
+		bPathPaused = false;
+		bSettledAtRest = false;
+	}
+}
+
+void UProximityFloatSpinComponent::StopDirectedPath(bool bResetWaypointIndex)
+{
+	bIsFollowingPath = false;
+	bPathPaused = false;
+	if (bResetWaypointIndex)
+	{
+		CurrentWaypointIndex = 0;
+		bHasCompletedPath = false;
+		bUsingRuntimeOverrideWaypoints = false;
+	}
+}
+
+void UProximityFloatSpinComponent::ResolveConfiguredWaypointsToWorld(const AActor* Owner)
+{
+	RuntimeWorldWaypoints.Reset();
+	if (PathWaypoints.IsEmpty())
+	{
+		return;
+	}
+
+	const FTransform AnchorTransform = bHasCachedPathAnchorTransform
+		? CachedPathAnchorTransform
+		: GetDirectedPathAnchorTransform(Owner);
+
+	RuntimeWorldWaypoints.Reserve(PathWaypoints.Num());
+	for (const FVector& LocalWaypoint : PathWaypoints)
+	{
+		RuntimeWorldWaypoints.Add(AnchorTransform.TransformPosition(LocalWaypoint));
+	}
+}
+
+void UProximityFloatSpinComponent::TryTriggerDirectedPath(EDirectedPathTriggerMode EventMode)
+{
+	if (bEnableDirectedPath
+		&& !bHasAutoTriggeredDirectedPath
+		&& DirectedPathTriggerMode == EventMode
+		&& !bIsFollowingPath
+		&& !bHasCompletedPath)
+	{
+		bHasAutoTriggeredDirectedPath = true;
+		StartDirectedPath(/*bRestartFromBeginning=*/true);
+	}
+}
+
+bool UProximityFloatSpinComponent::SnapLocationToGround(const AActor* Owner, FVector& InOutWorldLocation) const
+{
+	const UWorld* World = GetWorld();
+	if (!World || !Owner)
+	{
+		return false;
+	}
+
+	const float HalfExtent = FMath::Max(10.0f, GroundTraceHalfHeight);
+	const FVector TraceStart(InOutWorldLocation.X, InOutWorldLocation.Y, InOutWorldLocation.Z + HalfExtent);
+	const FVector TraceEnd(InOutWorldLocation.X, InOutWorldLocation.Y, InOutWorldLocation.Z - HalfExtent);
+
+	FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(CatDirectedPathGroundTrace), /*bTraceComplex=*/false, Owner);
+	TArray<AActor*> AttachedActors;
+	Owner->GetAttachedActors(AttachedActors, /*bResetArray=*/true, /*bRecursivelyIncludeAttachedActors=*/true);
+	QueryParams.AddIgnoredActors(AttachedActors);
+	for (TActorIterator<APickupItemActor> It(World); It; ++It)
+	{
+		if (IsValid(*It))
+		{
+			QueryParams.AddIgnoredActor(*It);
+		}
+	}
+
+	FHitResult HitResult;
+	if (World->LineTraceSingleByChannel(HitResult, TraceStart, TraceEnd, GroundTraceChannel, QueryParams))
+	{
+		InOutWorldLocation.Z = HitResult.ImpactPoint.Z + GroundHeightOffset;
+		return true;
+	}
+
+	return false;
+}
+
+void UProximityFloatSpinComponent::UpdateDirectedPathMovement(AActor* Owner, float DeltaTime)
+{
+	if (!Owner || DeltaTime <= 0.0f || !bIsFollowingPath || bPathPaused || bHasCompletedPath || bTriggeredPopOutEffect || bIsPopOutActive)
+	{
+		return;
+	}
+
+	if (bPausePathWhileSpinning)
+	{
+		int32 UnusedWindowIndex = INDEX_NONE;
+		float UnusedSpinMultiplier = 1.0f;
+		const bool bSpinningNow = EvaluateShouldSpin(UnusedWindowIndex, UnusedSpinMultiplier);
+		if (bSpinningNow || CurrentHoverHeight > KINDA_SMALL_NUMBER || ComputeJumpOffset(ElapsedTriggeredTime) > KINDA_SMALL_NUMBER)
+		{
+			return;
+		}
+	}
+
+	if (!RuntimeWorldWaypoints.IsValidIndex(CurrentWaypointIndex))
+	{
+		if (!RuntimeWorldWaypoints.IsEmpty())
+		{
+			bIsFollowingPath = false;
+			bHasCompletedPath = true;
+			bSettledAtRest = false;
+			OnDirectedPathCompleted.Broadcast();
+		}
+		return;
+	}
+
+	if (PathMoveSpeed <= KINDA_SMALL_NUMBER)
+	{
+		return;
+	}
+
+	const FVector TargetPoint = RuntimeWorldWaypoints[CurrentWaypointIndex];
+	const FVector StepTarget = bSnapPathToGround
+		? FVector(TargetPoint.X, TargetPoint.Y, BaseLocation.Z)
+		: TargetPoint;
+
+	FVector NextLocation = FMath::VInterpConstantTo(BaseLocation, StepTarget, DeltaTime, PathMoveSpeed);
+	if (bSnapPathToGround)
+	{
+		SnapLocationToGround(Owner, NextLocation);
+	}
+
+	if (bFacePathDirection)
+	{
+		const FVector DeltaXY(TargetPoint.X - BaseLocation.X, TargetPoint.Y - BaseLocation.Y, 0.0f);
+		if (!DeltaXY.IsNearlyZero(1.0f))
+		{
+			const FRotator TargetRotation(BaseRotation.Pitch, DeltaXY.Rotation().Yaw + PathFacingYawOffset, BaseRotation.Roll);
+			BaseRotation = FMath::RInterpTo(BaseRotation, TargetRotation, DeltaTime, FMath::Max(0.1f, PathTurnSpeed));
+		}
+	}
+
+	const float AcceptanceRadiusSq = FMath::Square(FMath::Max(0.1f, WaypointAcceptanceRadius));
+	const float DistToTargetSq = bSnapPathToGround
+		? FVector::DistSquaredXY(NextLocation, TargetPoint)
+		: FVector::DistSquared(NextLocation, TargetPoint);
+
+	if (DistToTargetSq <= AcceptanceRadiusSq)
+	{
+		NextLocation = bSnapPathToGround
+			? FVector(TargetPoint.X, TargetPoint.Y, NextLocation.Z)
+			: TargetPoint;
+		if (bSnapPathToGround)
+		{
+			SnapLocationToGround(Owner, NextLocation);
+		}
+
+		BaseLocation = NextLocation;
+		bSettledAtRest = false;
+
+		const int32 ReachedIndex = CurrentWaypointIndex;
+		++CurrentWaypointIndex;
+		OnDirectedPathWaypointReached.Broadcast(ReachedIndex);
+
+		if (CurrentWaypointIndex >= RuntimeWorldWaypoints.Num())
+		{
+			bIsFollowingPath = false;
+			bHasCompletedPath = true;
+			OnDirectedPathCompleted.Broadcast();
+		}
+		return;
+	}
+
+	BaseLocation = NextLocation;
+	bSettledAtRest = false;
+}
+
+void UProximityFloatSpinComponent::DrawDirectedPathDebug() const
+{
+	const UWorld* World = GetWorld();
+	if (!World || RuntimeWorldWaypoints.IsEmpty())
+	{
+		return;
+	}
+
+	FVector PreviousPoint = BaseLocation;
+	for (int32 Index = 0; Index < RuntimeWorldWaypoints.Num(); ++Index)
+	{
+		const FVector& Waypoint = RuntimeWorldWaypoints[Index];
+		const bool bReached = Index < CurrentWaypointIndex || bHasCompletedPath;
+		const bool bActiveTarget = !bHasCompletedPath && (Index == CurrentWaypointIndex);
+
+		if (Index >= CurrentWaypointIndex && !bHasCompletedPath)
+		{
+			DrawDebugLine(World, PreviousPoint, Waypoint, FColor::Cyan, false, -1.0f, 0, 2.0f);
+			PreviousPoint = Waypoint;
+		}
+		else if (Index > 0)
+		{
+			DrawDebugLine(World, RuntimeWorldWaypoints[Index - 1], Waypoint, FColor::Silver, false, -1.0f, 0, 1.0f);
+		}
+
+		const FColor PointColor = bActiveTarget ? FColor::Green : (bReached ? FColor::Silver : FColor::Yellow);
+		DrawDebugSphere(World, Waypoint, 12.0f, 12, PointColor, false, -1.0f, 0, 1.5f);
+	}
 }

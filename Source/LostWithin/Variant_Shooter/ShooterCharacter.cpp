@@ -137,9 +137,13 @@ void AShooterCharacter::AttachWeaponMeshes(AShooterWeapon* Weapon)
 	// attach the weapon actor
 	Weapon->AttachToActor(this, AttachmentRule);
 
-	// attach the weapon meshes
-	Weapon->GetFirstPersonMesh()->AttachToComponent(GetFirstPersonMesh(), AttachmentRule, FirstPersonWeaponSocket);
-	Weapon->GetThirdPersonMesh()->AttachToComponent(GetMesh(), AttachmentRule, FirstPersonWeaponSocket);
+	// attach the 3rd-person weapon mesh (1st-person view is disabled)
+	if (Weapon->GetFirstPersonMesh())
+	{
+		Weapon->GetFirstPersonMesh()->SetVisibility(false, true);
+	}
+	Weapon->GetThirdPersonMesh()->SetOwnerNoSee(false);
+	Weapon->GetThirdPersonMesh()->AttachToComponent(GetMesh(), AttachmentRule, ThirdPersonWeaponSocket);
 	
 }
 
@@ -164,8 +168,10 @@ FVector AShooterCharacter::GetWeaponTargetLocation()
 	// trace ahead from the camera viewpoint
 	FHitResult OutHit;
 
-	const FVector Start = GetFirstPersonCameraComponent()->GetComponentLocation();
-	const FVector End = Start + (GetFirstPersonCameraComponent()->GetForwardVector() * MaxAimDistance);
+	const UCameraComponent* AimCamera = GetActiveGameplayCamera();
+	const FVector Start = AimCamera ? AimCamera->GetComponentLocation() : GetPawnViewLocation();
+	const FVector AimDir = AimCamera ? AimCamera->GetForwardVector() : GetActorForwardVector();
+	const FVector End = Start + (AimDir * MaxAimDistance);
 
 	FCollisionQueryParams QueryParams;
 	QueryParams.AddIgnoredActor(this);
@@ -215,8 +221,7 @@ void AShooterCharacter::OnWeaponActivated(AShooterWeapon* Weapon)
 	// update the bullet counter
 	OnBulletCountUpdated.Broadcast(Weapon->GetMagazineSize(), Weapon->GetBulletCount());
 
-	// set the character mesh AnimInstances
-	GetFirstPersonMesh()->SetAnimInstanceClass(Weapon->GetFirstPersonAnimInstanceClass());
+	// set the character mesh AnimInstance
 	GetMesh()->SetAnimInstanceClass(Weapon->GetThirdPersonAnimInstanceClass());
 }
 

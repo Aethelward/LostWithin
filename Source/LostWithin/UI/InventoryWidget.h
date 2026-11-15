@@ -48,6 +48,22 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Interaction|UI")
 	void SetInteractionPrompt(const FText& PromptText);
 
+	/** Formats a single flashlight bay percentage (-1 -> "Empty", 0..100 -> "XX%") */
+	static FString FormatBatteryBayPercentString(float BayPercent);
+
+	/** Updates the HUD tactical flashlight battery status readout */
+	UFUNCTION(BlueprintCallable, Category = "Flashlight|UI")
+	void UpdateFlashlightBatteryHUD(
+		bool bHasFlashlight,
+		bool bIsOn,
+		int32 InstalledCount,
+		float CombinedPercent,
+		float Slot1Percent,
+		float Slot2Percent);
+
+	/** Loads BatterySlotIndex into the flashlight when dragged onto the Flashlight row */
+	void HandleBatteryDroppedOnFlashlight(int32 BatterySlotIndex);
+
 	/** Rebuilds the inventory item rows from the bound InventoryComponent */
 	UFUNCTION(BlueprintCallable, Category = "Inventory|UI")
 	void RefreshInventory();
@@ -79,6 +95,9 @@ private:
 
 	UFUNCTION()
 	void HandleInventoryUpdated();
+
+	UFUNCTION()
+	void HandleContextChangeBatteryClicked();
 
 	UFUNCTION()
 	void HandleContextDropPrimaryClicked();
@@ -123,6 +142,12 @@ private:
 	TObjectPtr<UTextBlock> InteractionPromptText = nullptr;
 
 	UPROPERTY(Transient)
+	TObjectPtr<UBorder> FlashlightBatteryBorder = nullptr;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UTextBlock> FlashlightBatteryText = nullptr;
+
+	UPROPERTY(Transient)
 	TObjectPtr<UBorder> DropOutsideBanner = nullptr;
 
 	UPROPERTY(Transient)
@@ -130,6 +155,12 @@ private:
 
 	UPROPERTY(Transient)
 	TObjectPtr<UTextBlock> ContextItemTitleText = nullptr;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UButton> ContextChangeBatteryButton = nullptr;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UTextBlock> ContextChangeBatteryText = nullptr;
 
 	UPROPERTY(Transient)
 	TObjectPtr<UButton> ContextDropPrimaryButton = nullptr;

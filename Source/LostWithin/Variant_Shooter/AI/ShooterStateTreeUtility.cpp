@@ -42,7 +42,8 @@ bool FStateTreeLineOfSightToTargetCondition::TestCondition(FStateTreeExecutionCo
 	const float ExtentZOffset = Extent.Z * 2.0f / InstanceData.NumberOfVerticalLineOfSightChecks;
 
 	// get the character's camera location as the source for the line checks
-	const FVector Start = InstanceData.Character->GetFirstPersonCameraComponent()->GetComponentLocation();
+	const UCameraComponent* AimCamera = InstanceData.Character->GetActiveGameplayCamera();
+	const FVector Start = AimCamera ? AimCamera->GetComponentLocation() : InstanceData.Character->GetPawnViewLocation();
 
 	// ignore the character and target. We want to ensure there's an unobstructed trace not counting them
 	FCollisionQueryParams QueryParams;

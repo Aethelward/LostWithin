@@ -19,21 +19,21 @@ AShooterWeapon::AShooterWeapon()
 	// create the root
 	RootComponent = CreateDefaultSubobject<USceneComponent>(TEXT("Root"));
 
-	// create the first person mesh
+	// create the first person mesh (hidden; game uses 3rd-person view only)
 	FirstPersonMesh = CreateDefaultSubobject<USkeletalMeshComponent>(TEXT("First Person Mesh"));
 	FirstPersonMesh->SetupAttachment(RootComponent);
 
 	FirstPersonMesh->SetCollisionProfileName(FName("NoCollision"));
-	FirstPersonMesh->SetFirstPersonPrimitiveType(EFirstPersonPrimitiveType::FirstPerson);
-	FirstPersonMesh->bOnlyOwnerSee = true;
+	FirstPersonMesh->SetVisibility(false, true);
+	FirstPersonMesh->SetHiddenInGame(true, true);
 
 	// create the third person mesh
 	ThirdPersonMesh = CreateDefaultSubobject<USkeletalMeshComponent>(TEXT("Third Person Mesh"));
 	ThirdPersonMesh->SetupAttachment(RootComponent);
 
 	ThirdPersonMesh->SetCollisionProfileName(FName("NoCollision"));
-	ThirdPersonMesh->SetFirstPersonPrimitiveType(EFirstPersonPrimitiveType::WorldSpaceRepresentation);
-	ThirdPersonMesh->bOwnerNoSee = true;
+	ThirdPersonMesh->SetFirstPersonPrimitiveType(EFirstPersonPrimitiveType::None);
+	ThirdPersonMesh->bOwnerNoSee = false;
 }
 
 void AShooterWeapon::BeginPlay()
@@ -194,8 +194,8 @@ void AShooterWeapon::FireProjectile(const FVector& TargetLocation)
 
 FTransform AShooterWeapon::CalculateProjectileSpawnTransform(const FVector& TargetLocation) const
 {
-	// find the muzzle location
-	const FVector MuzzleLoc = FirstPersonMesh->GetSocketLocation(MuzzleSocketName);
+	// find the muzzle location on the active 3rd-person weapon mesh
+	const FVector MuzzleLoc = ThirdPersonMesh->GetSocketLocation(MuzzleSocketName);
 
 	// calculate the spawn location ahead of the muzzle
 	const FVector SpawnLoc = MuzzleLoc + ((TargetLocation - MuzzleLoc).GetSafeNormal() * MuzzleOffset);

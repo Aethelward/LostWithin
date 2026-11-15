@@ -60,9 +60,12 @@ void AShooterNPC::AttachWeaponMeshes(AShooterWeapon* WeaponToAttach)
 	// attach the weapon actor
 	WeaponToAttach->AttachToActor(this, AttachmentRule);
 
-	// attach the weapon meshes
-	WeaponToAttach->GetFirstPersonMesh()->AttachToComponent(GetFirstPersonMesh(), AttachmentRule, FirstPersonWeaponSocket);
-	WeaponToAttach->GetThirdPersonMesh()->AttachToComponent(GetMesh(), AttachmentRule, FirstPersonWeaponSocket);
+	// attach the 3rd-person weapon mesh (1st-person view is disabled)
+	if (WeaponToAttach->GetFirstPersonMesh())
+	{
+		WeaponToAttach->GetFirstPersonMesh()->SetVisibility(false, true);
+	}
+	WeaponToAttach->GetThirdPersonMesh()->AttachToComponent(GetMesh(), AttachmentRule, ThirdPersonWeaponSocket);
 }
 
 void AShooterNPC::PlayFiringMontage(UAnimMontage* Montage)
@@ -83,7 +86,8 @@ void AShooterNPC::UpdateWeaponHUD(int32 CurrentAmmo, int32 MagazineSize)
 FVector AShooterNPC::GetWeaponTargetLocation()
 {
 	// start aiming from the camera location
-	const FVector AimSource = GetFirstPersonCameraComponent()->GetComponentLocation();
+	const UCameraComponent* AimCamera = GetActiveGameplayCamera();
+	const FVector AimSource = AimCamera ? AimCamera->GetComponentLocation() : GetPawnViewLocation();
 
 	FVector AimDir, AimTarget = FVector::ZeroVector;
 
@@ -104,7 +108,8 @@ FVector AShooterNPC::GetWeaponTargetLocation()
 	} else {
 
 		// no aim target, so just use the camera facing
-		AimDir = UKismetMathLibrary::RandomUnitVectorInConeInDegrees(GetFirstPersonCameraComponent()->GetForwardVector(), AimVarianceHalfAngle);
+		const FVector AimForward = AimCamera ? AimCamera->GetForwardVector() : GetActorForwardVector();
+		AimDir = UKismetMathLibrary::RandomUnitVectorInConeInDegrees(AimForward, AimVarianceHalfAngle);
 
 	}
 

@@ -12,5 +12,6 @@ public class LostWithinEditorTarget : TargetRules
 		IncludeOrderVersion = EngineIncludeOrderVersion.Unreal5_6;
 		bUseAdaptiveUnityBuild = false;
 		ExtraModuleNames.Add("LostWithin");
+		ExtraModuleNames.Add("LostWithinEditor");
 	}
 }

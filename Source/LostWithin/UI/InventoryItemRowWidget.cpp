@@ -7,6 +7,7 @@
 #include "Components/VerticalBox.h"
 #include "Components/VerticalBoxSlot.h"
 #include "InputCoreTypes.h"
+#include "Interaction/PickupItemActor.h"
 #include "Styling/CoreStyle.h"
 #include "UI/InventoryDragDropOperation.h"
 #include "UI/InventoryWidget.h"
@@ -139,6 +140,66 @@ void UInventoryItemRowWidget::NativeOnDragCancelled(const FDragDropEvent& InDrag
 	}
 }
 
+bool UInventoryItemRowWidget::CanAcceptBatteryDrag(UDragDropOperation* InOperation) const
+{
+	if (bIsDragGhost || ItemData.ItemID != APickupItemActor::FlashlightItemID)
+	{
+		return false;
+	}
+
+	const UInventoryDragDropOperation* DragOp = Cast<UInventoryDragDropOperation>(InOperation);
+	return DragOp
+		&& DragOp->SlotIndex != SlotIndex
+		&& DragOp->ItemData.ItemID == APickupItemActor::BatteryItemID
+		&& DragOp->ItemData.BatteryChargePercent > KINDA_SMALL_NUMBER;
+}
+
+bool UInventoryItemRowWidget::NativeOnDragOver(const FGeometry& InGeometry, const FDragDropEvent& InDragDropEvent, UDragDropOperation* InOperation)
+{
+	if (CanAcceptBatteryDrag(InOperation))
+	{
+		if (RowBorder)
+		{
+			RowBorder->SetBrushColor(FLinearColor(0.20f, 0.34f, 0.22f, 0.96f));
+		}
+		return true;
+	}
+
+	return Super::NativeOnDragOver(InGeometry, InDragDropEvent, InOperation);
+}
+
+void UInventoryItemRowWidget::NativeOnDragLeave(const FDragDropEvent& InDragDropEvent, UDragDropOperation* InOperation)
+{
+	Super::NativeOnDragLeave(InDragDropEvent, InOperation);
+
+	if (!bIsDragGhost && RowBorder)
+	{
+		RowBorder->SetBrushColor(FLinearColor(0.11f, 0.13f, 0.19f, 0.92f));
+	}
+}
+
+bool UInventoryItemRowWidget::NativeOnDrop(const FGeometry& InGeometry, const FDragDropEvent& InDragDropEvent, UDragDropOperation* InOperation)
+{
+	if (!bIsDragGhost && RowBorder)
+	{
+		RowBorder->SetBrushColor(FLinearColor(0.11f, 0.13f, 0.19f, 0.92f));
+	}
+
+	if (CanAcceptBatteryDrag(InOperation))
+	{
+		if (const UInventoryDragDropOperation* DragOp = Cast<UInventoryDragDropOperation>(InOperation))
+		{
+			if (UInventoryWidget* ParentWidget = ParentInventoryWidget.Get())
+			{
+				ParentWidget->HandleBatteryDroppedOnFlashlight(DragOp->SlotIndex);
+				return true;
+			}
+		}
+	}
+
+	return Super::NativeOnDrop(InGeometry, InDragDropEvent, InOperation);
+}
+
 void UInventoryItemRowWidget::BuildWidgetTreeIfNeeded()
 {
 	if (!WidgetTree || bHasBuiltTree || WidgetTree->RootWidget)
@@ -185,7 +246,15 @@ void UInventoryItemRowWidget::ApplyItemDisplay()
 
 	if (TitleText)
 	{
-		const FText ItemDisplayName = ItemData.DisplayName.IsEmpty() ? FText::FromName(ItemData.ItemID) : ItemData.DisplayName;
+		FText ItemDisplayName = ItemData.DisplayName.IsEmpty() ? FText::FromName(ItemData.ItemID) : ItemData.DisplayName;
+		if (ItemData.ItemID == APickupItemActor::BatteryItemID)
+		{
+			ItemDisplayName = FText::FromString(FString::Printf(
+				TEXT("%s (%s)"),
+				*ItemDisplayName.ToString(),
+				*UInventoryWidget::FormatBatteryBayPercentString(ItemData.BatteryChargePercent)));
+		}
+
 		TitleText->SetText(FText::Format(
 			NSLOCTEXT("LostWithin", "InventoryItemTitle", "{0}   x{1}"),
 			ItemDisplayName,
@@ -194,7 +263,29 @@ void UInventoryItemRowWidget::ApplyItemDisplay()
 
 	if (DescText)
 	{
-		if (ItemData.Description.IsEmpty() || bIsDragGhost)
+		if (bIsDragGhost)
+		{
+			DescText->SetVisibility(ESlateVisibility::Collapsed);
+		}
+		else if (ItemData.ItemID == APickupItemActor::FlashlightItemID)
+		{
+			const FString Cell1Label = UInventoryWidget::FormatBatteryBayPercentString(ItemData.BatterySlot1Percent);
+			const FString Cell2Label = UInventoryWidget::FormatBatteryBayPercentString(ItemData.BatterySlot2Percent);
+			const int32 InstalledCount = ItemData.GetInstalledBatteryCount();
+			const int32 CombinedRounded = FMath::Clamp(FMath::RoundToInt(ItemData.GetCombinedBatteryPercent()), 0, 100);
+			const FString BatteryStatusLine = FString::Printf(
+				TEXT("Batteries (%d/2): %d%% Total  [Cell 1: %s | Cell 2: %s]"),
+				InstalledCount,
+				CombinedRounded,
+				*Cell1Label,
+				*Cell2Label);
+			const FString FullDesc = ItemData.Description.IsEmpty()
+				? BatteryStatusLine
+				: FString::Printf(TEXT("%s\n%s"), *ItemData.Description.ToString(), *BatteryStatusLine);
+			DescText->SetText(FText::FromString(FullDesc));
+			DescText->SetVisibility(ESlateVisibility::HitTestInvisible);
+		}
+		else if (ItemData.Description.IsEmpty())
 		{
 			DescText->SetVisibility(ESlateVisibility::Collapsed);
 		}

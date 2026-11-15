@@ -20,13 +20,15 @@ public class LostWithin : ModuleRules
 			"UMG",
 			"Slate",
 			"SlateCore",
-			"AssetRegistry"
+			"AssetRegistry",
+			"AnimGraphRuntime"
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[] { });
 
 		PublicIncludePaths.AddRange(new string[] {
 			"LostWithin",
+			"LostWithin/Animation",
 			"LostWithin/Components",
 			"LostWithin/Interaction",
 			"LostWithin/Inventory",

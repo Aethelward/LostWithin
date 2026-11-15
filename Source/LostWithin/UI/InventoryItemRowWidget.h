@@ -38,6 +38,9 @@ protected:
 	virtual FReply NativeOnMouseButtonDown(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent) override;
 	virtual void NativeOnDragDetected(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent, UDragDropOperation*& OutOperation) override;
 	virtual void NativeOnDragCancelled(const FDragDropEvent& InDragDropEvent, UDragDropOperation* InOperation) override;
+	virtual bool NativeOnDragOver(const FGeometry& InGeometry, const FDragDropEvent& InDragDropEvent, UDragDropOperation* InOperation) override;
+	virtual void NativeOnDragLeave(const FDragDropEvent& InDragDropEvent, UDragDropOperation* InOperation) override;
+	virtual bool NativeOnDrop(const FGeometry& InGeometry, const FDragDropEvent& InDragDropEvent, UDragDropOperation* InOperation) override;
 
 private:
 
@@ -46,6 +49,9 @@ private:
 
 	/** Updates title, description, and brush visuals from current state */
 	void ApplyItemDisplay();
+
+	/** Returns true when InOperation carries a usable Battery dragged over a Flashlight row */
+	bool CanAcceptBatteryDrag(UDragDropOperation* InOperation) const;
 
 	UPROPERTY(Transient)
 	TObjectPtr<UBorder> RowBorder = nullptr;

@@ -17,7 +17,7 @@ AHorrorCharacter::AHorrorCharacter()
 
 	// create the spotlight
 	SpotLight = CreateDefaultSubobject<USpotLightComponent>(TEXT("SpotLight"));
-	SpotLight->SetupAttachment(GetFirstPersonCameraComponent());
+	SpotLight->SetupAttachment(GetThirdPersonCameraComponent());
 
 	SpotLight->SetRelativeLocationAndRotation(FVector(30.0f, 17.5f, -5.0f), FRotator(-18.6f, -1.3f, 5.26f));
 	SpotLight->Intensity = 0.5;

@@ -2,26 +2,30 @@
 
 #include "LostWithinCharacter.h"
 #include "Animation/AnimInstance.h"
+#include "Animation/LostWithinFlashlightAnimInstance.h"
 #include "Camera/CameraComponent.h"
 #include "Components/AudioComponent.h"
 #include "Components/CapsuleComponent.h"
+#include "Components/PointLightComponent.h"
 #include "Components/PrimitiveComponent.h"
 #include "Components/ProximityFloatSpinComponent.h"
 #include "Components/SkeletalMeshComponent.h"
+#include "Components/SpotLightComponent.h"
+#include "Components/StaticMeshComponent.h"
 #include "Engine/LocalPlayer.h"
+#include "Engine/StaticMesh.h"
 #include "Engine/World.h"
 #include "EnhancedInputComponent.h"
 #include "EnhancedInputSubsystems.h"
 #include "GameFramework/CharacterMovementComponent.h"
-#include "GameFramework/DamageType.h"
 #include "GameFramework/PlayerController.h"
-#include "GameFramework/PlayerInput.h"
 #include "GameFramework/SpringArmComponent.h"
 #include "InputAction.h"
 #include "InputActionValue.h"
 #include "InputCoreTypes.h"
 #include "InputMappingContext.h"
 #include "Interaction/InteractableInterface.h"
+#include "Interaction/PickupItemActor.h"
 #include "Inventory/InventoryComponent.h"
 #include "Kismet/GameplayStatics.h"
 #include "LostWithin.h"
@@ -108,29 +112,11 @@ ALostWithinCharacter::ALostWithinCharacter()
 	// Set size for collision capsule
 	GetCapsuleComponent()->InitCapsuleSize(55.f, 96.0f);
 
-	// Create the first person mesh that will be viewed only by this character's owner
-	FirstPersonMesh = CreateDefaultSubobject<USkeletalMeshComponent>(TEXT("First Person Mesh"));
-
-	FirstPersonMesh->SetupAttachment(GetMesh());
-	FirstPersonMesh->SetOnlyOwnerSee(true);
-	FirstPersonMesh->FirstPersonPrimitiveType = EFirstPersonPrimitiveType::FirstPerson;
-	FirstPersonMesh->SetCollisionProfileName(FName("NoCollision"));
-
-	// Create the Camera Component
-	FirstPersonCameraComponent = CreateDefaultSubobject<UCameraComponent>(TEXT("First Person Camera"));
-	FirstPersonCameraComponent->SetupAttachment(FirstPersonMesh, FName("head"));
-	FirstPersonCameraComponent->SetRelativeLocationAndRotation(FVector(-2.8f, 5.89f, 0.0f), FRotator(0.0f, 90.0f, -90.0f));
-	FirstPersonCameraComponent->bUsePawnControlRotation = true;
-	FirstPersonCameraComponent->bEnableFirstPersonFieldOfView = true;
-	FirstPersonCameraComponent->bEnableFirstPersonScale = true;
-	FirstPersonCameraComponent->FirstPersonFieldOfView = 70.0f;
-	FirstPersonCameraComponent->FirstPersonScale = 0.6f;
-
-	// Create third-person boom and camera ([F5] POV switch)
+	// Create third-person boom and camera
 	ThirdPersonCameraBoom = CreateDefaultSubobject<USpringArmComponent>(TEXT("Third Person Camera Boom"));
 	ThirdPersonCameraBoom->SetupAttachment(GetCapsuleComponent());
 	ThirdPersonCameraBoom->SetRelativeLocation(FVector(0.0f, 0.0f, 60.0f));
-	ThirdPersonCameraBoom->TargetArmLength = 300.0f;
+	ThirdPersonCameraBoom->TargetArmLength = 200.0f;
 	ThirdPersonCameraBoom->SocketOffset = FVector(0.0f, 45.0f, 15.0f);
 	ThirdPersonCameraBoom->bUsePawnControlRotation = true;
 	ThirdPersonCameraBoom->bDoCollisionTest = true;
@@ -138,14 +124,41 @@ ALostWithinCharacter::ALostWithinCharacter()
 	ThirdPersonCameraComponent = CreateDefaultSubobject<UCameraComponent>(TEXT("Third Person Camera"));
 	ThirdPersonCameraComponent->SetupAttachment(ThirdPersonCameraBoom, USpringArmComponent::SocketName);
 	ThirdPersonCameraComponent->bUsePawnControlRotation = false;
-	ThirdPersonCameraComponent->bAutoActivate = false;
+	ThirdPersonCameraComponent->bAutoActivate = true;
 
 	// Create player inventory component
 	InventoryComponent = CreateDefaultSubobject<UInventoryComponent>(TEXT("Inventory Component"));
 
-	// Configure the character comps
-	GetMesh()->SetOwnerNoSee(true);
-	GetMesh()->FirstPersonPrimitiveType = EFirstPersonPrimitiveType::WorldSpaceRepresentation;
+	// Create held flashlight visual mesh attached to the character's right hand
+	FlashlightThirdPersonMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("Flashlight Third Person Mesh"));
+	FlashlightThirdPersonMesh->SetupAttachment(GetMesh(), FlashlightHandSocket);
+	FlashlightThirdPersonMesh->SetRelativeLocationAndRotation(FlashlightAttachRelativeLocation, FlashlightAttachRelativeRotation);
+	FlashlightThirdPersonMesh->SetRelativeScale3D(FVector(FlashlightHeldScale));
+	FlashlightThirdPersonMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	FlashlightThirdPersonMesh->SetOwnerNoSee(false);
+	FlashlightThirdPersonMesh->FirstPersonPrimitiveType = EFirstPersonPrimitiveType::None;
+	FlashlightThirdPersonMesh->SetCastShadow(true);
+	FlashlightThirdPersonMesh->SetVisibility(false);
+
+	// Create tactical flashlight lighting components in world space
+	FlashlightSpotLight = CreateDefaultSubobject<USpotLightComponent>(TEXT("Flashlight SpotLight"));
+	FlashlightSpotLight->SetupAttachment(GetCapsuleComponent());
+	FlashlightSpotLight->SetUsingAbsoluteLocation(true);
+	FlashlightSpotLight->SetUsingAbsoluteRotation(true);
+	FlashlightSpotLight->SetCastShadows(true);
+	FlashlightSpotLight->SetVisibility(false);
+
+	FlashlightFillLight = CreateDefaultSubobject<UPointLightComponent>(TEXT("Flashlight Fill Light"));
+	FlashlightFillLight->SetupAttachment(GetCapsuleComponent());
+	FlashlightFillLight->SetUsingAbsoluteLocation(true);
+	FlashlightFillLight->SetCastShadows(false);
+	FlashlightFillLight->SetVisibility(false);
+
+	ApplyFlashlightLightingSettings();
+
+	// Configure the character comps for 3rd-person visibility
+	GetMesh()->SetOwnerNoSee(false);
+	GetMesh()->FirstPersonPrimitiveType = EFirstPersonPrimitiveType::None;
 
 	GetCapsuleComponent()->SetCapsuleSize(34.0f, 96.0f);
 
@@ -165,17 +178,32 @@ void ALostWithinCharacter::BeginPlay()
 {
 	Super::BeginPlay();
 
-	if (FirstPersonMesh)
-	{
-		DefaultFirstPersonMeshRelativeLocation = FirstPersonMesh->GetRelativeLocation();
-	}
-
 	if (ThirdPersonCameraBoom)
 	{
 		DefaultThirdPersonBoomRelativeLocation = ThirdPersonCameraBoom->GetRelativeLocation();
 	}
 
-	ApplyPOVState();
+	if (ThirdPersonCameraComponent)
+	{
+		ThirdPersonCameraComponent->SetActive(true);
+	}
+
+	if (USkeletalMeshComponent* ThirdPersonMesh = GetMesh())
+	{
+		ThirdPersonMesh->SetOwnerNoSee(false);
+		ThirdPersonMesh->FirstPersonPrimitiveType = EFirstPersonPrimitiveType::None;
+		ThirdPersonMesh->MarkRenderStateDirty();
+	}
+
+	InitializeFlashlightSetup();
+	SetupFlashlightAnimationWrapper();
+
+	if (InventoryComponent)
+	{
+		InventoryComponent->OnInventoryUpdated.AddDynamic(this, &ALostWithinCharacter::HandleInventoryUpdated);
+	}
+
+	HandleInventoryUpdated();
 	UpdateMovementSpeed();
 	EnsureDefaultAudioAssets();
 	RegisterRuntimeInputMappingContext();
@@ -193,6 +221,7 @@ void ALostWithinCharacter::BeginPlay()
 				InventoryWidget->SetInventoryOpen(bIsInventoryOpen);
 				InventoryWidget->AddToViewport(10);
 				ApplyInventoryInputState();
+				UpdateFlashlightBatteryHUD();
 			}
 		}
 
@@ -206,6 +235,11 @@ void ALostWithinCharacter::BeginPlay()
 void ALostWithinCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
 	StopExplorationBGM();
+
+	if (InventoryComponent)
+	{
+		InventoryComponent->OnInventoryUpdated.RemoveDynamic(this, &ALostWithinCharacter::HandleInventoryUpdated);
+	}
 
 	if (bIsInventoryOpen)
 	{
@@ -235,15 +269,6 @@ void ALostWithinCharacter::Tick(float DeltaTime)
 
 	const float TargetCrouchOffset = bIsCrouched ? CrouchCameraZOffset : 0.0f;
 	CurrentCrouchCameraOffset = FMath::FInterpTo(CurrentCrouchCameraOffset, TargetCrouchOffset, DeltaTime, CrouchCameraInterpSpeed);
-	CurrentHitPunchOffset = FMath::VInterpTo(CurrentHitPunchOffset, FVector::ZeroVector, DeltaTime, 16.0f);
-
-	if (FirstPersonMesh)
-	{
-		const FVector DesiredFPLocation = DefaultFirstPersonMeshRelativeLocation
-			+ FVector(0.0f, 0.0f, CurrentCrouchCameraOffset)
-			+ CurrentHitPunchOffset;
-		FirstPersonMesh->SetRelativeLocation(DesiredFPLocation);
-	}
 
 	if (ThirdPersonCameraBoom)
 	{
@@ -251,6 +276,31 @@ void ALostWithinCharacter::Tick(float DeltaTime)
 			+ FVector(0.0f, 0.0f, CurrentCrouchCameraOffset);
 		ThirdPersonCameraBoom->SetRelativeLocation(DesiredBoomLocation);
 	}
+
+	const float CurrentAimPitch = FMath::Clamp(FRotator::NormalizeAxis(GetBaseAimRotation().Pitch), -89.0f, 89.0f);
+	if (FlashlightAnimInstance)
+	{
+		FlashlightAnimInstance->SetAimPitch(CurrentAimPitch);
+	}
+
+	if (bHasFlashlight && bIsFlashlightOn && InventoryComponent)
+	{
+		bool bBatteryDepleted = false;
+		InventoryComponent->ConsumeFlashlightBattery(DeltaTime, FlashlightBatteryDurationSeconds, bBatteryDepleted);
+		if (bBatteryDepleted)
+		{
+			bIsFlashlightOn = false;
+			bFlashlightAimInitialized = false;
+			RefreshFlashlightState();
+		}
+		else
+		{
+			ApplyFlashlightLightingSettings();
+			UpdateFlashlightBatteryHUD();
+		}
+	}
+
+	UpdateFlashlightTransformAndLighting(DeltaTime);
 
 	if (IsLocallyControlled())
 	{
@@ -289,24 +339,24 @@ void ALostWithinCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInpu
 		EnhancedInputComponent->BindAction(LookAction, ETriggerEvent::Triggered, this, &ALostWithinCharacter::LookInput);
 		EnhancedInputComponent->BindAction(MouseLookAction, ETriggerEvent::Triggered, this, &ALostWithinCharacter::LookInput);
 
-		// Interaction & Hit
+		// Interaction ([LMB]) & Flashlight Toggle ([F])
 		if (InteractAction)
 		{
 			EnhancedInputComponent->BindAction(InteractAction, ETriggerEvent::Started, this, &ALostWithinCharacter::DoInteract);
 		}
-		if (HitAction)
+		if (ToggleFlashlightAction)
 		{
-			EnhancedInputComponent->BindAction(HitAction, ETriggerEvent::Started, this, &ALostWithinCharacter::DoHit);
+			EnhancedInputComponent->BindAction(ToggleFlashlightAction, ETriggerEvent::Started, this, &ALostWithinCharacter::DoToggleFlashlight);
+		}
+		if (ReloadFlashlightAction)
+		{
+			EnhancedInputComponent->BindAction(ReloadFlashlightAction, ETriggerEvent::Started, this, &ALostWithinCharacter::DoReloadFlashlight);
 		}
 
-		// Inventory UI ([Tab]) & POV Toggle ([F5])
+		// Inventory UI ([Tab])
 		if (ToggleInventoryAction)
 		{
 			EnhancedInputComponent->BindAction(ToggleInventoryAction, ETriggerEvent::Started, this, &ALostWithinCharacter::DoToggleInventory);
-		}
-		if (SwitchPOVAction)
-		{
-			EnhancedInputComponent->BindAction(SwitchPOVAction, ETriggerEvent::Started, this, &ALostWithinCharacter::DoTogglePOV);
 		}
 
 		// Movement states: Walk ([Left Shift]), Sprint ([Left Ctrl]), Crouch ([C])
@@ -408,50 +458,56 @@ void ALostWithinCharacter::DoInteract()
 	}
 }
 
-void ALostWithinCharacter::DoHit()
+void ALostWithinCharacter::DoToggleFlashlight()
 {
-	if (bIsInventoryOpen)
+	if (bIsInventoryOpen || !bHasFlashlight)
 	{
 		return;
 	}
 
-	const UCameraComponent* ActiveCamera = GetActiveGameplayCamera();
-	const FVector CameraForward = ActiveCamera ? ActiveCamera->GetForwardVector() : GetActorForwardVector();
-
-	if (GetMesh())
+	const bool bDesiredOn = !bIsFlashlightOn;
+	if (bDesiredOn && (!InventoryComponent || !InventoryComponent->CanOperateFlashlight()))
 	{
-		const FVector WorldPunchDelta = CameraForward * 14.0f + FVector(0.0f, 0.0f, -3.0f);
-		CurrentHitPunchOffset = GetMesh()->GetComponentTransform().InverseTransformVectorNoScale(WorldPunchDelta);
+		bIsFlashlightOn = false;
+		bFlashlightAimInitialized = false;
+		if (InventoryComponent)
+		{
+			InventoryComponent->SetFlashlightOnState(false);
+		}
+		RefreshFlashlightState();
+		return;
 	}
 
-	FHitResult HitResult;
-	UObject* InteractableTarget = FindInteractableInView(HitResult, HitDistance);
-	if (HitResult.bBlockingHit)
+	bIsFlashlightOn = bDesiredOn;
+	if (!bIsFlashlightOn)
 	{
-		if (UPrimitiveComponent* HitComp = HitResult.GetComponent())
-		{
-			if (HitComp->IsSimulatingPhysics())
-			{
-				HitComp->AddImpulseAtLocation(CameraForward * HitImpulseStrength, HitResult.ImpactPoint);
-			}
-		}
+		bFlashlightAimInitialized = false;
+	}
+	if (InventoryComponent)
+	{
+		InventoryComponent->SetFlashlightOnState(bIsFlashlightOn);
+	}
+	RefreshFlashlightState();
+}
 
-		if (AActor* HitActor = HitResult.GetActor())
-		{
-			UGameplayStatics::ApplyPointDamage(
-				HitActor,
-				HitDamage,
-				CameraForward,
-				HitResult,
-				GetController(),
-				this,
-				UDamageType::StaticClass());
-		}
+void ALostWithinCharacter::DoReloadFlashlight()
+{
+	if (bIsInventoryOpen || !bHasFlashlight || !InventoryComponent)
+	{
+		return;
+	}
 
-		if (InteractableTarget)
-		{
-			IInteractableInterface::Execute_OnHit(InteractableTarget, this, HitResult);
-		}
+	if (InventoryComponent->ReloadBestBatteryIntoFlashlight())
+	{
+		PlayPickupAnimation();
+	}
+}
+
+void ALostWithinCharacter::PlayPickupAnimation()
+{
+	if (FlashlightAnimInstance)
+	{
+		FlashlightAnimInstance->PlayPickupAnimation();
 	}
 }
 
@@ -506,12 +562,6 @@ void ALostWithinCharacter::ApplyInventoryInputState()
 	}
 }
 
-void ALostWithinCharacter::DoTogglePOV()
-{
-	bIsThirdPerson = !bIsThirdPerson;
-	ApplyPOVState();
-}
-
 void ALostWithinCharacter::DoStartWalk()
 {
 	bIsWalking = true;
@@ -552,7 +602,7 @@ void ALostWithinCharacter::DoToggleCrouch()
 
 UCameraComponent* ALostWithinCharacter::GetActiveGameplayCamera() const
 {
-	return (bIsThirdPerson && ThirdPersonCameraComponent) ? ThirdPersonCameraComponent : FirstPersonCameraComponent;
+	return ThirdPersonCameraComponent;
 }
 
 void ALostWithinCharacter::EnsureDefaultInputActionsAndMapping()
@@ -573,10 +623,10 @@ void ALostWithinCharacter::EnsureDefaultInputActionsAndMapping()
 		}
 	};
 
-	EnsureActionAndKey(InteractAction, TEXT("IA_RuntimeInteract"), EKeys::F);
-	EnsureActionAndKey(HitAction, TEXT("IA_RuntimeHit"), EKeys::LeftMouseButton);
+	EnsureActionAndKey(InteractAction, TEXT("IA_RuntimeInteract"), EKeys::LeftMouseButton);
+	EnsureActionAndKey(ToggleFlashlightAction, TEXT("IA_RuntimeToggleFlashlight"), EKeys::F);
+	EnsureActionAndKey(ReloadFlashlightAction, TEXT("IA_RuntimeReloadFlashlight"), EKeys::R);
 	EnsureActionAndKey(ToggleInventoryAction, TEXT("IA_RuntimeToggleInventory"), EKeys::Tab);
-	EnsureActionAndKey(SwitchPOVAction, TEXT("IA_RuntimeSwitchPOV"), EKeys::F5);
 	EnsureActionAndKey(WalkModeAction, TEXT("IA_RuntimeWalk"), EKeys::LeftShift);
 	EnsureActionAndKey(SprintModeAction, TEXT("IA_RuntimeSprint"), EKeys::LeftControl);
 	EnsureActionAndKey(CrouchAction, TEXT("IA_RuntimeCrouch"), EKeys::C);
@@ -595,15 +645,6 @@ void ALostWithinCharacter::RegisterRuntimeInputMappingContext()
 		return;
 	}
 
-	// Prevent Unreal's default F5 debug command ("viewmode shadercomplexity") from overriding POV toggle
-	if (PC->PlayerInput)
-	{
-		PC->PlayerInput->DebugExecBindings.RemoveAll([](const FKeyBind& Bind)
-		{
-			return Bind.Key == EKeys::F5;
-		});
-	}
-
 	EnsureDefaultInputActionsAndMapping();
 
 	if (UEnhancedInputLocalPlayerSubsystem* Subsystem = ULocalPlayer::GetSubsystem<UEnhancedInputLocalPlayerSubsystem>(PC->GetLocalPlayer()))
@@ -616,30 +657,273 @@ void ALostWithinCharacter::RegisterRuntimeInputMappingContext()
 	}
 }
 
-void ALostWithinCharacter::ApplyPOVState()
+void ALostWithinCharacter::SetupFlashlightAnimationWrapper()
 {
-	if (FirstPersonCameraComponent)
+	USkeletalMeshComponent* ThirdPersonMesh = GetMesh();
+	if (!ThirdPersonMesh)
 	{
-		FirstPersonCameraComponent->SetActive(!bIsThirdPerson);
+		return;
 	}
 
-	if (ThirdPersonCameraComponent)
+	ThirdPersonMesh->VisibilityBasedAnimTickOption = EVisibilityBasedAnimTickOption::AlwaysTickPoseAndRefreshBones;
+
+	UClass* UnarmedBaseClass = LoadClass<UAnimInstance>(nullptr, TEXT("/Game/Characters/Mannequins/Anims/Unarmed/ABP_Unarmed.ABP_Unarmed_C"));
+	UClass* CurrentAnimClass = ThirdPersonMesh->GetAnimClass();
+	UClass* BaseAnimClass = (CurrentAnimClass && CurrentAnimClass != ULostWithinFlashlightAnimInstance::StaticClass())
+		? CurrentAnimClass
+		: UnarmedBaseClass;
+
+	if (!BaseAnimClass || BaseAnimClass == ULostWithinFlashlightAnimInstance::StaticClass())
 	{
-		ThirdPersonCameraComponent->SetActive(bIsThirdPerson);
+		FlashlightAnimInstance = Cast<ULostWithinFlashlightAnimInstance>(ThirdPersonMesh->GetAnimInstance());
+		return;
 	}
 
-	if (FirstPersonMesh)
+	const float InitialAimPitch = FMath::Clamp(FRotator::NormalizeAxis(GetBaseAimRotation().Pitch), -89.0f, 89.0f);
+	ThirdPersonMesh->SetAnimInstanceClass(ULostWithinFlashlightAnimInstance::StaticClass());
+	FlashlightAnimInstance = Cast<ULostWithinFlashlightAnimInstance>(ThirdPersonMesh->GetAnimInstance());
+	if (FlashlightAnimInstance)
 	{
-		FirstPersonMesh->SetVisibility(!bIsThirdPerson, true);
+		FlashlightAnimInstance->SetBaseAnimClass(BaseAnimClass);
+		FlashlightAnimInstance->SetHasFlashlight(bHasFlashlight);
+		FlashlightAnimInstance->SetAimPitch(InitialAimPitch);
+	}
+}
+
+void ALostWithinCharacter::InitializeFlashlightSetup()
+{
+	UStaticMesh* FlashlightMesh = LoadObject<UStaticMesh>(nullptr, APickupItemActor::FlashlightMeshAssetPath);
+
+	if (FlashlightThirdPersonMesh)
+	{
+		if (USkeletalMeshComponent* CharacterMesh = GetMesh())
+		{
+			FlashlightThirdPersonMesh->AttachToComponent(CharacterMesh, FAttachmentTransformRules::SnapToTargetNotIncludingScale, FlashlightHandSocket);
+		}
+
+		if (FlashlightMesh)
+		{
+			FlashlightThirdPersonMesh->SetStaticMesh(FlashlightMesh);
+		}
+
+		FlashlightThirdPersonMesh->SetRelativeLocationAndRotation(FlashlightAttachRelativeLocation, FlashlightAttachRelativeRotation);
+		FlashlightThirdPersonMesh->SetRelativeScale3D(FVector(FlashlightHeldScale));
 	}
 
-	if (USkeletalMeshComponent* ThirdPersonMesh = GetMesh())
+	ApplyFlashlightLightingSettings();
+}
+
+float ALostWithinCharacter::GetFlashlightBatteryPercent() const
+{
+	if (!bHasFlashlight || !InventoryComponent)
 	{
-		ThirdPersonMesh->SetOwnerNoSee(!bIsThirdPerson);
-		ThirdPersonMesh->FirstPersonPrimitiveType = bIsThirdPerson
-			? EFirstPersonPrimitiveType::None
-			: EFirstPersonPrimitiveType::WorldSpaceRepresentation;
-		ThirdPersonMesh->MarkRenderStateDirty();
+		return 0.0f;
+	}
+
+	int32 InstalledCount = 0;
+	float CombinedPercent = 0.0f;
+	float Slot1 = 0.0f;
+	float Slot2 = 0.0f;
+	InventoryComponent->GetFlashlightBatteryState(InstalledCount, CombinedPercent, Slot1, Slot2);
+	return CombinedPercent;
+}
+
+int32 ALostWithinCharacter::GetFlashlightBatteryCount() const
+{
+	if (!bHasFlashlight || !InventoryComponent)
+	{
+		return 0;
+	}
+
+	int32 InstalledCount = 0;
+	float CombinedPercent = 0.0f;
+	float Slot1 = 0.0f;
+	float Slot2 = 0.0f;
+	InventoryComponent->GetFlashlightBatteryState(InstalledCount, CombinedPercent, Slot1, Slot2);
+	return InstalledCount;
+}
+
+void ALostWithinCharacter::ApplyFlashlightLightingSettings()
+{
+	FLostWithinFlashlightLightParams BaseParams;
+	BaseParams.SpotIntensity = FlashlightSpotIntensity;
+	BaseParams.FillIntensity = FlashlightFillIntensity;
+	BaseParams.AttenuationRadius = FlashlightAttenuationRadius;
+	BaseParams.InnerConeAngle = FlashlightInnerConeAngle;
+	BaseParams.OuterConeAngle = FlashlightOuterConeAngle;
+	BaseParams.LightColor = FlashlightLightColor;
+
+	float EffectivePercent = 25.0f;
+	if (bHasFlashlight && InventoryComponent)
+	{
+		int32 InstalledCount = 0;
+		float CombinedPercent = 0.0f;
+		float Slot1 = 0.0f;
+		float Slot2 = 0.0f;
+		InventoryComponent->GetFlashlightBatteryState(InstalledCount, CombinedPercent, Slot1, Slot2);
+		EffectivePercent = (InstalledCount == 2) ? CombinedPercent : 0.0f;
+	}
+
+	const FLostWithinFlashlightLightParams ScaledParams = APickupItemActor::ComputeEffectiveFlashlightLightParams(
+		BaseParams,
+		EffectivePercent);
+	APickupItemActor::ApplyFlashlightLightingParams(FlashlightSpotLight, FlashlightFillLight, ScaledParams);
+}
+
+#if WITH_EDITOR
+void ALostWithinCharacter::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
+{
+	Super::PostEditChangeProperty(PropertyChangedEvent);
+	ApplyFlashlightLightingSettings();
+}
+#endif
+
+void ALostWithinCharacter::HandleInventoryUpdated()
+{
+	bHasFlashlight = InventoryComponent && InventoryComponent->HasItem(APickupItemActor::FlashlightItemID);
+
+	if (!bHasFlashlight || !InventoryComponent || !InventoryComponent->CanOperateFlashlight())
+	{
+		bIsFlashlightOn = false;
+		bFlashlightAimInitialized = false;
+		if (bHasFlashlight && InventoryComponent)
+		{
+			InventoryComponent->SetFlashlightOnState(false);
+		}
+	}
+	else
+	{
+		bIsFlashlightOn = InventoryComponent->GetFlashlightOnState();
+		if (!bIsFlashlightOn)
+		{
+			bFlashlightAimInitialized = false;
+		}
+	}
+
+	if (FlashlightAnimInstance)
+	{
+		FlashlightAnimInstance->SetHasFlashlight(bHasFlashlight);
+	}
+
+	RefreshFlashlightState();
+}
+
+void ALostWithinCharacter::RefreshFlashlightState()
+{
+	ApplyFlashlightLightingSettings();
+
+	if (FlashlightThirdPersonMesh)
+	{
+		FlashlightThirdPersonMesh->SetOwnerNoSee(false);
+		FlashlightThirdPersonMesh->FirstPersonPrimitiveType = EFirstPersonPrimitiveType::None;
+		FlashlightThirdPersonMesh->SetVisibility(bHasFlashlight, false);
+		FlashlightThirdPersonMesh->MarkRenderStateDirty();
+	}
+
+	const bool bLightActive = bHasFlashlight && bIsFlashlightOn && InventoryComponent && InventoryComponent->CanOperateFlashlight();
+	if (FlashlightSpotLight)
+	{
+		FlashlightSpotLight->SetVisibility(bLightActive);
+	}
+	if (FlashlightFillLight)
+	{
+		FlashlightFillLight->SetVisibility(bLightActive);
+	}
+
+	if (bLightActive)
+	{
+		UpdateFlashlightTransformAndLighting(0.0f);
+	}
+
+	UpdateFlashlightBatteryHUD();
+}
+
+void ALostWithinCharacter::UpdateFlashlightBatteryHUD()
+{
+	if (!InventoryWidget)
+	{
+		return;
+	}
+
+	int32 InstalledCount = 0;
+	float CombinedPercent = 0.0f;
+	float Slot1Percent = FInventoryItem::EmptyBatterySlotValue;
+	float Slot2Percent = FInventoryItem::EmptyBatterySlotValue;
+	if (bHasFlashlight && InventoryComponent)
+	{
+		InventoryComponent->GetFlashlightBatteryState(InstalledCount, CombinedPercent, Slot1Percent, Slot2Percent);
+	}
+
+	InventoryWidget->UpdateFlashlightBatteryHUD(
+		bHasFlashlight,
+		bIsFlashlightOn,
+		InstalledCount,
+		CombinedPercent,
+		Slot1Percent,
+		Slot2Percent);
+}
+
+void ALostWithinCharacter::UpdateFlashlightTransformAndLighting(float DeltaTime)
+{
+	if (!bHasFlashlight || !bIsFlashlightOn || !FlashlightSpotLight)
+	{
+		return;
+	}
+
+	const UCameraComponent* ActiveCamera = GetActiveGameplayCamera();
+	if (!ActiveCamera)
+	{
+		return;
+	}
+
+	const FVector CameraLocation = ActiveCamera->GetComponentLocation();
+	const FVector CameraForward = ActiveCamera->GetForwardVector().GetSafeNormal();
+
+	FVector TargetPoint = CameraLocation + CameraForward * FlashlightConvergenceDistance;
+	if (UWorld* World = GetWorld())
+	{
+		FHitResult AimHit;
+		FCollisionQueryParams Params(SCENE_QUERY_STAT(FlashlightAimTrace), false, this);
+		if (World->LineTraceSingleByChannel(AimHit, CameraLocation, TargetPoint, ECC_Visibility, Params) && AimHit.Distance > 80.0f)
+		{
+			TargetPoint = AimHit.ImpactPoint;
+		}
+	}
+
+	FVector MuzzleOrigin;
+	if (FlashlightThirdPersonMesh)
+	{
+		MuzzleOrigin = FlashlightThirdPersonMesh->GetComponentLocation() + FlashlightThirdPersonMesh->GetForwardVector() * (100.0f * FlashlightHeldScale + 4.0f);
+	}
+	else if (GetMesh() && GetMesh()->DoesSocketExist(FlashlightHandSocket))
+	{
+		MuzzleOrigin = GetMesh()->GetSocketLocation(FlashlightHandSocket) + CameraForward * 22.0f;
+	}
+	else
+	{
+		MuzzleOrigin = GetPawnViewLocation() + CameraForward * 30.0f;
+	}
+
+	const FVector DesiredDirection = (TargetPoint - MuzzleOrigin).GetSafeNormal();
+	const FRotator DesiredRotation = DesiredDirection.IsNearlyZero()
+		? ActiveCamera->GetComponentRotation()
+		: DesiredDirection.Rotation();
+
+	FRotator FinalRotation = DesiredRotation;
+	if (bFlashlightAimInitialized && DeltaTime > 0.0f && FlashlightAimInterpSpeed > 0.0f)
+	{
+		FinalRotation = FMath::RInterpTo(FlashlightSpotLight->GetComponentRotation(), DesiredRotation, DeltaTime, FlashlightAimInterpSpeed);
+	}
+	else
+	{
+		bFlashlightAimInitialized = true;
+	}
+
+	FlashlightSpotLight->SetWorldLocationAndRotation(MuzzleOrigin, FinalRotation);
+
+	if (FlashlightFillLight)
+	{
+		FlashlightFillLight->SetWorldLocation(MuzzleOrigin + FinalRotation.Vector() * 6.0f);
 	}
 }
 
@@ -683,9 +967,7 @@ UObject* ALostWithinCharacter::FindInteractableInView(FHitResult& OutHit, float 
 
 	const FVector CameraLocation = ActiveCamera->GetComponentLocation();
 	const FVector CameraForward = ActiveCamera->GetForwardVector();
-	const float ForwardOffset = bIsThirdPerson
-		? FMath::Max(0.0f, FVector::DotProduct(GetPawnViewLocation() - CameraLocation, CameraForward))
-		: 0.0f;
+	const float ForwardOffset = FMath::Max(0.0f, FVector::DotProduct(GetPawnViewLocation() - CameraLocation, CameraForward));
 
 	const FVector TraceStart = CameraLocation + CameraForward * ForwardOffset;
 	const FVector TraceEnd = TraceStart + CameraForward * MaxTraceDistance;
