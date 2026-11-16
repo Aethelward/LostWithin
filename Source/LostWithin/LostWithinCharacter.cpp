@@ -14,6 +14,7 @@
 #include "Components/StaticMeshComponent.h"
 #include "Engine/LocalPlayer.h"
 #include "Engine/StaticMesh.h"
+#include "TimerManager.h"
 #include "Engine/World.h"
 #include "EnhancedInputComponent.h"
 #include "EnhancedInputSubsystems.h"
@@ -230,6 +231,7 @@ void ALostWithinCharacter::BeginPlay()
 			StartExplorationBGM();
 		}
 	}
+	GetWorldTimerManager().SetTimer(FlickerTimerHandle, this, &ALostWithinCharacter::CheckFlashlightFlicker, 0.2f, true);
 }
 
 void ALostWithinCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
@@ -925,6 +927,61 @@ void ALostWithinCharacter::UpdateFlashlightTransformAndLighting(float DeltaTime)
 	{
 		FlashlightFillLight->SetWorldLocation(MuzzleOrigin + FinalRotation.Vector() * 6.0f);
 	}
+}
+
+void ALostWithinCharacter::CheckFlashlightFlicker()
+{
+	if (!bIsFlashlightOn || !FlashlightSpotLight)
+	{
+		return;
+	}
+
+	const float Percent = GetFlashlightBatteryPercent();
+	if (Percent <= 25.0f)
+	{
+		const float Chance = FMath::Clamp((25.0f - Percent) * 4.0f, 0.0f, 100.0f);
+		if (FMath::FRand() * 100.0f < Chance)
+		{
+			StartFlickerSequence();
+		}
+	}
+}
+
+void ALostWithinCharacter::StartFlickerSequence()
+{
+	const int32 NumFlickers = FMath::RandRange(3, 8);
+	float Delay = 0.0f;
+	for (int32 i = 0; i < NumFlickers; ++i)
+	{
+		FTimerHandle UnusedHandle;
+		GetWorldTimerManager().SetTimer(UnusedHandle, [this]()
+		{
+			if (FlashlightSpotLight)
+			{
+				const bool bIsVisible = FlashlightSpotLight->IsVisible();
+				FlashlightSpotLight->SetVisibility(!bIsVisible);
+				if (FlashlightFillLight)
+				{
+					FlashlightFillLight->SetVisibility(!bIsVisible);
+				}
+			}
+		}, Delay, false);
+		Delay += FMath::FRandRange(0.03f, 0.07f);
+	}
+
+	// Ensure light is back on at the end
+	FTimerHandle EndHandle;
+	GetWorldTimerManager().SetTimer(EndHandle, [this]()
+	{
+		if (bIsFlashlightOn && FlashlightSpotLight)
+		{
+			FlashlightSpotLight->SetVisibility(true);
+			if (FlashlightFillLight)
+			{
+				FlashlightFillLight->SetVisibility(true);
+			}
+		}
+	}, Delay, false);
 }
 
 void ALostWithinCharacter::UpdateMovementSpeed()

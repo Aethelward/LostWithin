@@ -392,3 +392,9 @@ Build/
 # Local Engine & Developer Collections
 Content/Developers/
 Content/Collections/
+
+# Antigravity & MCP Local Config
+.mcp.json
+mcp_config.json
+.gemini/
+

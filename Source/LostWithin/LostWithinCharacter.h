@@ -413,6 +413,12 @@ private:
 	/** Updates world position and camera-converged aim rotation of the flashlight lighting components */
 	void UpdateFlashlightTransformAndLighting(float DeltaTime);
 
+	/** Checks if the flashlight should flicker based on battery percentage */
+	void CheckFlashlightFlicker();
+
+	/** Starts a rapid sequence of flashlight flickers */
+	void StartFlickerSequence();
+
 	/** Closes Placeholder Inventory when triggered from UI keyboard focus ([Tab]) */
 	UFUNCTION()
 	void HandleInventoryCloseRequested();
@@ -456,6 +462,9 @@ private:
 
 	UPROPERTY(Transient)
 	TObjectPtr<ULostWithinFlashlightAnimInstance> FlashlightAnimInstance = nullptr;
+
+	FTimerHandle FlickerTimerHandle;
+	FTimerHandle FlickerSeqTimerHandle;
 
 	FVector DefaultThirdPersonBoomRelativeLocation = FVector::ZeroVector;
 
