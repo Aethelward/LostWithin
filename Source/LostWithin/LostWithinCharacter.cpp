@@ -1177,6 +1177,8 @@ void ALostWithinCharacter::PlayRandomSoundAtFeet(const TArray<TObjectPtr<USoundB
 			FeetLocation,
 			VolumeMultiplier,
 			FMath::FRandRange(MinPitch, MaxPitch));
+
+		MakeNoise(VolumeMultiplier, this, FeetLocation);
 	}
 }
 
