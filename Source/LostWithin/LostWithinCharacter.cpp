@@ -37,6 +37,20 @@
 
 namespace
 {
+	void PlayFlashlightSwitchSound(AActor* WorldContext, bool bIsOn)
+	{
+		if (!WorldContext) return;
+		
+		USoundBase* SwitchOnSound = LoadObject<USoundBase>(nullptr, TEXT("/Game/Item/Flashlight/SFX/Switch/Switch_ON.Switch_ON"));
+		USoundBase* SwitchOffSound = LoadObject<USoundBase>(nullptr, TEXT("/Game/Item/Flashlight/SFX/Switch/Switch_OFF.Switch_OFF"));
+		
+		USoundBase* SoundToPlay = bIsOn ? SwitchOnSound : SwitchOffSound;
+		if (SoundToPlay)
+		{
+			UGameplayStatics::PlaySoundAtLocation(WorldContext, SoundToPlay, WorldContext->GetActorLocation());
+		}
+	}
+
 	void EnsureSoundArrayLoaded(TArray<TObjectPtr<USoundBase>>& OutSounds, TConstArrayView<const TCHAR*> AssetPaths)
 	{
 		if (OutSounds.IsEmpty())
@@ -489,6 +503,12 @@ void ALostWithinCharacter::DoToggleFlashlight()
 	{
 		InventoryComponent->SetFlashlightOnState(bIsFlashlightOn);
 	}
+	
+	if (IsLocallyControlled())
+	{
+		PlayFlashlightSwitchSound(this, bIsFlashlightOn);
+	}
+	
 	RefreshFlashlightState();
 }
 

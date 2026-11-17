@@ -7,12 +7,7 @@
 		{
 			"Name": "LostWithin",
 			"Type": "Runtime",
-			"LoadingPhase": "Default",
-			"AdditionalDependencies": [
-				"Engine",
-				"AIModule",
-				"UMG"
-			]
+			"LoadingPhase": "Default"
 		},
 		{
 			"Name": "LostWithinEditor",
@@ -23,10 +18,7 @@
 	"Plugins": [
 		{
 			"Name": "ModelingToolsEditorMode",
-			"Enabled": true,
-			"TargetAllowList": [
-				"Editor"
-			]
+			"Enabled": true
 		},
 		{
 			"Name": "StateTree",
@@ -44,6 +36,14 @@
 				"Mac",
 				"Linux"
 			]
+		},
+		{
+			"Name": "VisualStudioTools",
+			"Enabled": true,
+			"SupportedTargetPlatforms": [
+				"Win64"
+			],
+			"MarketplaceURL": "com.epicgames.launcher://ue/marketplace/product/362651520df94e4fa65492dbcba44ae2"
 		}
 	]
 }

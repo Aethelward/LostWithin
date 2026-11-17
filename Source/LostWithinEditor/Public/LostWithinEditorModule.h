@@ -5,6 +5,8 @@
 #include "CoreMinimal.h"
 #include "Modules/ModuleInterface.h"
 
+class IConsoleObject;
+
 class FLostWithinEditorModule : public IModuleInterface
 {
 public:
@@ -13,5 +15,5 @@ public:
 
 private:
 	FName RegisteredVisualizerClassName = NAME_None;
+	IConsoleObject* MonsterCatSetupCommand = nullptr;
 };
-

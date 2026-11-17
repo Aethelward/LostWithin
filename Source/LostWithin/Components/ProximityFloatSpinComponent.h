@@ -550,6 +550,9 @@ private:
 	/** Advances or clears the [LMB] petting squash animation and returns current fractional squeeze [0..1] */
 	float UpdateInteractionSqueeze(AActor* Owner, float DeltaTime);
 
+	/** Applies the white-cyan glow effect based on unstable matter intensity */
+	void UpdateCatGlow(float Intensity, float ElapsedTime);
+
 	/** Immediately restores base mesh/actor scale and clears any active squeeze animation */
 	void ResetInteractionSqueeze(AActor* Owner);
 
@@ -593,7 +596,7 @@ private:
 	void InitializeShockwaveVisuals(AActor* Owner);
 
 	/** Triggers a cat-centered neon shockwave ring & flash light burst */
-	void TriggerCatShockwave(AActor* Owner, const FLinearColor& WaveColor);
+	void TriggerCatShockwave(AActor* Owner, const FLinearColor& WaveColor, float RadiusScale = 1.0f);
 
 	/** Advances active shockwave ring expansion and outputs normalized post-process impact alpha [0..1] */
 	void UpdateCatShockwave(float DeltaTime, float& OutPostProcessPulseAlpha);
@@ -725,6 +728,7 @@ private:
 	float ShockwaveElapsed = 0.0f;
 	float ShockwaveDuration = 0.90f;
 	float ShockwaveMaxRadius = 2200.0f;
+	float ActiveShockwaveRadiusScale = 1.0f;
 	FVector ShockwaveOrigin = FVector::ZeroVector;
 	FLinearColor ActiveShockwaveColor = FLinearColor::White;
 
@@ -760,4 +764,7 @@ private:
 
 	UPROPERTY(Transient)
 	TObjectPtr<UPointLightComponent> ShockwaveFlashPointLight = nullptr;
+
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UMaterialInstanceDynamic>> CatMaterialInstances;
 };

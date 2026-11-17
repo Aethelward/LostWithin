@@ -12,6 +12,42 @@
 #include "PhysicsEngine/BodySetup.h"
 #include "Sound/SoundBase.h"
 #include "Sound/SoundWave.h"
+#include "Kismet/GameplayStatics.h"
+
+// Define helper to load impact sounds
+namespace
+{
+	USoundBase* LoadImpactSound(FName ItemID, int32 Index)
+	{
+		// Keys are in a shared folder "Keys" not named by ItemID directly
+		FString FolderName = ItemID.ToString();
+		if (ItemID == APickupItemActor::KeyItemID || ItemID == APickupItemActor::OldKeyItemID || ItemID == APickupItemActor::RoyalKeyItemID || ItemID == APickupItemActor::FairyTaleKittyKeyItemID)
+		{
+			FolderName = TEXT("Keys");
+			Index = 1; // Keys only have Impact_01
+		}
+		else if (ItemID == APickupItemActor::BatteryItemID)
+		{
+			FolderName = TEXT("Battery");
+		}
+		else if (ItemID == APickupItemActor::FlashlightItemID)
+		{
+			FolderName = TEXT("Flashlight");
+		}
+		
+		FString Path = FString::Printf(TEXT("/Game/Item/%s/SFX/Impact/Impact_%02d.%s"), *FolderName, Index, *FString::Printf(TEXT("Impact_%02d"), Index));
+        
+        // Use StaticLoadObject for more reliable loading during runtime
+        USoundBase* LoadedSound = Cast<USoundBase>(StaticLoadObject(USoundBase::StaticClass(), nullptr, *Path));
+        
+        if (!LoadedSound)
+        {
+            UE_LOG(LogTemp, Warning, TEXT("Failed to load impact sound at path: %s"), *Path);
+        }
+        
+		return LoadedSound;
+	}
+}
 
 const FName APickupItemActor::PlaceholderItemID = TEXT("PlaceholderItem");
 const FName APickupItemActor::FlashlightItemID = TEXT("Flashlight");
@@ -229,6 +265,7 @@ APickupItemActor::APickupItemActor()
 	MeshComponent->SetAngularDamping(2.5f);
 	MeshComponent->SetEnableGravity(true);
 	MeshComponent->SetRelativeScale3D(FVector(DefaultFallbackMeshScale));
+    MeshComponent->SetNotifyRigidBodyCollision(true); // Ensure collision events are generated
 
 	CollisionSphere = CreateDefaultSubobject<USphereComponent>(TEXT("CollisionSphere"));
 	CollisionSphere->SetupAttachment(MeshComponent);
@@ -274,6 +311,42 @@ void APickupItemActor::BeginPlay()
 	RefreshItemSetup(/*bForceApplyCatalogScale=*/false);
 	EnsureDefaultDropSounds();
 	EnableItemPhysicsSimulation();
+}
+
+void APickupItemActor::OnMeshHit(UPrimitiveComponent* HitComponent, AActor* OtherActor, UPrimitiveComponent* OtherComp, FVector NormalImpulse, const FHitResult& Hit)
+{
+	if (NormalImpulse.Size() > 50.0f && OtherActor != this)
+	{
+		// Only trigger for surface impacts (Z normal > 0.7)
+		if (Hit.ImpactNormal.Z < 0.7f) return;
+		static float LastImpactTime = -1.0f;
+		float CurrentTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+		
+		if (CurrentTime - LastImpactTime > 0.5f)
+		{
+			LastImpactTime = CurrentTime;
+
+            UE_LOG(LogTemp, Log, TEXT("OnMeshHit called for item: %s, Impulse: %f"), *ItemData.ItemID.ToString(), NormalImpulse.Size());
+
+			int32 ChosenIndex = 1;
+			if (ItemData.ItemID != APickupItemActor::KeyItemID && 
+			    ItemData.ItemID != APickupItemActor::OldKeyItemID && 
+			    ItemData.ItemID != APickupItemActor::RoyalKeyItemID)
+			{
+				ChosenIndex = FMath::RandRange(1, 3);
+			}
+
+			if (USoundBase* ImpactSound = LoadImpactSound(ItemData.ItemID, ChosenIndex))
+			{
+				UGameplayStatics::PlaySoundAtLocation(this, ImpactSound, Hit.ImpactPoint, 1.0f, FMath::FRandRange(0.9f, 1.1f));
+                UE_LOG(LogTemp, Log, TEXT("Playing impact sound: %s"), *ImpactSound->GetName());
+			}
+            else
+            {
+                UE_LOG(LogTemp, Warning, TEXT("Failed to load sound for item: %s, Index: %d"), *ItemData.ItemID.ToString(), ChosenIndex);
+            }
+		}
+	}
 }
 
 void APickupItemActor::Tick(float DeltaTime)
@@ -850,6 +923,10 @@ void APickupItemActor::EnableItemPhysicsSimulation()
 		return;
 	}
 
+    MeshComponent->SetNotifyRigidBodyCollision(true);
+    MeshComponent->OnComponentHit.RemoveDynamic(this, &APickupItemActor::OnMeshHit);
+    MeshComponent->OnComponentHit.AddDynamic(this, &APickupItemActor::OnMeshHit);
+
 	if (!bSimulatePhysics)
 	{
 		MeshComponent->SetSimulatePhysics(false);
@@ -895,9 +972,9 @@ void APickupItemActor::EnsureDefaultDropSounds()
 	if (DropSounds.IsEmpty())
 	{
 		static constexpr const TCHAR* DefaultDropSoundPaths[] = {
-			TEXT("/Game/Item/SFX/Drop_01.Drop_01"),
-			TEXT("/Game/Item/SFX/Drop_02.Drop_02"),
-			TEXT("/Game/Item/SFX/Drop_03.Drop_03")
+			TEXT("/Game/Item/Popout_Drop/Drop_01.Drop_01"),
+			TEXT("/Game/Item/Popout_Drop/Drop_02.Drop_02"),
+			TEXT("/Game/Item/Popout_Drop/Drop_03.Drop_03")
 		};
 
 		for (const TCHAR* AssetPath : DefaultDropSoundPaths)
@@ -940,6 +1017,7 @@ void APickupItemActor::PlayRandomDropSound()
 			SelectedSound,
 			GetActorLocation(),
 			DropSoundVolume,
-			FMath::FRandRange(0.96f, 1.04f));
+			FMath::FRandRange(0.9f, 1.1f));
 	}
 }
+

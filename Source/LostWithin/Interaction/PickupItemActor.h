@@ -172,6 +172,10 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Pickup")
 	void ConfigureFromPreset(ELostWithinItemPreset Preset, bool bForceApplyPresetScale = true);
 
+	UFUNCTION()
+	void OnMeshHit(UPrimitiveComponent* HitComponent, AActor* OtherActor, UPrimitiveComponent* OtherComp, FVector NormalImpulse, const FHitResult& Hit);
+
+
 	/** Configures this pickup as the tactical flashlight using /Game/Item/Flashlight/StaticMeshes/defaultMaterial at scale 0.15 */
 	UFUNCTION(BlueprintCallable, Category = "Pickup")
 	void ConfigureAsFlashlight();

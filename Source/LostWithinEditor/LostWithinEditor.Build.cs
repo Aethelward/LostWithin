@@ -19,8 +19,13 @@ public class LostWithinEditor : ModuleRules
 
 		PrivateDependencyModuleNames.AddRange(new string[] {
 			"Slate",
-			"SlateCore"
+			"SlateCore",
+			"AIModule",
+			"NavigationSystem",
+			"AssetRegistry",
+			"BlueprintGraph",
+			"KismetCompiler",
+			"PhysicsCore"
 		});
 	}
 }
-

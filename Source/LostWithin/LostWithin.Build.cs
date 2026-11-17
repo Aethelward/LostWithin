@@ -15,6 +15,7 @@ public class LostWithin : ModuleRules
 			"InputCore",
 			"EnhancedInput",
 			"AIModule",
+			"NavigationSystem",
 			"StateTreeModule",
 			"GameplayStateTreeModule",
 			"UMG",
@@ -24,7 +25,7 @@ public class LostWithin : ModuleRules
 			"AnimGraphRuntime"
 		});
 
-		PrivateDependencyModuleNames.AddRange(new string[] { });
+		PrivateDependencyModuleNames.AddRange(new string[] { "PhysicsCore" });
 
 		PublicIncludePaths.AddRange(new string[] {
 			"LostWithin",

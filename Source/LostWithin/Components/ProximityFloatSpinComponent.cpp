@@ -49,15 +49,19 @@ namespace
 		FLinearColor PostProcessTint = FLinearColor::White;
 		float HueMinDeg = 0.0f;
 		float HueMaxDeg = 360.0f;
+		float RadiusScale = 1.0f;
 	};
 
 	const TArray<FDiscoShockwaveStage>& GetDiscoShockwaveStages()
 	{
 		static const TArray<FDiscoShockwaveStage> Stages = {
-			{ 12.46f, 1, FLinearColor(1.00f, 0.14f, 0.85f), FLinearColor(0.95f, 0.14f, 0.85f), FLinearColor(1.00f, 0.20f, 0.92f), FLinearColor(1.00f, 0.72f, 0.96f), 280.0f, 348.0f },
-			{ 14.06f, 2, FLinearColor(1.00f, 0.58f, 0.06f), FLinearColor(1.00f, 0.52f, 0.08f), FLinearColor(1.00f, 0.60f, 0.12f), FLinearColor(1.00f, 0.88f, 0.68f),  22.0f,  56.0f },
-			{ 15.66f, 3, FLinearColor(0.10f, 1.00f, 0.88f), FLinearColor(0.08f, 0.95f, 0.86f), FLinearColor(0.14f, 1.00f, 0.90f), FLinearColor(0.70f, 1.00f, 0.94f), 145.0f, 205.0f },
-			{ 17.26f, 4, FLinearColor(1.00f, 0.08f, 0.20f), FLinearColor(1.00f, 0.08f, 0.18f), FLinearColor(1.00f, 0.12f, 0.24f), FLinearColor(1.00f, 0.66f, 0.70f), 338.0f, 368.0f }
+			{ 12.46f, 1, FLinearColor(1.00f, 0.14f, 0.85f), FLinearColor(0.95f, 0.14f, 0.85f), FLinearColor(1.00f, 0.20f, 0.92f), FLinearColor(1.00f, 0.72f, 0.96f), 280.0f, 348.0f, 1.0f },
+			{ 14.06f, 2, FLinearColor(1.00f, 0.58f, 0.06f), FLinearColor(1.00f, 0.52f, 0.08f), FLinearColor(1.00f, 0.60f, 0.12f), FLinearColor(1.00f, 0.88f, 0.68f),  22.0f,  56.0f, 1.0f },
+			{ 15.66f, 3, FLinearColor(0.10f, 1.00f, 0.88f), FLinearColor(0.08f, 0.95f, 0.86f), FLinearColor(0.14f, 1.00f, 0.90f), FLinearColor(0.70f, 1.00f, 0.94f), 145.0f, 205.0f, 1.0f },
+			{ 17.26f, 4, FLinearColor(1.00f, 0.08f, 0.20f), FLinearColor(1.00f, 0.08f, 0.18f), FLinearColor(1.00f, 0.12f, 0.24f), FLinearColor(1.00f, 0.66f, 0.70f), 338.0f, 368.0f, 1.0f },
+			{ 34.46f, 5, FLinearColor(0.8f, 1.0f, 1.0f), FLinearColor(0.8f, 1.0f, 1.0f), FLinearColor(0.8f, 1.0f, 1.0f), FLinearColor(0.8f, 1.0f, 1.0f), 0.0f, 360.0f, 0.25f },
+			{ 37.65f, 6, FLinearColor(0.8f, 1.0f, 1.0f), FLinearColor(0.8f, 1.0f, 1.0f), FLinearColor(0.8f, 1.0f, 1.0f), FLinearColor(0.8f, 1.0f, 1.0f), 0.0f, 360.0f, 0.25f },
+			{ 40.86f, 7, FLinearColor(0.8f, 1.0f, 1.0f), FLinearColor(0.8f, 1.0f, 1.0f), FLinearColor(0.8f, 1.0f, 1.0f), FLinearColor(0.8f, 1.0f, 1.0f), 0.0f, 360.0f, 0.25f }
 		};
 		return Stages;
 	}
@@ -409,6 +413,21 @@ void UProximityFloatSpinComponent::InitializeVisualMeshes(AActor* Owner)
 			if (UMaterialInterface* DefaultCatMaterial = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/NPC/Cat/Materials/Muchkin2.Muchkin2")))
 			{
 				RuntimeSkeletalMeshComponent->SetMaterial(0, DefaultCatMaterial);
+			}
+		}
+
+		// Apply material instance to all slots for skeletal mesh
+		CatMaterialInstances.Reset();
+		for (int32 Index = 0; Index < RuntimeSkeletalMeshComponent->GetNumMaterials(); ++Index)
+		{
+			if (UMaterialInterface* CatMaterial = RuntimeSkeletalMeshComponent->GetMaterial(Index))
+			{
+				UMaterialInstanceDynamic* DynamicMaterial = UMaterialInstanceDynamic::Create(CatMaterial, this);
+				if (DynamicMaterial)
+				{
+					CatMaterialInstances.Add(DynamicMaterial);
+					RuntimeSkeletalMeshComponent->SetMaterial(Index, DynamicMaterial);
+				}
 			}
 		}
 
@@ -1330,7 +1349,7 @@ void UProximityFloatSpinComponent::EvaluateTimelineKeyframes(AActor* Owner, bool
 	if (NewlyTriggeredStage)
 	{
 		CurrentDiscoColorMode = NewlyTriggeredStage->ColorMode;
-		TriggerCatShockwave(Owner, NewlyTriggeredStage->ShockwaveColor);
+		TriggerCatShockwave(Owner, NewlyTriggeredStage->ShockwaveColor, NewlyTriggeredStage->RadiusScale);
 	}
 
 	if (ElapsedTriggeredTime >= 18.86f)
@@ -1540,7 +1559,7 @@ void UProximityFloatSpinComponent::InitializeShockwaveVisuals(AActor* Owner)
 	}
 }
 
-void UProximityFloatSpinComponent::TriggerCatShockwave(AActor* Owner, const FLinearColor& WaveColor)
+void UProximityFloatSpinComponent::TriggerCatShockwave(AActor* Owner, const FLinearColor& WaveColor, float RadiusScale)
 {
 	if (!Owner)
 	{
@@ -1554,6 +1573,7 @@ void UProximityFloatSpinComponent::TriggerCatShockwave(AActor* Owner, const FLin
 
 	ShockwaveOrigin = Owner->GetActorLocation();
 	ActiveShockwaveColor = WaveColor;
+	ActiveShockwaveRadiusScale = RadiusScale;
 	ShockwaveElapsed = 0.0f;
 	bShockwaveVisualActive = true;
 
@@ -1597,7 +1617,7 @@ void UProximityFloatSpinComponent::UpdateCatShockwave(float DeltaTime, float& Ou
 
 	const float WaveProgress = FMath::Clamp(ShockwaveElapsed / ShockwaveDuration, 0.0f, 1.0f);
 	const float RadiusProgress = 1.0f - FMath::Pow(1.0f - WaveProgress, 2.6f);
-	const float CurrentRadius = FMath::Lerp(35.0f, ShockwaveMaxRadius, RadiusProgress);
+	const float CurrentRadius = FMath::Lerp(35.0f, ShockwaveMaxRadius * ActiveShockwaveRadiusScale, RadiusProgress);
 	const float IntensityFade = FMath::Pow(1.0f - WaveProgress, 1.5f);
 	OutPostProcessPulseAlpha = FMath::Pow(1.0f - WaveProgress, 2.0f) * 0.0625f;
 
@@ -1765,6 +1785,36 @@ void UProximityFloatSpinComponent::OnInteract_Implementation(AActor* Interactor)
 FText UProximityFloatSpinComponent::GetInteractionPrompt_Implementation() const
 {
 	return NSLOCTEXT("LostWithin", "CatInteractionPrompt", "[LMB] Pet Cat");
+}
+
+void UProximityFloatSpinComponent::UpdateCatGlow(float Intensity, float ElapsedTime)
+{
+	if (CatMaterialInstances.IsEmpty())
+	{
+		UE_LOG(LogLostWithin, Warning, TEXT("UpdateCatGlow: No CatMaterialInstances."));
+		return;
+	}
+
+	// Cyan-whitish star color
+	// Only apply glow when unstable matter effect is active
+	float FinalIntensity = Intensity;
+	
+	FLinearColor GlowColor = FLinearColor(0.8f, 1.0f, 1.0f) * FinalIntensity;
+	
+	for (UMaterialInstanceDynamic* MatInst : CatMaterialInstances)
+	{
+		if (MatInst)
+		{
+			// Try both variants (with and without space) to be safe
+			MatInst->SetVectorParameterValue(TEXT("EmissiveColor"), GlowColor);
+			MatInst->SetVectorParameterValue(TEXT("Emissive Color"), GlowColor);
+			MatInst->SetVectorParameterValue(TEXT("EmissiveFactor"), GlowColor);
+			MatInst->SetVectorParameterValue(TEXT("BaseColor"), GlowColor);
+			MatInst->SetVectorParameterValue(TEXT("Base Color"), GlowColor);
+			MatInst->SetScalarParameterValue(TEXT("EmissiveMultiplier"), FinalIntensity * 5.0f);
+			MatInst->SetScalarParameterValue(TEXT("GlowMultiplier"), FinalIntensity * 5.0f);
+		}
+	}
 }
 
 bool UProximityFloatSpinComponent::CanInteract_Implementation(AActor* Interactor) const
@@ -2010,6 +2060,7 @@ void UProximityFloatSpinComponent::ApplyFloatAndSpinTransform(AActor* Owner, flo
 		&& ActiveWindowIndex == DiscoSpinWindowIndex;
 
 	UnstableMatterIntensity = ComputeUnstableMatterIntensity(ElapsedTriggeredTime, bShouldSpin);
+	UpdateCatGlow(UnstableMatterIntensity, ElapsedTriggeredTime);
 	FVector UnstablePositionOffset = FVector::ZeroVector;
 	FRotator UnstableRotationOffset = FRotator::ZeroRotator;
 	ComputeUnstableMatterOffsets(UnstableMatterIntensity, ElapsedTriggeredTime, UnstablePositionOffset, UnstableRotationOffset, UnstableScaleMultiplier);
