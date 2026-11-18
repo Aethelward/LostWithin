@@ -398,3 +398,6 @@ Content/Collections/
 mcp_config.json
 .gemini/
 
+
+# Local Memory Bank
+memory bank/
