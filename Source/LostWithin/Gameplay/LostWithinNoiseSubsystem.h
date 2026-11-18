@@ -39,6 +39,8 @@ struct LOSTWITHIN_API FLostWithinNoiseEvent
 	TObjectPtr<AActor> NoiseMaker = nullptr;
 };
 
+DECLARE_MULTICAST_DELEGATE_OneParam(FOnLostWithinNoiseBroadcast, const FLostWithinNoiseEvent&);
+
 /**
  *  Delivers player-made noises (footsteps, item impacts) to every monster hearing component whose owner is inside
  *  the noise radius. Delivery is synchronous, so a noise is either heard this frame or not at all.
@@ -63,6 +65,9 @@ public:
 
 	void RegisterListener(UMonsterHearingComponent* Listener);
 	void UnregisterListener(UMonsterHearingComponent* Listener);
+
+	/** Multicast delegate fired on every noise broadcast. Allows vibration components and sensors to listen without hearing component registration. */
+	FOnLostWithinNoiseBroadcast OnNoiseBroadcast;
 
 	/** The most recent reported noise, for debugging and automation. */
 	const FLostWithinNoiseEvent& GetLastNoise() const { return LastNoise; }

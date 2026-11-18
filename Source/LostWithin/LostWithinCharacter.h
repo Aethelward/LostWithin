@@ -217,6 +217,10 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Audio|Character", meta = (ClampMin = "0.05", Units = "s"))
 	float SprintStepInterval = 0.30f;
 
+	/** Distance at which hearing monsters notice a crouched footstep (stealth gait) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Noise", meta = (ClampMin = "0.0", Units = "cm"))
+	float CrouchNoiseRadius = 150.0f;
+
 	/** Distance at which hearing monsters notice a walking footstep ([Left Shift]) */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Noise", meta = (ClampMin = "0.0", Units = "cm"))
 	float WalkNoiseRadius = 400.0f;
@@ -344,6 +348,10 @@ public:
 	UFUNCTION(BlueprintPure, Category="Inventory")
 	UInventoryComponent* GetInventoryComponent() const { return InventoryComponent; }
 
+	/** Returns true when the player has the inventory menu open */
+	UFUNCTION(BlueprintPure, Category="Inventory")
+	bool IsInventoryOpen() const { return bIsInventoryOpen; }
+
 	/** Returns true when the player owns at least one tactical flashlight */
 	UFUNCTION(BlueprintPure, Category="Flashlight")
 	bool HasFlashlight() const { return bHasFlashlight; }
@@ -351,6 +359,10 @@ public:
 	/** Returns true when the player's held tactical flashlight is currently powered ON */
 	UFUNCTION(BlueprintPure, Category="Flashlight")
 	bool IsFlashlightOn() const { return bIsFlashlightOn; }
+
+	/** Returns the tactical flashlight spot light component */
+	UFUNCTION(BlueprintPure, Category="Flashlight")
+	USpotLightComponent* GetFlashlightSpotLight() const { return FlashlightSpotLight; }
 
 	/** Returns the combined battery charge (%) of the held flashlight (0..100) */
 	UFUNCTION(BlueprintPure, Category="Flashlight|Battery")

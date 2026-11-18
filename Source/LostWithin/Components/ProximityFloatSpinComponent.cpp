@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Components/ProximityFloatSpinComponent.h"
+#include "AI/MonsterAIComponent.h"
 #include "Animation/AnimationAsset.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "CollisionQueryParams.h"
@@ -25,11 +26,14 @@
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "GameFramework/Actor.h"
+#include "GameFramework/Character.h"
+#include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/Pawn.h"
 #include "GameFramework/RotatingMovementComponent.h"
 #include "Interaction/PickupItemActor.h"
 #include "Kismet/GameplayStatics.h"
 #include "LostWithin.h"
+#include "LostWithinCharacter.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Materials/MaterialInterface.h"
 #include "Sound/SoundAttenuation.h"
@@ -262,6 +266,11 @@ void UProximityFloatSpinComponent::TickComponent(float DeltaTime, ELevelTick Tic
 	}
 
 	UpdateDirectedPathMovement(Owner, DeltaTime);
+
+	if (IsChaosSanctuaryActive())
+	{
+		UpdateChaosSanctuary(DeltaTime);
+	}
 
 	if (bDrawDebugPath)
 	{
@@ -682,6 +691,7 @@ void UProximityFloatSpinComponent::UpdateProximityState(AActor* Owner, const APa
 			StopTriggerMusic();
 		}
 		OnProximityFloatStateChanged.Broadcast(false);
+		OnCatSanctuaryStateChanged.Broadcast(false);
 	}
 }
 
@@ -700,6 +710,7 @@ void UProximityFloatSpinComponent::TriggerSpinSequence(AActor* Owner)
 	ElapsedTriggeredTime = 0.0f;
 	StartTriggerMusic(Owner);
 	OnProximityFloatStateChanged.Broadcast(true);
+	OnCatSanctuaryStateChanged.Broadcast(true);
 	TryTriggerDirectedPath(EDirectedPathTriggerMode::OnSpinTriggered);
 }
 
@@ -1749,9 +1760,16 @@ void UProximityFloatSpinComponent::SpawnDroppedItem(AActor* Owner, AActor* Inter
 
 	if (APickupItemActor* DroppedItem = World->SpawnActor<APickupItemActor>(SpawnClass, SpawnOrigin, FRotator::ZeroRotator, SpawnParams))
 	{
+		bHasDroppedItem = true;
 		DroppedItem->ConfigureAsFairyTaleKittyKey();
 		const FVector LaunchVelocity = TossDirection * 180.0f + FVector(0.0f, 0.0f, 220.0f);
 		DroppedItem->DropWithPhysics(SpawnOrigin, LaunchVelocity, { Owner });
+		OnCatKeyDropped.Broadcast(DroppedItem);
+
+		if (ALostWithinCharacter* Char = Cast<ALostWithinCharacter>(Interactor))
+		{
+			Char->ShowStatusMessage(NSLOCTEXT("LostWithin", "CatDroppedKeyStatusMessage", "The cat dropped the Fairy Tale Kitty Key!"));
+		}
 	}
 }
 
@@ -1771,20 +1789,132 @@ void UProximityFloatSpinComponent::OnInteract_Implementation(AActor* Interactor)
 
 	if (InteractionCount >= ItemDropInteractionThreshold && !bHasDroppedItem)
 	{
-		bHasDroppedItem = true;
 		SpawnDroppedItem(Owner, Interactor);
-		TryTriggerDirectedPath(EDirectedPathTriggerMode::OnItemDropped);
+		if (bHasDroppedItem)
+		{
+			TryTriggerDirectedPath(EDirectedPathTriggerMode::OnItemDropped);
+		}
 	}
 
 	if (bTriggerSpinByInteractionCount && InteractionCount >= SpinTriggerInteractionThreshold && !bIsActive)
 	{
 		TriggerSpinSequence(Owner);
+		if (ALostWithinCharacter* Char = Cast<ALostWithinCharacter>(Interactor))
+		{
+			Char->ShowStatusMessage(NSLOCTEXT("LostWithin", "CatSanctuaryStatusMessage", "Oiiai Chaos Sanctuary Activated!"));
+		}
 	}
 }
 
 FText UProximityFloatSpinComponent::GetInteractionPrompt_Implementation() const
 {
+	if (IsChaosSanctuaryActive())
+	{
+		return NSLOCTEXT("LostWithin", "CatSanctuaryActivePrompt", "Chaos Sanctuary Active");
+	}
+
+	if (!bHasDroppedItem && ItemDropInteractionThreshold > 1)
+	{
+		return FText::Format(
+			NSLOCTEXT("LostWithin", "CatPetKeyProgressPrompt", "[LMB] Pet Cat ({0}/{1})"),
+			FText::AsNumber(InteractionCount),
+			FText::AsNumber(ItemDropInteractionThreshold));
+	}
+
+	if (bTriggerSpinByInteractionCount && InteractionCount < SpinTriggerInteractionThreshold)
+	{
+		return FText::Format(
+			NSLOCTEXT("LostWithin", "CatPetChaosProgressPrompt", "[LMB] Pet Cat (Chaos: {0}/{1})"),
+			FText::AsNumber(InteractionCount),
+			FText::AsNumber(SpinTriggerInteractionThreshold));
+	}
+
 	return NSLOCTEXT("LostWithin", "CatInteractionPrompt", "[LMB] Pet Cat");
+}
+
+bool UProximityFloatSpinComponent::IsPlayerInChaosSanctuary(const APawn* PlayerPawn) const
+{
+	if (!IsChaosSanctuaryActive() || !PlayerPawn)
+	{
+		return false;
+	}
+
+	const AActor* Owner = GetOwner();
+	if (!Owner)
+	{
+		return false;
+	}
+
+	const double DistSq = FVector::DistSquared(Owner->GetActorLocation(), PlayerPawn->GetActorLocation());
+	return DistSq <= FMath::Square(static_cast<double>(ChaosSanctuaryRadius));
+}
+
+void UProximityFloatSpinComponent::UpdateChaosSanctuary(float DeltaTime)
+{
+	if (!bRepelMonstersInSanctuary || !IsChaosSanctuaryActive())
+	{
+		return;
+	}
+
+	AActor* Owner = GetOwner();
+	UWorld* World = GetWorld();
+	if (!Owner || !World)
+	{
+		return;
+	}
+
+	const FVector CatLocation = Owner->GetActorLocation();
+	const double SanctuaryRadiusSq = FMath::Square(static_cast<double>(ChaosSanctuaryRadius));
+	const double RepelRadiusSq = FMath::Square(static_cast<double>(SanctuaryRepelRadius));
+
+	for (TActorIterator<ACharacter> It(World); It; ++It)
+	{
+		ACharacter* MonsterChar = *It;
+		if (!IsValid(MonsterChar) || MonsterChar == Owner || MonsterChar->IsActorBeingDestroyed())
+		{
+			continue;
+		}
+
+		UMonsterAIComponent* MonsterAI = MonsterChar->FindComponentByClass<UMonsterAIComponent>();
+		if (!MonsterAI && MonsterChar->IsPlayerControlled())
+		{
+			continue;
+		}
+
+		const FVector MonsterLocation = MonsterChar->GetActorLocation();
+		const double DistSq = FVector::DistSquared(CatLocation, MonsterLocation);
+		if (DistSq > SanctuaryRadiusSq)
+		{
+			continue;
+		}
+
+		FVector AwayDir = (MonsterLocation - CatLocation).GetSafeNormal2D();
+		if (AwayDir.IsNearlyZero())
+		{
+			AwayDir = MonsterChar->GetActorForwardVector().GetSafeNormal2D();
+			if (AwayDir.IsNearlyZero())
+			{
+				AwayDir = FVector::ForwardVector;
+			}
+		}
+
+		if (MonsterAI)
+		{
+			MonsterAI->bCatIsNear = true;
+			MonsterAI->bIsFleeing = true;
+		}
+
+		if (DistSq <= RepelRadiusSq)
+		{
+			if (UCharacterMovementComponent* MoveComp = MonsterChar->GetCharacterMovement())
+			{
+				const FVector RepelVelocity = AwayDir * SanctuaryRepelForce + FVector(0.0f, 0.0f, 150.0f);
+				MonsterChar->LaunchCharacter(RepelVelocity, true, true);
+			}
+
+			OnCatRepelledMonster.Broadcast(MonsterChar);
+		}
+	}
 }
 
 void UProximityFloatSpinComponent::UpdateCatGlow(float Intensity, float ElapsedTime)

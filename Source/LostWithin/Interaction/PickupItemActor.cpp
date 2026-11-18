@@ -375,8 +375,6 @@ void APickupItemActor::OnMeshHit(UPrimitiveComponent* HitComponent, AActor* Othe
 
 	if (NormalImpulse.Size() > 50.0f && OtherActor != this)
 	{
-		// Only trigger for surface impacts (Z normal > 0.7)
-		if (Hit.ImpactNormal.Z < 0.7f) return;
 		// Per-item debounce. A function-local static outlived each PIE world while world time restarted at 0.
 		const double CurrentTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0;
 		

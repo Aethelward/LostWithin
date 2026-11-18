@@ -12,13 +12,14 @@
 #include "Navigation/PathFollowingComponent.h"
 #include "NavigationSystem.h"
 
-namespace
+namespace MonsterHearingConstants
 {
 	/** A move request needs a moment before an Idle path-following status means "done" rather than "not started". */
 	constexpr float MinMoveTimeBeforeIdleCountsAsArrived = 0.3f;
 	/** One full left-right-left look-around cycle while searching. */
 	constexpr float SearchSweepPeriodSeconds = 2.5f;
 }
+using namespace MonsterHearingConstants;
 
 UMonsterHearingComponent::UMonsterHearingComponent()
 {
@@ -83,6 +84,7 @@ bool UMonsterHearingComponent::CanHear(const FLostWithinNoiseEvent& Noise) const
 	{
 	case ELostWithinNoiseKind::Footstep:
 		if (!bHearFootsteps) return false;
+		if (Noise.Radius < MinFootstepNoiseRadius) return false;
 		break;
 	case ELostWithinNoiseKind::ItemImpact:
 		if (!bHearItemImpacts) return false;
@@ -103,7 +105,27 @@ bool UMonsterHearingComponent::HearNoise(const FLostWithinNoiseEvent& Noise)
 		return false;
 	}
 
+	// Distraction priority: an active item distraction investigation (thrown/dropped item)
+	// reliably draws the monster away from doors/puzzles and cannot be cancelled by ordinary footsteps.
+	if (bPrioritizeItemDistractions && State != EInvestigationState::Idle && CurrentNoiseKind == ELostWithinNoiseKind::ItemImpact)
+	{
+		if (Noise.Kind == ELostWithinNoiseKind::Footstep)
+		{
+			const AActor* Owner = GetOwner();
+			const double DistToNoiseSq = Owner ? FVector::DistSquared(Owner->GetActorLocation(), Noise.Location) : MAX_flt;
+			const double DistToItemSq = Owner ? FVector::DistSquared(Owner->GetActorLocation(), InvestigationLocation) : 0.0;
+			// Only interrupt if the footstep is right next to the monster (closer than ratio) AND it is a loud sprint
+			const bool bIsUrgentProximity = DistToNoiseSq < DistToItemSq * FMath::Square(static_cast<double>(DistractionInterruptDistanceRatio));
+			const bool bIsLoudSprint = Noise.Radius >= SprintInterruptNoiseRadius;
+			if (!bIsUrgentProximity || !bIsLoudSprint)
+			{
+				return false;
+			}
+		}
+	}
+
 	InvestigationLocation = Noise.Location;
+	CurrentNoiseKind = Noise.Kind;
 	if (State == EInvestigationState::Idle)
 	{
 		ApplyInvestigateSpeed();
@@ -186,9 +208,21 @@ void UMonsterHearingComponent::IssueMove()
 		return;
 	}
 
+	FVector MoveTarget = InvestigationLocation;
+	UNavigationSystemV1* NavSys = UNavigationSystemV1::GetCurrent(GetWorld());
+	if (NavSys)
+	{
+		// Project destination onto navigation floor so impacts on doors/walls/tables find a walkable floor point
+		FNavLocation ProjectedNav;
+		if (NavSys->ProjectPointToNavigation(InvestigationLocation, ProjectedNav, FVector(300.0f, 300.0f, 500.0f)))
+		{
+			MoveTarget = ProjectedNav.Location;
+		}
+	}
+
 	// UE5.6 can project a missing-navigation goal to the origin and report AlreadyAtGoal, so check navigation first.
-	const EPathFollowingRequestResult::Type Result = UNavigationSystemV1::GetCurrent(GetWorld())
-		? Controller->MoveToLocation(InvestigationLocation, AcceptanceRadius, /*bStopOnOverlap=*/true,
+	const EPathFollowingRequestResult::Type Result = NavSys
+		? Controller->MoveToLocation(MoveTarget, AcceptanceRadius, /*bStopOnOverlap=*/true,
 			/*bUsePathfinding=*/true, /*bProjectDestinationToNavigation=*/true, /*bCanStrafe=*/false,
 			/*FilterClass=*/nullptr, /*bAllowPartialPath=*/true)
 		: EPathFollowingRequestResult::Failed;
@@ -271,7 +305,11 @@ void UMonsterHearingComponent::UpdateMoving(float DeltaTime)
 
 void UMonsterHearingComponent::UpdateSearching(float DeltaTime)
 {
-	if (StateElapsed >= SearchDuration)
+	const float EffectiveSearchDuration = (CurrentNoiseKind == ELostWithinNoiseKind::ItemImpact && ItemDistractionSearchDuration > 0.0f)
+		? ItemDistractionSearchDuration
+		: SearchDuration;
+
+	if (StateElapsed >= EffectiveSearchDuration)
 	{
 		Finish(/*bRestoreSpeed=*/true);
 		return;
@@ -323,6 +361,7 @@ void UMonsterHearingComponent::Finish(bool bRestoreSpeed)
 	}
 	State = EInvestigationState::Idle;
 	StateElapsed = 0.0f;
+	CurrentNoiseKind = ELostWithinNoiseKind::Other;
 	bUseDirectMovement = false;
 	bMoveRequested = false;
 	SetComponentTickEnabled(false);

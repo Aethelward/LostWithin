@@ -3,6 +3,9 @@
 #include "AI/MonsterAIComponent.h"
 
 #include "AI/MonsterHearingComponent.h"
+#include "AI/MonsterLightAverseComponent.h"
+#include "AI/MonsterSightFreezeComponent.h"
+#include "AI/MonsterVibrationComponent.h"
 #include "AIController.h"
 #include "Components/CapsuleComponent.h"
 #include "Components/ProximityFloatSpinComponent.h"
@@ -84,7 +87,22 @@ bool UMonsterAIComponent::CanRunNormalAI(AActor* Actor)
 		return false;
 	}
 	// A monster walking to a heard noise owns its movement until it has searched there.
-	return !UMonsterHearingComponent::IsActorInvestigating(Actor);
+	if (UMonsterHearingComponent::IsActorInvestigating(Actor))
+	{
+		return false;
+	}
+	// A blind monster tracking floor tremors or air turbulence owns its movement until it has searched there.
+	if (UMonsterVibrationComponent::IsActorInvestigating(Actor))
+	{
+		return false;
+	}
+	// A weeping doll observed by the player is frozen in place and cannot run normal AI movement.
+	if (UMonsterSightFreezeComponent::IsActorSightFrozen(Actor))
+	{
+		return false;
+	}
+	// A light-averse monster repelled by flashlight retreats and shields face until back in shadows.
+	return !UMonsterLightAverseComponent::IsActorLightRepelled(Actor);
 }
 
 AActor* UMonsterAIComponent::GetThreateningCat() const

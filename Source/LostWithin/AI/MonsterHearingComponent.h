@@ -40,6 +40,26 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hearing")
 	bool bHearOtherNoises = true;
 
+	/** Minimum noise radius of a footstep required to alert this monster (e.g. filters out silent/crouch steps if set > 0). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hearing", meta = (ClampMin = "0.0", Units = "cm"))
+	float MinFootstepNoiseRadius = 0.0f;
+
+	/** If true, item impact distractions (thrown/dropped items) take precedence and resist being cancelled by routine footsteps. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hearing|Distraction")
+	bool bPrioritizeItemDistractions = true;
+
+	/** Distance ratio threshold for a footstep to interrupt an active item distraction (0.5 = footstep must be at least twice as close to the monster). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hearing|Distraction", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float DistractionInterruptDistanceRatio = 0.5f;
+
+	/** Loudness radius threshold required for a footstep to qualify as an urgent sprint that can interrupt an item distraction. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hearing|Distraction", meta = (ClampMin = "0.0", Units = "cm"))
+	float SprintInterruptNoiseRadius = 1200.0f;
+
+	/** Time spent thoroughly searching around an item distraction before resuming roaming. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hearing|Distraction", meta = (ClampMin = "0.0", Units = "s"))
+	float ItemDistractionSearchDuration = 5.0f;
+
 	/** Speed while heading to a noise. 0 uses the cat-reaction PanicGaitSpeed (the fastest gait clip's speed). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hearing|Investigate", meta = (ClampMin = "0.0", Units = "cm/s"))
 	float InvestigateSpeed = 0.0f;
@@ -86,6 +106,12 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Hearing")
 	FVector GetInvestigationLocation() const { return InvestigationLocation; }
 
+	UFUNCTION(BlueprintPure, Category = "Hearing")
+	ELostWithinNoiseKind GetCurrentNoiseKind() const { return CurrentNoiseKind; }
+
+	UFUNCTION(BlueprintPure, Category = "Hearing")
+	bool IsInvestigatingDistraction() const { return IsInvestigating() && CurrentNoiseKind == ELostWithinNoiseKind::ItemImpact; }
+
 	/** Ends any investigation and restores the walk speed. */
 	UFUNCTION(BlueprintCallable, Category = "Hearing")
 	void StopInvestigating();
@@ -122,6 +148,7 @@ private:
 	void Finish(bool bRestoreSpeed);
 
 	EInvestigationState State = EInvestigationState::Idle;
+	ELostWithinNoiseKind CurrentNoiseKind = ELostWithinNoiseKind::Other;
 	FVector InvestigationLocation = FVector::ZeroVector;
 	float StateElapsed = 0.0f;
 	float SearchBaseYaw = 0.0f;

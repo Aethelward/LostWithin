@@ -30,6 +30,9 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnProximityFloatStateChanged, bool,
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnCatInteracted, int32, NewInteractionCount);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnDirectedPathWaypointReached, int32, WaypointIndex);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnDirectedPathCompleted);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnCatKeyDropped, APickupItemActor*, DroppedKey);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnCatSanctuaryStateChanged, bool, bIsSanctuaryActive);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnCatRepelledMonster, AActor*, RepelledMonster);
 
 /**
  *  Controls when the cat automatically begins moving along PathWaypoints.
@@ -427,6 +430,34 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Interaction")
 	TSubclassOf<APickupItemActor> DropItemClass;
 
+	/** Radius around the cat that defines the chaos sanctuary safety zone (monsters flee and avoid entering) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Sanctuary", meta = (ClampMin = "100.0", Units = "cm"))
+	float ChaosSanctuaryRadius = 700.0f;
+
+	/** Inner radius within which approaching monsters are forcefully pushed away and ragdolled */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Sanctuary", meta = (ClampMin = "50.0", Units = "cm"))
+	float SanctuaryRepelRadius = 400.0f;
+
+	/** Outward impulse velocity strength applied to monsters inside SanctuaryRepelRadius */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Sanctuary", meta = (ClampMin = "0.0", Units = "cm/s"))
+	float SanctuaryRepelForce = 1200.0f;
+
+	/** If true, the cat actively repels monsters within ChaosSanctuaryRadius while spinning */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Sanctuary")
+	bool bRepelMonstersInSanctuary = true;
+
+	/** Broadcast whenever the Fairy Tale Kitty Key is dropped */
+	UPROPERTY(BlueprintAssignable, Category = "Float & Spin|Events")
+	FOnCatKeyDropped OnCatKeyDropped;
+
+	/** Broadcast whenever Chaos Sanctuary activates or deactivates */
+	UPROPERTY(BlueprintAssignable, Category = "Float & Spin|Events")
+	FOnCatSanctuaryStateChanged OnCatSanctuaryStateChanged;
+
+	/** Broadcast whenever a monster is repelled by the sanctuary */
+	UPROPERTY(BlueprintAssignable, Category = "Float & Spin|Events")
+	FOnCatRepelledMonster OnCatRepelledMonster;
+
 	/** Broadcast whenever proximity activation state changes */
 	UPROPERTY(BlueprintAssignable, Category = "Float & Spin|Events")
 	FOnProximityFloatStateChanged OnProximityFloatStateChanged;
@@ -501,6 +532,18 @@ public:
 	/** Returns the number of times the player has interacted with the cat via [LMB] */
 	UFUNCTION(BlueprintPure, Category = "Float & Spin|Interaction")
 	int32 GetInteractionCount() const { return InteractionCount; }
+
+	/** True while Chaos Sanctuary is active (protecting player and repelling monsters) */
+	UFUNCTION(BlueprintPure, Category = "Float & Spin|Sanctuary")
+	bool IsChaosSanctuaryActive() const { return IsFloatSpinThreatening(); }
+
+	/** True if the given player pawn is currently inside the active chaos sanctuary safety zone */
+	UFUNCTION(BlueprintPure, Category = "Float & Spin|Sanctuary")
+	bool IsPlayerInChaosSanctuary(const APawn* PlayerPawn) const;
+
+	/** True if the cat has already dropped the Fairy Tale Kitty Key */
+	UFUNCTION(BlueprintPure, Category = "Float & Spin|Interaction")
+	bool HasDroppedKey() const { return bHasDroppedItem; }
 
 	//~ Begin IInteractableInterface
 	virtual void OnInteract_Implementation(AActor* Interactor) override;
@@ -614,6 +657,9 @@ private:
 
 	/** Destroys pooled shockwave components and material references */
 	void DestroyCatShockwaveVisuals();
+
+	/** Actively protects the sanctuary perimeter and repels any nearby monsters */
+	void UpdateChaosSanctuary(float DeltaTime);
 
 	/** Spawns the placeholder pickup item in front of the cat toward Interactor */
 	void SpawnDroppedItem(AActor* Owner, AActor* Interactor);

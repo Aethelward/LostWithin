@@ -63,6 +63,8 @@ int32 ULostWithinNoiseSubsystem::Broadcast(const FLostWithinNoiseEvent& Noise)
 	LastNoise = Noise;
 	++ReportedNoiseCount;
 
+	OnNoiseBroadcast.Broadcast(Noise);
+
 	Listeners.RemoveAll([](const TWeakObjectPtr<UMonsterHearingComponent>& Listener) { return !Listener.IsValid(); });
 
 	// Copy: a reaction may register or unregister listeners.

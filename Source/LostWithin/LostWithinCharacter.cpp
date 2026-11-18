@@ -1376,6 +1376,10 @@ void ALostWithinCharacter::HandleExplorationBGMFinished()
 
 int32 ALostWithinCharacter::ResolveFootstepGait() const
 {
+	if (bIsCrouched)
+	{
+		return 0;
+	}
 	const float Speed2D = GetVelocity().Size2D();
 	const bool bIsSprintGait = (bUseCustomMovementSpeeds && bIsSprintingHeld && !bIsWalking)
 		|| (!bUseCustomMovementSpeeds && Speed2D > 400.0f);
@@ -1392,6 +1396,10 @@ int32 ALostWithinCharacter::ResolveFootstepGait() const
 
 float ALostWithinCharacter::GetCurrentGaitNoiseRadius() const
 {
+	if (bIsCrouched)
+	{
+		return CrouchNoiseRadius;
+	}
 	switch (ResolveFootstepGait())
 	{
 	case 0:
