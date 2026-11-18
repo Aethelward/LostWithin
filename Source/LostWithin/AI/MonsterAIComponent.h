@@ -12,7 +12,7 @@ class ANavigationData;
 class UNavigationQueryFilter;
 class USceneComponent;
 
-/** Flees from active float/spin cats and throws the owning character into a recoverable ragdoll. */
+/** Panic-flees from float-spinning cats and throws the owning character into a ragdoll that always recovers. */
 UCLASS(ClassGroup=(AI), meta=(BlueprintSpawnableComponent))
 class LOSTWITHIN_API UMonsterAIComponent : public UActorComponent
 {
@@ -21,13 +21,13 @@ class LOSTWITHIN_API UMonsterAIComponent : public UActorComponent
 public:
 	UMonsterAIComponent();
 
-	/** Distance at which an active float/spin cat causes the owning character to flee. */
+	/** Actor-center distance at which a float-spinning cat (any spin window or gap) causes the owning character to flee. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Monster AI|Cat Proximity", meta=(ClampMin="0.0", Units="cm"))
 	float CatFleeRadius = 500.0f;
 
-	/** Distance at which an active cat throws the owning character into ragdoll. */
+	/** Distance from a float-spinning cat to the monster capsule surface that triggers a ragdoll throw. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Monster AI|Cat Proximity", meta=(ClampMin="0.0", Units="cm"))
-	float CatRagdollRadius = 100.0f;
+	float CatRagdollRadius = 300.0f;
 
 	/** Distance at which the component reports the player as nearby. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Monster AI|Player Proximity", meta=(ClampMin="0.0", Units="cm"))
@@ -60,6 +60,18 @@ public:
 	/** Simulated hip used to locate the landed body. Falls back to the first physics body. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Monster AI|Ragdoll")
 	FName RagdollRecoveryBone = TEXT("Hips");
+
+	/** Extra time after RagdollDuration before a ragdoll that cannot stand is placed on navigation or its throw origin. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Monster AI|Ragdoll", meta=(ClampMin="0.0", Units="s"))
+	float RecoveryFallbackDelay = 2.0f;
+
+	/** Natural ground speed of the fastest gait clip played while fleeing; 0 scales the current MaxWalkSpeed instead. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Monster AI|Panic", meta=(ClampMin="0.0", Units="cm/s"))
+	float PanicGaitSpeed = 0.0f;
+
+	/** While fleeing, both MaxWalkSpeed and the mesh animation rate are multiplied by this, so feet stay matched. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Monster AI|Panic", meta=(ClampMin="1.0", ClampMax="4.0"))
+	float PanicSpeedMultiplier = 1.5f;
 
 	/** Guard normal Blueprint movement, including movement requested by latent events. */
 	UFUNCTION(BlueprintPure, Category="Monster AI", meta=(DefaultToSelf="Actor"))
@@ -98,6 +110,10 @@ private:
 	void RecoverFromRagdoll();
 	void RestoreCharacterSettings(ACharacter* Character);
 	void ScheduleRecovery(float Delay);
+	bool TryStandAt(ACharacter* Character, const FVector& FloorPoint);
+	void FinishRecovery(ACharacter* Character, const FVector& StandLocation);
+	void BeginPanic(ACharacter* Character);
+	void EndPanic(ACharacter* Character);
 
 	TWeakObjectPtr<AActor> ThreateningCat;
 	FVector FleeDirection = FVector::ZeroVector;
@@ -119,4 +135,13 @@ private:
 	uint8 CachedMovementMode = 0;
 	uint8 CachedCustomMovementMode = 0;
 	FTimerHandle RagdollRecoveryTimerHandle;
+
+	/** Actor location when the throw started: a known standing spot for the recovery fallback. */
+	FVector ThrowOriginLocation = FVector::ZeroVector;
+	/** Recovery retry time spent after RagdollDuration; counted by the timer so it works without world time. */
+	float RecoveryRetryElapsed = 0.0f;
+
+	bool bPanicApplied = false;
+	float CachedPanicMaxWalkSpeed = 0.0f;
+	float CachedPanicAnimRateScale = 1.0f;
 };

@@ -37,6 +37,25 @@ namespace
 	const FName NavigationTag(TEXT("LostWithin.MonsterNavigation"));
 	const FName AgentName(TEXT("LostWithinMonster"));
 
+	bool EnableAutoActivation(UActorComponent* Component)
+	{
+		if (!Component->IsRegistered())
+		{
+			Component->SetAutoActivate(true);
+			return true;
+		}
+		FBoolProperty* AutoActivate = FindFProperty<FBoolProperty>(UActorComponent::StaticClass(), TEXT("bAutoActivate"));
+		if (!AutoActivate)
+		{
+			UE_LOG(LogLostWithin, Error, TEXT("Cannot configure component auto activation: bAutoActivate is unavailable."));
+			return false;
+		}
+		// Edit the same instance property as Details; the construction-only setter refuses registered components.
+		AutoActivate->SetPropertyValue_InContainer(Component, true);
+		Component->Activate(true);
+		return true;
+	}
+
 	bool RepairCharacter(ACharacter* Character)
 	{
 		UCharacterMovementComponent* Movement = Character ? Character->GetCharacterMovement() : nullptr;
@@ -63,8 +82,14 @@ namespace
 		Movement->MovementMode = MOVE_Walking;
 		Movement->CustomMovementMode = 0;
 		Movement->SetUpdateNavAgentWithOwnersCollisions(true);
-		Movement->UpdateNavAgent(*Character);
-		Movement->SetAutoActivate(true);
+		if (!Character->HasAnyFlags(RF_ClassDefaultObject | RF_ArchetypeObject))
+		{
+			Movement->UpdateNavAgent(*Character);
+		}
+		if (!EnableAutoActivation(Movement))
+		{
+			return false;
+		}
 		if (!FMath::IsFinite(Movement->MaxWalkSpeed) || Movement->MaxWalkSpeed <= 0.0f)
 		{
 			Movement->MaxWalkSpeed = GetDefault<ACharacter>()->GetCharacterMovement()->MaxWalkSpeed;
@@ -144,7 +169,8 @@ namespace
 
 	int32 ConfigureAgent(UNavigationSystemV1* Navigation, const ACharacter* Character, FNavDataConfig& OutConfig)
 	{
-		TArray<FNavDataConfig> Agents = Navigation->GetSupportedAgents();
+		UNavigationSystemV1* Defaults = GetMutableDefault<UNavigationSystemV1>();
+		TArray<FNavDataConfig> Agents = Defaults->GetSupportedAgents();
 		const float Radius = Character->GetCapsuleComponent()->GetScaledCapsuleRadius();
 		const float Height = Character->GetCapsuleComponent()->GetScaledCapsuleHalfHeight() * 2.0f;
 		int32 Index = Agents.IndexOfByPredicate([](const FNavDataConfig& Config) { return Config.Name == AgentName; });
@@ -180,24 +206,24 @@ namespace
 		{
 			Agents[Index] = OutConfig;
 		}
-		Navigation->OverrideSupportedAgents(Agents);
+		FArrayProperty* Property = FindFProperty<FArrayProperty>(UNavigationSystemV1::StaticClass(), TEXT("SupportedAgents"));
+		if (!Property)
+		{
+			UE_LOG(LogLostWithin, Error, TEXT("Cannot configure monster navigation: SupportedAgents is unavailable."));
+			return INDEX_NONE;
+		}
+		Property->CopyCompleteValue(Property->ContainerPtrToValuePtr<void>(Defaults), &Agents);
 		FNavAgentSelector Mask = Navigation->GetSupportedAgentsMask();
 		Mask.Set(Index);
+		Mask.MarkInitialized();
 		Navigation->SetSupportedAgentsMask(Mask);
 		return Index;
 	}
 
-	bool SaveAgentSettings(UNavigationSystemV1* Navigation)
+	bool SaveAgentSettings()
 	{
 		UNavigationSystemV1* Defaults = GetMutableDefault<UNavigationSystemV1>();
-		FArrayProperty* Property = FindFProperty<FArrayProperty>(UNavigationSystemV1::StaticClass(), TEXT("SupportedAgents"));
-		if (!Property)
-		{
-			UE_LOG(LogLostWithin, Error, TEXT("Cannot persist the monster navigation agent: SupportedAgents property is unavailable."));
-			return false;
-		}
-		// Preserve every other agent and save through Unreal's default-config writer.
-		Property->CopyCompleteValue(Property->ContainerPtrToValuePtr<void>(Defaults), &Navigation->GetSupportedAgents());
+		// ConfigureAgent preserves unfiltered authored profiles in the CDO.
 		if (!Defaults->TryUpdateDefaultConfigFile(Defaults->GetDefaultConfigFilename(), true))
 		{
 			UE_LOG(LogLostWithin, Error, TEXT("Could not save the supported navigation agents to DefaultEngine.ini."));
@@ -285,7 +311,10 @@ bool LostWithinMonsterSetup::BuildAndSaveNavigation(UWorld* World, UClass* Monst
 			Reactions[0]->bIsRagdolled = false;
 			Reactions[0]->PrimaryComponentTick.bCanEverTick = true;
 			Reactions[0]->PrimaryComponentTick.bStartWithTickEnabled = true;
-			Reactions[0]->SetAutoActivate(true);
+			if (!EnableAutoActivation(Reactions[0]))
+			{
+				return false;
+			}
 			if (!RepairCharacter(Monster))
 			{
 				return false;
@@ -410,7 +439,7 @@ bool LostWithinMonsterSetup::BuildAndSaveNavigation(UWorld* World, UClass* Monst
 		return false;
 	}
 	Progress.EnterProgressFrame(1.0f, FText::FromString(TEXT("Saving navigation and target level")));
-	if (!SaveAgentSettings(Navigation))
+	if (!SaveAgentSettings())
 	{
 		return false;
 	}

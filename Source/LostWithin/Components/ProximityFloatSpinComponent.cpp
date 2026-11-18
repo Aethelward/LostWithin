@@ -1860,6 +1860,17 @@ bool UProximityFloatSpinComponent::EvaluateShouldSpin(int32& OutActiveWindowInde
 	return bShouldSpin;
 }
 
+bool UProximityFloatSpinComponent::IsSpinWindowActive(int32 WindowIndex) const
+{
+	if (!IsComponentTickEnabled() || !bUseSpinTimeWindows || !SpinTimeWindows.IsValidIndex(WindowIndex) || bHasDespawnedCat)
+	{
+		return false;
+	}
+	int32 ActiveWindowIndex = INDEX_NONE;
+	float ActiveSpinMultiplier = 1.0f;
+	return EvaluateShouldSpin(ActiveWindowIndex, ActiveSpinMultiplier) && ActiveWindowIndex == WindowIndex;
+}
+
 bool UProximityFloatSpinComponent::IsWithinSpinWindow(float TimeSeconds) const
 {
 	bool bIsSpinning = false;
@@ -2053,11 +2064,7 @@ void UProximityFloatSpinComponent::ApplyFloatAndSpinTransform(AActor* Owner, flo
 		TryTriggerDirectedPath(EDirectedPathTriggerMode::OnSpinWindow);
 	}
 
-	const bool bDiscoShouldRun = bEnableDiscoEnvironmentOnSpinWindow
-		&& bIsActive
-		&& bShouldSpin
-		&& bUseSpinTimeWindows
-		&& ActiveWindowIndex == DiscoSpinWindowIndex;
+	const bool bDiscoShouldRun = bEnableDiscoEnvironmentOnSpinWindow && IsSpinWindowActive(DiscoSpinWindowIndex);
 
 	UnstableMatterIntensity = ComputeUnstableMatterIntensity(ElapsedTriggeredTime, bShouldSpin);
 	UpdateCatGlow(UnstableMatterIntensity, ElapsedTriggeredTime);

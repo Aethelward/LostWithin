@@ -6,7 +6,7 @@
 #include "Commandlets/Commandlet.h"
 #include "SetupMonsterCatReactionCommandlet.generated.h"
 
-/** Repairs BP_Monster movement/navigation and cat reaction wiring through Unreal's asset APIs. */
+/** Wires the cat reaction into every roaming monster Blueprint and repairs their movement/navigation through Unreal's asset APIs. */
 UCLASS()
 class LOSTWITHINEDITOR_API USetupMonsterCatReactionCommandlet : public UCommandlet
 {
@@ -16,6 +16,6 @@ public:
 	USetupMonsterCatReactionCommandlet();
 	virtual int32 Main(const FString& Params) override;
 
-	/** Shared by the commandlet and the LostWithin.SetupMonsterCatReaction editor console command. */
+	/** Configures BP_Monster, BP_BoneDog, BP_Doll and BP_Ghoul; shared by the commandlet and the LostWithin.SetupMonsterCatReaction console command. */
 	static bool ConfigureMonster();
 };

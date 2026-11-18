@@ -227,7 +227,7 @@ bool FLostWithinFlashlightAndAimAutomationTest::RunTest(const FString& Parameter
 	// Settle initial idle frame
 	StepFrames(0.0f, 0.0f, 0.033f, 8);
 
-	// 1. Verify crouch smoothly lowers ThirdPersonCameraBoom Z without 1P dependencies
+	// 1. Crouch was removed: the character cannot crouch and the camera boom keeps its height
 	{
 		UCharacterMovementComponent* MoveComp = Char->GetCharacterMovement();
 		const float SavedGravityScale = MoveComp ? MoveComp->GravityScale : 1.0f;
@@ -238,6 +238,7 @@ bool FLostWithinFlashlightAndAimAutomationTest::RunTest(const FString& Parameter
 			MoveComp->SetMovementMode(MOVE_Walking);
 		}
 
+		TestFalse(TEXT("Crouch is not available"), Char->CanCrouch());
 		const float StandingBoomZ = Boom3P->GetRelativeLocation().Z;
 		Char->Crouch();
 		if (MoveComp)
@@ -245,21 +246,9 @@ bool FLostWithinFlashlightAndAimAutomationTest::RunTest(const FString& Parameter
 			MoveComp->TickComponent(0.02f, LEVELTICK_All, nullptr);
 		}
 		StepFrames(0.0f, 0.0f, 0.02f, 35);
-		const float CrouchedBoomZ = Boom3P->GetRelativeLocation().Z;
-		TestTrue(TEXT("Character entered crouch state"), Char->bIsCrouched);
-		TestTrue(TEXT("Crouch lowers ThirdPersonCameraBoom Z smoothly"),
-			FMath::IsNearlyEqual(CrouchedBoomZ, StandingBoomZ + Char->GetCrouchCameraZOffset(), 2.0f));
-
-		Char->UnCrouch();
-		if (MoveComp)
-		{
-			MoveComp->TickComponent(0.02f, LEVELTICK_All, nullptr);
-		}
-		StepFrames(0.0f, 0.0f, 0.02f, 35);
-		const float RecoveredBoomZ = Boom3P->GetRelativeLocation().Z;
-		TestFalse(TEXT("Character exited crouch state"), Char->bIsCrouched);
-		TestTrue(TEXT("Uncrouch restores ThirdPersonCameraBoom Z"),
-			FMath::IsNearlyEqual(RecoveredBoomZ, StandingBoomZ, 2.0f));
+		TestFalse(TEXT("Crouch request is ignored"), Char->bIsCrouched);
+		TestTrue(TEXT("ThirdPersonCameraBoom keeps its standing height"),
+			FMath::IsNearlyEqual(Boom3P->GetRelativeLocation().Z, StandingBoomZ, 0.5f));
 
 		if (MoveComp)
 		{

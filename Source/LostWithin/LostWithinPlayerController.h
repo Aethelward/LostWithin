@@ -6,6 +6,7 @@
 #include "GameFramework/PlayerController.h"
 #include "LostWithinPlayerController.generated.h"
 
+class UGameEndWidget;
 class UInputMappingContext;
 class UUserWidget;
 
@@ -24,6 +25,26 @@ public:
 	/** Constructor */
 	ALostWithinPlayerController();
 
+	/** Shows the "You died" / "You escaped" screen, frees the cursor and pauses the game */
+	UFUNCTION(BlueprintCallable, Category="Game End")
+	void ShowEndScreen(bool bEscaped);
+
+	/** True once the end screen is on screen */
+	UFUNCTION(BlueprintPure, Category="Game End")
+	bool IsEndScreenVisible() const { return EndScreenWidget != nullptr; }
+
+	/** Reloads the current level for a fresh random run */
+	UFUNCTION(BlueprintCallable, Category="Game End")
+	void RestartRun();
+
+	/** Quits the game (ends Play In Editor) */
+	UFUNCTION(BlueprintCallable, Category="Game End")
+	void QuitRun();
+
+	/** End screen widget class */
+	UPROPERTY(EditAnywhere, Category="Game End")
+	TSubclassOf<UGameEndWidget> EndScreenWidgetClass;
+
 protected:
 
 	/** Input Mapping Contexts */
@@ -40,6 +61,10 @@ protected:
 
 	/** Pointer to the mobile controls widget */
 	TObjectPtr<UUserWidget> MobileControlsWidget;
+
+	/** The end screen, once shown */
+	UPROPERTY(Transient)
+	TObjectPtr<UGameEndWidget> EndScreenWidget;
 
 	/** Gameplay initialization */
 	virtual void BeginPlay() override;

@@ -7,13 +7,60 @@
 #include "InputMappingContext.h"
 #include "LostWithinCameraManager.h"
 #include "Blueprint/UserWidget.h"
+#include "Engine/World.h"
+#include "Kismet/GameplayStatics.h"
+#include "Kismet/KismetSystemLibrary.h"
 #include "LostWithin.h"
+#include "UI/GameEndWidget.h"
 #include "Widgets/Input/SVirtualJoystick.h"
 
 ALostWithinPlayerController::ALostWithinPlayerController()
 {
 	// set the player camera manager class
 	PlayerCameraManagerClass = ALostWithinCameraManager::StaticClass();
+
+	// The ScaryDoor padlock picks its active dial on cursor hover and click.
+	bEnableMouseOverEvents = true;
+	bEnableClickEvents = true;
+
+	EndScreenWidgetClass = UGameEndWidget::StaticClass();
+}
+
+void ALostWithinPlayerController::ShowEndScreen(bool bEscaped)
+{
+	if (EndScreenWidget || !IsLocalPlayerController())
+	{
+		return;
+	}
+
+	UClass* WidgetClass = EndScreenWidgetClass ? EndScreenWidgetClass.Get() : UGameEndWidget::StaticClass();
+	EndScreenWidget = CreateWidget<UGameEndWidget>(this, WidgetClass);
+	if (!EndScreenWidget)
+	{
+		UE_LOG(LogLostWithin, Error, TEXT("Could not create the end screen widget."));
+		return;
+	}
+
+	EndScreenWidget->Configure(bEscaped);
+	EndScreenWidget->AddToViewport(100);
+
+	SetShowMouseCursor(true);
+	FInputModeUIOnly InputMode;
+	InputMode.SetWidgetToFocus(EndScreenWidget->TakeWidget());
+	InputMode.SetLockMouseToViewportBehavior(EMouseLockMode::DoNotLock);
+	SetInputMode(InputMode);
+	SetPause(true);
+}
+
+void ALostWithinPlayerController::RestartRun()
+{
+	SetPause(false);
+	UGameplayStatics::OpenLevel(this, FName(*UGameplayStatics::GetCurrentLevelName(this, /*bRemovePrefixString=*/true)));
+}
+
+void ALostWithinPlayerController::QuitRun()
+{
+	UKismetSystemLibrary::QuitGame(this, this, EQuitPreference::Quit, /*bIgnorePlatformRestrictions=*/false);
 }
 
 void ALostWithinPlayerController::BeginPlay()

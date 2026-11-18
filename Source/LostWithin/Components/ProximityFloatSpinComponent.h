@@ -486,6 +486,14 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Float & Spin")
 	bool IsFloatSpinActive() const { return bIsActive; }
 
+	/** True while the float/spin sequence runs on an enabled, not-despawned cat; any spin window or gap counts. */
+	UFUNCTION(BlueprintPure, Category = "Float & Spin")
+	bool IsFloatSpinThreatening() const { return bIsActive && IsComponentTickEnabled() && !bHasDespawnedCat; }
+
+	/** True only while the given 0-based spin window is actually running. */
+	UFUNCTION(BlueprintPure, Category = "Float & Spin")
+	bool IsSpinWindowActive(int32 WindowIndex) const;
+
 	/** Returns true while the cat's floatspin music sequence is actively playing */
 	UFUNCTION(BlueprintPure, Category = "Float & Spin|Audio")
 	bool IsSpinMusicActive() const;

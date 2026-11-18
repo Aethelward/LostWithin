@@ -2,6 +2,7 @@
 
 #include "AI/MonsterAIComponent.h"
 
+#include "AI/MonsterHearingComponent.h"
 #include "AIController.h"
 #include "Components/CapsuleComponent.h"
 #include "Components/ProximityFloatSpinComponent.h"
@@ -22,6 +23,19 @@ namespace
 {
 	constexpr float FleeRepathInterval = 0.25f;
 	constexpr float RecoveryRetryInterval = 0.25f;
+	// Search box around the landed hips for a navigable standing spot when the landing spot itself is unusable.
+	const FVector RecoveryNavigationExtent(300.0f, 300.0f, 500.0f);
+
+	double DistanceToCapsuleSurface(const UCapsuleComponent& Capsule, const FVector& Point)
+	{
+		float Radius = 0.0f;
+		float HalfHeight = 0.0f;
+		Capsule.GetScaledCapsuleSize(Radius, HalfHeight);
+		const FVector Center = Capsule.GetComponentLocation();
+		const FVector AxisOffset = Capsule.GetUpVector() * FMath::Max(0.0f, HalfHeight - Radius);
+		const FVector ClosestAxisPoint = FMath::ClosestPointOnSegment(Point, Center - AxisOffset, Center + AxisOffset);
+		return FMath::Max(0.0, FVector::Dist(Point, ClosestAxisPoint) - static_cast<double>(Radius));
+	}
 }
 
 UMonsterAIComponent::UMonsterAIComponent()
@@ -65,7 +79,12 @@ bool UMonsterAIComponent::CanRunNormalAI(AActor* Actor)
 	}
 
 	const UMonsterAIComponent* Component = Actor->FindComponentByClass<UMonsterAIComponent>();
-	return !Component || !(Component->bCatIsNear || Component->bIsFleeing || Component->bIsRagdolled);
+	if (Component && (Component->bCatIsNear || Component->bIsFleeing || Component->bIsRagdolled))
+	{
+		return false;
+	}
+	// A monster walking to a heard noise owns its movement until it has searched there.
+	return !UMonsterHearingComponent::IsActorInvestigating(Actor);
 }
 
 AActor* UMonsterAIComponent::GetThreateningCat() const
@@ -132,6 +151,7 @@ void UMonsterAIComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	{
 		World->GetTimerManager().ClearTimer(RagdollRecoveryTimerHandle);
 	}
+	EndPanic(Cast<ACharacter>(GetOwner()));
 	if (AActor* Owner = GetOwner())
 	{
 		Owner->RemoveTickPrerequisiteComponent(this);
@@ -146,16 +166,20 @@ void UMonsterAIComponent::UpdateCatProximity()
 	FleeDirection = FVector::ZeroVector;
 
 	const ACharacter* Character = Cast<ACharacter>(GetOwner());
+	const UCapsuleComponent* Capsule = Character ? Character->GetCapsuleComponent() : nullptr;
 	UWorld* World = GetWorld();
-	if (!Character || !World)
+	if (!Character || !Capsule || !World)
 	{
 		return;
 	}
 
 	const float RagdollRadius = FMath::Max(0.0f, CatRagdollRadius);
-	const float FleeRadius = FMath::Max(RagdollRadius, CatFleeRadius);
+	const float FleeRadius = FMath::Max(0.0f, CatFleeRadius);
 	const FVector OwnerLocation = Character->GetActorLocation();
-	float ClosestDistanceSquared = FMath::Square(FleeRadius);
+	double ClosestFleeDistanceSquared = FMath::Square(static_cast<double>(FleeRadius));
+	double ClosestThrowDistance = RagdollRadius;
+	AActor* FleeCat = nullptr;
+	AActor* ThrowCat = nullptr;
 	for (TActorIterator<AActor> It(World); It; ++It)
 	{
 		AActor* Cat = *It;
@@ -164,19 +188,28 @@ void UMonsterAIComponent::UpdateCatProximity()
 			continue;
 		}
 		const UProximityFloatSpinComponent* FloatSpin = Cat->FindComponentByClass<UProximityFloatSpinComponent>();
-		if (!FloatSpin || !FloatSpin->IsFloatSpinActive())
+		if (!FloatSpin || !FloatSpin->IsFloatSpinThreatening())
 		{
 			continue;
 		}
 
-		const float DistanceSquared = FVector::DistSquared(OwnerLocation, Cat->GetActorLocation());
-		if (DistanceSquared <= ClosestDistanceSquared)
+		const FVector CatLocation = Cat->GetActorLocation();
+		const double SurfaceDistance = DistanceToCapsuleSurface(*Capsule, CatLocation);
+		if (SurfaceDistance <= ClosestThrowDistance)
 		{
-			ClosestDistanceSquared = DistanceSquared;
-			ThreateningCat = Cat;
+			ClosestThrowDistance = SurfaceDistance;
+			ThrowCat = Cat;
+		}
+		const double CenterDistanceSquared = FVector::DistSquared(OwnerLocation, CatLocation);
+		if (CenterDistanceSquared <= ClosestFleeDistanceSquared)
+		{
+			ClosestFleeDistanceSquared = CenterDistanceSquared;
+			FleeCat = Cat;
 		}
 	}
 
+	// A hovering throw threat takes priority even if another cat is closer by center.
+	ThreateningCat = ThrowCat ? ThrowCat : FleeCat;
 	if (const AActor* Cat = ThreateningCat.Get())
 	{
 		bCatIsNear = true;
@@ -189,7 +222,7 @@ void UMonsterAIComponent::UpdateCatProximity()
 				FleeDirection = FVector::ForwardVector;
 			}
 		}
-		if (ClosestDistanceSquared <= FMath::Square(RagdollRadius))
+		if (ThrowCat)
 		{
 			ApplyRagdoll();
 		}
@@ -206,6 +239,7 @@ void UMonsterAIComponent::UpdateFleeMovement(float DeltaTime)
 		{
 			Controller->StopMovement();
 		}
+		EndPanic(Character);
 		bIsFleeing = false;
 		bUseDirectFleeMovement = false;
 		FleeRepathTimeRemaining = 0.0f;
@@ -218,6 +252,7 @@ void UMonsterAIComponent::UpdateFleeMovement(float DeltaTime)
 		Controller->StopMovement();
 	}
 	bIsFleeing = true;
+	BeginPanic(Character);
 	if (!Controller)
 	{
 		if (!bWarnedAboutFleeSetup)
@@ -233,8 +268,10 @@ void UMonsterAIComponent::UpdateFleeMovement(float DeltaTime)
 	{
 		FleeRepathTimeRemaining = FleeRepathInterval;
 		const FVector Destination = Character->GetActorLocation() + FleeDirection * FMath::Max(1.0f, FleeDistance);
-		const EPathFollowingRequestResult::Type Result = Controller->MoveToLocation(
-			Destination, 25.0f, false, true, true, false, nullptr, false);
+		// UE5.6 can project a missing-navigation goal to the origin and report AlreadyAtGoal.
+		const EPathFollowingRequestResult::Type Result = UNavigationSystemV1::GetCurrent(GetWorld())
+			? Controller->MoveToLocation(Destination, 25.0f, false, true, true, false, nullptr, false)
+			: EPathFollowingRequestResult::Failed;
 		bUseDirectFleeMovement = Result == EPathFollowingRequestResult::Failed;
 		if (bUseDirectFleeMovement)
 		{
@@ -307,6 +344,10 @@ bool UMonsterAIComponent::ApplyRagdoll()
 		ActiveRagdollBone = FirstBody->BoneName;
 	}
 
+	// Panic speed and animation rate belong to running; the ragdoll and its recovery use normal settings.
+	EndPanic(Character);
+	ThrowOriginLocation = Character->GetActorLocation();
+	RecoveryRetryElapsed = 0.0f;
 	CachedMeshRelativeTransform = Mesh->GetRelativeTransform();
 	CachedMeshAttachParent = Mesh->GetAttachParent();
 	CachedMeshAttachSocket = Mesh->GetAttachSocketName();
@@ -382,35 +423,102 @@ void UMonsterAIComponent::RecoverFromRagdoll()
 	}
 
 	const FVector HipLocation = Mesh->GetSocketLocation(ActiveRagdollBone);
+	const bool bHipUsable = !HipLocation.ContainsNaN();
 	const float HalfHeight = Capsule->GetScaledCapsuleHalfHeight();
-	const float Radius = Capsule->GetScaledCapsuleRadius();
 	FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(MonsterRagdollRecovery), false, Character);
 	FHitResult FloorHit;
-	const bool bFoundFloor = GetWorld()->LineTraceSingleByChannel(
+	const bool bFoundFloor = bHipUsable && GetWorld()->LineTraceSingleByChannel(
 		FloorHit, HipLocation + FVector::UpVector * HalfHeight,
 		HipLocation - FVector::UpVector * (HalfHeight + 200.0f),
 		Capsule->GetCollisionObjectType(), QueryParams);
-	if (!bFoundFloor || !Movement->IsWalkable(FloorHit))
+	if (bFoundFloor && Movement->IsWalkable(FloorHit) && TryStandAt(Character, FloorHit.ImpactPoint))
 	{
+		return;
+	}
+	if (RecoveryRetryElapsed < FMath::Max(0.0f, RecoveryFallbackDelay))
+	{
+		RecoveryRetryElapsed += RecoveryRetryInterval;
 		ScheduleRecovery(RecoveryRetryInterval);
 		return;
 	}
-	const FVector StandLocation = FloorHit.ImpactPoint + FVector::UpVector * (HalfHeight + 2.0f);
+
+	// The monster must never stay limp: stand on navigation near the body, else where the throw started.
+	if (UNavigationSystemV1* Navigation = UNavigationSystemV1::GetCurrent(GetWorld()); Navigation && bHipUsable)
+	{
+		const ANavigationData* NavData = Navigation->GetNavDataForProps(Character->GetNavAgentPropertiesRef(), HipLocation, INVALID_NAVEXTENT);
+		FNavLocation Projected;
+		if (NavData && Navigation->ProjectPointToNavigation(HipLocation, Projected, RecoveryNavigationExtent, NavData)
+			&& TryStandAt(Character, Projected.Location))
+		{
+			UE_LOG(LogLostWithin, Display, TEXT("%s could not stand where its ragdoll landed; it stood up on nearby navigation."), *GetNameSafe(Character));
+			return;
+		}
+	}
+	UE_LOG(LogLostWithin, Display, TEXT("%s could not stand near its ragdoll; it returned to where the throw started."), *GetNameSafe(Character));
+	FinishRecovery(Character, ThrowOriginLocation);
+}
+
+bool UMonsterAIComponent::TryStandAt(ACharacter* Character, const FVector& FloorPoint)
+{
+	const UCapsuleComponent* Capsule = Character->GetCapsuleComponent();
+	const float HalfHeight = Capsule->GetScaledCapsuleHalfHeight();
+	const float Radius = Capsule->GetScaledCapsuleRadius();
+	const FVector StandLocation = FloorPoint + FVector::UpVector * (HalfHeight + 2.0f);
+	FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(MonsterRagdollRecovery), false, Character);
 	const bool bBlocked = GetWorld()->OverlapBlockingTestByChannel(
 		StandLocation, FQuat::Identity, Capsule->GetCollisionObjectType(),
 		FCollisionShape::MakeCapsule(Radius, HalfHeight), QueryParams,
 		FCollisionResponseParams(Capsule->GetCollisionResponseToChannels()));
 	if (bBlocked)
 	{
-		ScheduleRecovery(RecoveryRetryInterval);
-		return;
+		return false;
 	}
+	FinishRecovery(Character, StandLocation);
+	return true;
+}
 
+void UMonsterAIComponent::FinishRecovery(ACharacter* Character, const FVector& StandLocation)
+{
 	Character->SetActorLocation(StandLocation, false, nullptr, ETeleportType::TeleportPhysics);
 	RestoreCharacterSettings(Character);
 	bIsRagdolled = false;
+	RecoveryRetryElapsed = 0.0f;
 	FleeRepathTimeRemaining = 0.0f;
 	// Keep the fear flag until the next tick has evaluated the cat at the new position.
+}
+
+void UMonsterAIComponent::BeginPanic(ACharacter* Character)
+{
+	UCharacterMovementComponent* Movement = Character ? Character->GetCharacterMovement() : nullptr;
+	USkeletalMeshComponent* Mesh = Character ? Character->GetMesh() : nullptr;
+	if (bPanicApplied || !Movement || !Mesh)
+	{
+		return;
+	}
+	const float Multiplier = FMath::Clamp(PanicSpeedMultiplier, 1.0f, 4.0f);
+	CachedPanicMaxWalkSpeed = Movement->MaxWalkSpeed;
+	CachedPanicAnimRateScale = Mesh->GlobalAnimRateScale;
+	// The speed and the animation rate scale together, so the panic gait's feet stay matched to the ground.
+	Movement->MaxWalkSpeed = (PanicGaitSpeed > 0.0f ? PanicGaitSpeed : CachedPanicMaxWalkSpeed) * Multiplier;
+	Mesh->GlobalAnimRateScale = CachedPanicAnimRateScale * Multiplier;
+	bPanicApplied = true;
+}
+
+void UMonsterAIComponent::EndPanic(ACharacter* Character)
+{
+	if (!bPanicApplied)
+	{
+		return;
+	}
+	bPanicApplied = false;
+	if (UCharacterMovementComponent* Movement = Character ? Character->GetCharacterMovement() : nullptr)
+	{
+		Movement->MaxWalkSpeed = CachedPanicMaxWalkSpeed;
+	}
+	if (USkeletalMeshComponent* Mesh = Character ? Character->GetMesh() : nullptr)
+	{
+		Mesh->GlobalAnimRateScale = CachedPanicAnimRateScale;
+	}
 }
 
 void UMonsterAIComponent::RestoreCharacterSettings(ACharacter* Character)

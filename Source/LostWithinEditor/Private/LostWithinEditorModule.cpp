@@ -15,7 +15,7 @@ void FLostWithinEditorModule::StartupModule()
 {
 	MonsterCatSetupCommand = IConsoleManager::Get().RegisterConsoleCommand(
 		TEXT("LostWithin.SetupMonsterCatReaction"),
-		TEXT("Repair BP_Monster movement, build maze navigation and configure the cat ragdoll reaction. Open Lvl_FirstPerson and stop PIE first. Saves the target map, its dirty actor packages and monster assets."),
+		TEXT("Configure the cat reaction on BP_Monster, BP_BoneDog, BP_Doll and BP_Ghoul (panic-flee any active float-spin cat, 3 m capsule-radius ragdoll throws, guaranteed recovery), repair monster movement and build maze navigation. Open Lvl_FirstPerson and stop PIE first. Saves the target map, its dirty actor packages and monster assets."),
 		FConsoleCommandDelegate::CreateLambda([]()
 		{
 			USetupMonsterCatReactionCommandlet::ConfigureMonster();

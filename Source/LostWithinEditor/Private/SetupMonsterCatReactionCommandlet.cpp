@@ -31,14 +31,52 @@
 #include "PhysicsEngine/PhysicsAsset.h"
 #include "PhysicsEngine/PhysicsConstraintTemplate.h"
 #include "PhysicsEngine/SkeletalBodySetup.h"
+#include "UObject/MetaData.h"
 #include "UObject/Package.h"
 #include "UObject/SavePackage.h"
 
 namespace
 {
-	constexpr const TCHAR* MonsterBlueprintPath = TEXT("/Game/NPC/Monster/BP_Monster.BP_Monster");
-	constexpr const TCHAR* RagdollPackageName = TEXT("/Game/NPC/Monster/PA_MonsterCatRagdoll");
-	constexpr const TCHAR* RagdollObjectPath = TEXT("/Game/NPC/Monster/PA_MonsterCatRagdoll.PA_MonsterCatRagdoll");
+	constexpr const TCHAR* GeometryVersionKey = TEXT("LostWithin.MonsterRagdollGeometryVersion");
+
+	// Bones that get bodies in a generated ragdoll; Hips and Head become spheres, the others capsules.
+	const TCHAR* const HumanRagdollBones[] = {
+		TEXT("Hips"), TEXT("Spine"), TEXT("Spine1"), TEXT("Spine2"), TEXT("Neck"), TEXT("Head"),
+		TEXT("LeftShoulder"), TEXT("RightShoulder"), TEXT("LeftUpLeg"), TEXT("LeftLeg"),
+		TEXT("LeftFoot"), TEXT("RightUpLeg"), TEXT("RightLeg"), TEXT("RightFoot")
+	};
+	const TCHAR* const CanineRagdollBones[] = {
+		TEXT("Hips"), TEXT("Spine1"), TEXT("Spine3"), TEXT("Neck"), TEXT("Head"),
+		TEXT("LeftArm"), TEXT("LeftForeArm"), TEXT("LeftFrontFoot"), TEXT("RightArm"), TEXT("RightForeArm"), TEXT("RightFrontFoot"),
+		TEXT("LeftUpLeg"), TEXT("LeftLeg"), TEXT("LeftHindFoot"), TEXT("RightUpLeg"), TEXT("RightLeg"), TEXT("RightHindFoot")
+	};
+
+	struct FReactionTarget
+	{
+		const TCHAR* Label;
+		const TCHAR* BlueprintPath;
+		/** Generated articulated ragdoll package, or nullptr to keep the mesh's own physics asset. */
+		const TCHAR* RagdollPackage;
+		TArrayView<const TCHAR* const> RagdollBones;
+		const TCHAR* RecoveryBone;
+		/** Natural ground speed (cm/s) of the fastest gait clip, which plays faster while panicking. */
+		float PanicGaitSpeed;
+		/** Navigation is built once, sized for BP_Monster's capsule; the other monsters roam the same mesh. */
+		bool bRepairNavigation;
+	};
+
+	const FReactionTarget ReactionTargets[] = {
+		{ TEXT("BP_Monster"), TEXT("/Game/NPC/Monster/BP_Monster.BP_Monster"), TEXT("/Game/NPC/Monster/PA_MonsterCatRagdoll"),
+			MakeArrayView(HumanRagdollBones), TEXT("Hips"), 62.6f, true },
+		{ TEXT("BP_BoneDog"), TEXT("/Game/NPC/BoneDog/BP_BoneDog.BP_BoneDog"), TEXT("/Game/NPC/BoneDog/PA_BoneDogCatRagdoll"),
+			MakeArrayView(CanineRagdollBones), TEXT("Hips"), 350.0f, false },
+		{ TEXT("BP_Doll"), TEXT("/Game/NPC/Doll/BP_Doll.BP_Doll"), TEXT("/Game/NPC/Doll/PA_DollCatRagdoll"),
+			MakeArrayView(HumanRagdollBones), TEXT("Hips"), 157.3f, false },
+		// The Ghoul's imported physics asset is already articulated (16 bodies, mannequin rig).
+		{ TEXT("BP_Ghoul"), TEXT("/Game/NPC/Ghoul/BP_Ghoul.BP_Ghoul"), nullptr, {}, TEXT("pelvis"), 350.0f, false },
+	};
+
+	bool ConfigureTarget(UWorld* World, const FReactionTarget& Target);
 
 	bool SaveAsset(UObject* Asset)
 	{
@@ -58,11 +96,104 @@ namespace
 		return true;
 	}
 
-	// Build capsules/spheres along the actual reference bones. This also handles this
-	// mesh's short bones that the default minimum-size auto-generation would discard.
-	UPhysicsAsset* GetOrCreateRagdollAsset(USkeletalMesh* Mesh, bool& bOutNeedsSave)
+	struct FGeneratedRagdollShape
+	{
+		bool bCapsule = false;
+		FKSphylElem Capsule;
+		FKSphereElem Sphere;
+	};
+
+	FGeneratedRagdollShape MakeRagdollShape(const FReferenceSkeleton& Skeleton, const TArray<FTransform>& Bones,
+		int32 Index, float MeshHeight, bool bNormalizeBoneScale)
+	{
+		const FName Bone = Skeleton.GetBoneName(Index);
+		const float Scale = bNormalizeBoneScale
+			? FMath::Max(UE_SMALL_NUMBER, static_cast<float>(Bones[Index].GetScale3D().GetAbsMax())) : 1.0f;
+		const float LocalHeight = MeshHeight / Scale;
+		FVector ChildOffset = FVector::ZeroVector;
+		for (int32 Child = Index + 1; Child < Skeleton.GetNum(); ++Child)
+		{
+			if (Skeleton.GetParentIndex(Child) == Index)
+			{
+				ChildOffset = Bones[Index].InverseTransformPosition(Bones[Child].GetLocation());
+				break;
+			}
+		}
+		FGeneratedRagdollShape Result;
+		const float Length = static_cast<float>(ChildOffset.Size());
+		Result.bCapsule = Bone != TEXT("Hips") && Bone != TEXT("Head") && Length > LocalHeight * 0.015f;
+		if (Result.bCapsule)
+		{
+			Result.Capsule.Center = ChildOffset * 0.5f;
+			Result.Capsule.Rotation = FRotationMatrix::MakeFromZ(ChildOffset).Rotator();
+			Result.Capsule.Radius = FMath::Clamp(Length * 0.22f, LocalHeight * 0.015f, LocalHeight * 0.055f);
+			Result.Capsule.Length = FMath::Max(0.1f / Scale, Length - 2.0f * Result.Capsule.Radius);
+		}
+		else
+		{
+			Result.Sphere.Radius = LocalHeight * (Bone == TEXT("Hips") ? 0.075f : Bone == TEXT("Head") ? 0.065f : 0.03f);
+		}
+		return Result;
+	}
+
+	bool MatchesLegacyShape(const USkeletalBodySetup* Body, const FGeneratedRagdollShape& Shape)
+	{
+		if (Body->GetName() != TEXT("Body_") + Body->BoneName.ToString() || Body->AggGeom.GetElementCount() != 1)
+		{
+			return false;
+		}
+		if (Shape.bCapsule && Body->AggGeom.SphylElems.Num() == 1)
+		{
+			const FKSphylElem& Existing = Body->AggGeom.SphylElems[0];
+			return Existing.Center.Equals(Shape.Capsule.Center, 0.001)
+				&& Existing.Rotation.Equals(Shape.Capsule.Rotation, 0.001)
+				&& FMath::IsNearlyEqual(Existing.Radius, Shape.Capsule.Radius, 0.001f)
+				&& FMath::IsNearlyEqual(Existing.Length, Shape.Capsule.Length, 0.001f);
+		}
+		return !Shape.bCapsule && Body->AggGeom.SphereElems.Num() == 1
+			&& Body->AggGeom.SphereElems[0].Center.IsNearlyZero(0.001)
+			&& FMath::IsNearlyEqual(Body->AggGeom.SphereElems[0].Radius, Shape.Sphere.Radius, 0.001f);
+	}
+
+	void ApplyRagdollShape(USkeletalBodySetup* Body, const FGeneratedRagdollShape& Shape)
+	{
+		Body->InvalidatePhysicsData();
+		Body->AggGeom.EmptyElements();
+		if (Shape.bCapsule)
+		{
+			Body->AggGeom.SphylElems.Add(Shape.Capsule);
+		}
+		else
+		{
+			Body->AggGeom.SphereElems.Add(Shape.Sphere);
+		}
+		Body->DefaultInstance.bUseCCD = true;
+		Body->CreatePhysicsMeshes();
+	}
+
+	// Shapes use bone-local dimensions; imported bone scale is applied by the physics component.
+	UPhysicsAsset* GetOrCreateRagdollAsset(USkeletalMesh* Mesh, const FReactionTarget& Target, bool& bOutNeedsSave)
 	{
 		bOutNeedsSave = false;
+		const FString RagdollPackageName = Target.RagdollPackage;
+		const FString RagdollAssetName = FPackageName::GetShortName(RagdollPackageName);
+		const FString RagdollObjectPathString = RagdollPackageName + TEXT(".") + RagdollAssetName;
+		const TCHAR* RagdollObjectPath = *RagdollObjectPathString;
+		const FReferenceSkeleton& Skeleton = Mesh->GetRefSkeleton();
+		if (Skeleton.FindBoneIndex(TEXT("Hips")) == INDEX_NONE || Skeleton.FindBoneIndex(TEXT("Head")) == INDEX_NONE)
+		{
+			UE_LOG(LogLostWithin, Error, TEXT("The %s mesh must have Hips and Head bones for a generated ragdoll."), Target.Label);
+			return nullptr;
+		}
+		TArray<FTransform> BoneTransforms;
+		BoneTransforms.SetNum(Skeleton.GetNum());
+		for (int32 Index = 0; Index < Skeleton.GetNum(); ++Index)
+		{
+			const int32 Parent = Skeleton.GetParentIndex(Index);
+			BoneTransforms[Index] = Parent == INDEX_NONE ? Skeleton.GetRefBonePose()[Index]
+				: Skeleton.GetRefBonePose()[Index] * BoneTransforms[Parent];
+		}
+		const float Height = FMath::Max(1.0f, static_cast<float>(Mesh->GetBounds().BoxExtent.Z * 2.0));
 		UObject* Existing = FindObject<UObject>(nullptr, RagdollObjectPath);
 		const bool bExistsOnDisk = FPackageName::DoesPackageExist(RagdollPackageName);
 		if (!Existing && bExistsOnDisk)
@@ -79,32 +210,46 @@ namespace
 				return nullptr;
 			}
 			bOutNeedsSave = !bExistsOnDisk;
+			FMetaData& Metadata = Asset->GetOutermost()->GetMetaData();
+			if (Metadata.GetValue(Asset, GeometryVersionKey) != TEXT("2"))
+			{
+				bool bUntunedLegacyGeometry = true;
+				for (const USkeletalBodySetup* Body : Asset->SkeletalBodySetups)
+				{
+					const int32 Index = Body ? Skeleton.FindBoneIndex(Body->BoneName) : INDEX_NONE;
+					if (Index == INDEX_NONE || !MatchesLegacyShape(Body, MakeRagdollShape(Skeleton, BoneTransforms, Index, Height, false)))
+					{
+						bUntunedLegacyGeometry = false;
+						break;
+					}
+				}
+				if (bUntunedLegacyGeometry)
+				{
+					Asset->Modify();
+					for (USkeletalBodySetup* Body : Asset->SkeletalBodySetups)
+					{
+						Body->Modify();
+						ApplyRagdollShape(Body, MakeRagdollShape(Skeleton, BoneTransforms,
+							Skeleton.FindBoneIndex(Body->BoneName), Height, true));
+					}
+					Metadata.SetValue(Asset, GeometryVersionKey, TEXT("2"));
+					Asset->UpdateBoundsBodiesArray();
+					Asset->MarkPackageDirty();
+					bOutNeedsSave = true;
+					UE_LOG(LogLostWithin, Display, TEXT("Corrected legacy generated ragdoll geometry for imported bone scale (mesh height %.2f cm, Hips reference scale %.2f); body settings and joints retained."),
+						Height, BoneTransforms[Skeleton.FindBoneIndex(TEXT("Hips"))].GetScale3D().GetAbsMax());
+				}
+			}
 			return Asset;
 		}
 
-		const FReferenceSkeleton& Skeleton = Mesh->GetRefSkeleton();
-		if (Skeleton.FindBoneIndex(TEXT("Hips")) == INDEX_NONE || Skeleton.FindBoneIndex(TEXT("Head")) == INDEX_NONE)
+		UPackage* Package = CreatePackage(*RagdollPackageName);
+		UPhysicsAsset* Asset = NewObject<UPhysicsAsset>(Package, FName(*RagdollAssetName), RF_Public | RF_Standalone | RF_Transactional);
+		TSet<FName> PhysicalBones;
+		for (const TCHAR* Bone : Target.RagdollBones)
 		{
-			UE_LOG(LogLostWithin, Error, TEXT("The monster mesh must have Hips and Head bones."));
-			return nullptr;
+			PhysicalBones.Add(FName(Bone));
 		}
-		TArray<FTransform> BoneTransforms;
-		BoneTransforms.SetNum(Skeleton.GetNum());
-		for (int32 Index = 0; Index < Skeleton.GetNum(); ++Index)
-		{
-			const int32 Parent = Skeleton.GetParentIndex(Index);
-			BoneTransforms[Index] = Parent == INDEX_NONE ? Skeleton.GetRefBonePose()[Index]
-				: Skeleton.GetRefBonePose()[Index] * BoneTransforms[Parent];
-		}
-
-		UPackage* Package = CreatePackage(RagdollPackageName);
-		UPhysicsAsset* Asset = NewObject<UPhysicsAsset>(Package, TEXT("PA_MonsterCatRagdoll"), RF_Public | RF_Standalone | RF_Transactional);
-		const float Height = FMath::Max(1.0f, static_cast<float>(Mesh->GetBounds().BoxExtent.Z * 2.0));
-		const TSet<FName> PhysicalBones = {
-			TEXT("Hips"), TEXT("Spine"), TEXT("Spine1"), TEXT("Spine2"), TEXT("Neck"), TEXT("Head"),
-			TEXT("LeftShoulder"), TEXT("RightShoulder"), TEXT("LeftUpLeg"), TEXT("LeftLeg"),
-			TEXT("LeftFoot"), TEXT("RightUpLeg"), TEXT("RightLeg"), TEXT("RightFoot")
-		};
 		for (int32 Index = 0; Index < Skeleton.GetNum(); ++Index)
 		{
 			const FName Bone = Skeleton.GetBoneName(Index);
@@ -120,32 +265,7 @@ namespace
 			Body->DefaultInstance.LinearDamping = 0.1f;
 			Body->DefaultInstance.AngularDamping = 0.5f;
 
-			FVector ChildOffset = FVector::ZeroVector;
-			for (int32 Child = Index + 1; Child < Skeleton.GetNum(); ++Child)
-			{
-				if (Skeleton.GetParentIndex(Child) == Index)
-				{
-					ChildOffset = BoneTransforms[Index].InverseTransformPosition(BoneTransforms[Child].GetLocation());
-					break;
-				}
-			}
-			const float SegmentLength = static_cast<float>(ChildOffset.Size());
-			if (Bone != TEXT("Hips") && Bone != TEXT("Head") && SegmentLength > Height * 0.015f)
-			{
-				FKSphylElem Shape;
-				Shape.Center = ChildOffset * 0.5f;
-				Shape.Rotation = FRotationMatrix::MakeFromZ(ChildOffset).Rotator();
-				Shape.Radius = FMath::Clamp(SegmentLength * 0.22f, Height * 0.015f, Height * 0.055f);
-				Shape.Length = FMath::Max(0.1f, SegmentLength - 2.0f * Shape.Radius);
-				Body->AggGeom.SphylElems.Add(Shape);
-			}
-			else
-			{
-				FKSphereElem Shape;
-				Shape.Radius = Height * (Bone == TEXT("Hips") ? 0.075f : Bone == TEXT("Head") ? 0.065f : 0.03f);
-				Body->AggGeom.SphereElems.Add(Shape);
-			}
-			Body->CreatePhysicsMeshes();
+			ApplyRagdollShape(Body, MakeRagdollShape(Skeleton, BoneTransforms, Index, Height, true));
 			Asset->SkeletalBodySetups.Add(Body);
 		}
 		Asset->UpdateBodySetupIndexMap();
@@ -186,6 +306,7 @@ namespace
 		}
 		Asset->UpdateBoundsBodiesArray();
 		Asset->PreviewSkeletalMesh = Mesh;
+		Package->GetMetaData().SetValue(Asset, GeometryVersionKey, TEXT("2"));
 		Asset->MarkPackageDirty();
 		FAssetRegistryModule::AssetCreated(Asset);
 		bOutNeedsSave = true;
@@ -215,6 +336,20 @@ namespace
 		Component->PrimaryComponentTick.bCanEverTick = true;
 		Component->PrimaryComponentTick.bStartWithTickEnabled = true;
 		Component->SetAutoActivate(true);
+	}
+
+	void ConfigureReactionTemplate(UMonsterAIComponent* Component, const FReactionTarget& Target, const UPhysicsAsset* Ragdoll)
+	{
+		Component->Modify();
+		// Fill only an unset panic gait speed so later per-Blueprint tuning survives repeated setup.
+		if (Component->PanicGaitSpeed <= 0.0f)
+		{
+			Component->PanicGaitSpeed = Target.PanicGaitSpeed;
+		}
+		if (Ragdoll->FindBodyIndex(Component->RagdollRecoveryBone) == INDEX_NONE)
+		{
+			Component->RagdollRecoveryBone = Target.RecoveryBone;
+		}
 	}
 
 	bool IsMovementGuarded(const UEdGraphPin* Input)
@@ -341,17 +476,38 @@ bool USetupMonsterCatReactionCommandlet::ConfigureMonster()
 	{
 		return false;
 	}
-	UBlueprint* Blueprint = LoadObject<UBlueprint>(nullptr, MonsterBlueprintPath);
+	// Configure every monster even if one fails, so a single bad asset does not block the others.
+	bool bAllConfigured = true;
+	for (const FReactionTarget& Target : ReactionTargets)
+	{
+		bAllConfigured &= ConfigureTarget(World, Target);
+	}
+	if (bAllConfigured)
+	{
+		UE_LOG(LogLostWithin, Display, TEXT("Cat reaction configured for %d monsters: any active float-spin, 5 m fear, 3 m capsule-surface throw, 1.5x panic gait and animation, 3 s recovery with a 2 s stand-up fallback."),
+			UE_ARRAY_COUNT(ReactionTargets));
+	}
+	return bAllConfigured;
+}
+
+namespace
+{
+bool ConfigureTarget(UWorld* World, const FReactionTarget& Target)
+{
+	UBlueprint* Blueprint = LoadObject<UBlueprint>(nullptr, Target.BlueprintPath);
 	ACharacter* Character = Blueprint && Blueprint->GeneratedClass ? Cast<ACharacter>(Blueprint->GeneratedClass->GetDefaultObject()) : nullptr;
 	if (!Character || !Character->GetMesh() || !Character->GetMesh()->GetSkeletalMeshAsset() || !Blueprint->SimpleConstructionScript)
 	{
-		UE_LOG(LogLostWithin, Error, TEXT("BP_Monster must be a Character Blueprint with a skeletal mesh."));
+		UE_LOG(LogLostWithin, Error, TEXT("%s must be a Character Blueprint with a skeletal mesh."), Target.Label);
 		return false;
 	}
 	bool bNeedsPhysicsSave = false;
-	UPhysicsAsset* Ragdoll = GetOrCreateRagdollAsset(Character->GetMesh()->GetSkeletalMeshAsset(), bNeedsPhysicsSave);
-	if (!Ragdoll)
+	UPhysicsAsset* Ragdoll = Target.RagdollPackage
+		? GetOrCreateRagdollAsset(Character->GetMesh()->GetSkeletalMeshAsset(), Target, bNeedsPhysicsSave)
+		: Character->GetMesh()->GetPhysicsAsset();
+	if (!Ragdoll || Ragdoll->SkeletalBodySetups.IsEmpty())
 	{
+		UE_LOG(LogLostWithin, Error, TEXT("%s has no usable ragdoll physics asset."), Target.Label);
 		return false;
 	}
 
@@ -375,7 +531,7 @@ bool USetupMonsterCatReactionCommandlet::ConfigureMonster()
 	}
 	if (ComponentCount > 1)
 	{
-		UE_LOG(LogLostWithin, Error, TEXT("BP_Monster has %d cat-reaction components. Keep one before running setup; no components were deleted."), ComponentCount);
+		UE_LOG(LogLostWithin, Error, TEXT("%s has %d cat-reaction components. Keep one before running setup; no components were deleted."), Target.Label, ComponentCount);
 		return false;
 	}
 	if (ComponentCount == 0)
@@ -386,12 +542,14 @@ bool USetupMonsterCatReactionCommandlet::ConfigureMonster()
 	for (UMonsterAIComponent* Component : NativeComponents)
 	{
 		ResetReactionTemplate(Component);
+		ConfigureReactionTemplate(Component, Target, Ragdoll);
 	}
 	for (USCS_Node* Node : Blueprint->SimpleConstructionScript->GetAllNodes())
 	{
 		if (UMonsterAIComponent* Component = Cast<UMonsterAIComponent>(Node->ComponentTemplate))
 		{
 			ResetReactionTemplate(Component);
+			ConfigureReactionTemplate(Component, Target, Ragdoll);
 		}
 	}
 	if (!LostWithinMonsterSetup::RepairRoamQueries(Blueprint))
@@ -424,7 +582,7 @@ bool USetupMonsterCatReactionCommandlet::ConfigureMonster()
 	FKismetEditorUtilities::CompileBlueprint(Blueprint, EBlueprintCompileOptions::None, &CompileResults);
 	if (CompileResults.NumErrors > 0)
 	{
-		UE_LOG(LogLostWithin, Error, TEXT("BP_Monster cat reaction compile failed with %d errors; assets have not been saved."), CompileResults.NumErrors);
+		UE_LOG(LogLostWithin, Error, TEXT("%s cat reaction compile failed with %d errors; assets have not been saved."), Target.Label, CompileResults.NumErrors);
 		return false;
 	}
 	Character = CastChecked<ACharacter>(Blueprint->GeneratedClass->GetDefaultObject());
@@ -432,8 +590,11 @@ bool USetupMonsterCatReactionCommandlet::ConfigureMonster()
 	{
 		return false;
 	}
-	Character->GetMesh()->Modify();
-	Character->GetMesh()->SetPhysicsAsset(Ragdoll);
+	if (Target.RagdollPackage)
+	{
+		Character->GetMesh()->Modify();
+		Character->GetMesh()->SetPhysicsAsset(Ragdoll);
+	}
 	Blueprint->MarkPackageDirty();
 	if (bNeedsPhysicsSave && !SaveAsset(Ragdoll))
 	{
@@ -444,12 +605,13 @@ bool USetupMonsterCatReactionCommandlet::ConfigureMonster()
 		return false;
 	}
 	FBlueprintEditorUtils::PostEditChangeBlueprintActors(Blueprint, true);
-	if (!LostWithinMonsterSetup::BuildAndSaveNavigation(World, Blueprint->GeneratedClass))
+	if (Target.bRepairNavigation && !LostWithinMonsterSetup::BuildAndSaveNavigation(World, Blueprint->GeneratedClass))
 	{
-		UE_LOG(LogLostWithin, Error, TEXT("BP_Monster assets were saved, but level navigation repair failed. Resolve the preceding error and rerun setup."));
+		UE_LOG(LogLostWithin, Error, TEXT("%s assets were saved, but level navigation repair failed. Resolve the preceding error and rerun setup."), Target.Label);
 		return false;
 	}
-	UE_LOG(LogLostWithin, Display, TEXT("Saved BP_Monster movement and cat reaction: 5 m fear, 1 m throw, 3 s recovery; %s has %d bodies and %d joints."),
-		*Ragdoll->GetPathName(), Ragdoll->SkeletalBodySetups.Num(), Ragdoll->ConstraintSetup.Num());
+	UE_LOG(LogLostWithin, Display, TEXT("Saved %s movement guards and cat reaction (panic gait %.1f cm/s); %s has %d bodies and %d joints."),
+		Target.Label, Target.PanicGaitSpeed, *Ragdoll->GetPathName(), Ragdoll->SkeletalBodySetups.Num(), Ragdoll->ConstraintSetup.Num());
 	return true;
+}
 }

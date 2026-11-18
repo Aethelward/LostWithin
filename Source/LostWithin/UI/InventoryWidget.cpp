@@ -9,6 +9,7 @@
 #include "Components/CanvasPanel.h"
 #include "Components/CanvasPanelSlot.h"
 #include "Components/ScrollBox.h"
+#include "Components/SizeBox.h"
 #include "Components/TextBlock.h"
 #include "Components/VerticalBox.h"
 #include "Components/VerticalBoxSlot.h"
@@ -17,6 +18,8 @@
 #include "Inventory/InventoryComponent.h"
 #include "Styling/CoreStyle.h"
 #include "Styling/SlateTypes.h"
+#include "Engine/World.h"
+#include "TimerManager.h"
 #include "UI/InventoryDragDropOperation.h"
 #include "UI/InventoryItemRowWidget.h"
 
@@ -310,6 +313,12 @@ void UInventoryWidget::OpenItemContextMenu(int32 SlotIndex, const FVector2D& Scr
 	}
 	ContextChangeBatteryButton->SetVisibility(bShowBatteryAction ? ESlateVisibility::Visible : ESlateVisibility::Collapsed);
 
+	const bool bShowReadAction = APickupItemActor::IsNoteItemID(Item.ItemID);
+	if (ContextReadButton)
+	{
+		ContextReadButton->SetVisibility(bShowReadAction ? ESlateVisibility::Visible : ESlateVisibility::Collapsed);
+	}
+
 	if (Item.Quantity > 1)
 	{
 		ContextDropPrimaryText->SetText(NSLOCTEXT("LostWithin", "ContextDropOne", "Drop 1"));
@@ -325,7 +334,7 @@ void UInventoryWidget::OpenItemContextMenu(int32 SlotIndex, const FVector2D& Scr
 	{
 		const FGeometry& WidgetGeometry = GetCachedGeometry();
 		const FVector2D ViewportLocalSize = WidgetGeometry.GetLocalSize();
-		const float EstimatedHeight = 80.0f + (Item.Quantity > 1 ? 36.0f : 0.0f) + (bShowBatteryAction ? 36.0f : 0.0f);
+		const float EstimatedHeight = 80.0f + (Item.Quantity > 1 ? 36.0f : 0.0f) + (bShowBatteryAction ? 36.0f : 0.0f) + (bShowReadAction ? 36.0f : 0.0f);
 		const FVector2D EstimatedMenuSize(185.0f, EstimatedHeight);
 
 		FVector2D DesiredPos = WidgetGeometry.AbsoluteToLocal(ScreenSpacePosition) + FVector2D(4.0f, 4.0f);
@@ -496,6 +505,83 @@ void UInventoryWidget::HandleContextChangeBatteryClicked()
 	}
 }
 
+void UInventoryWidget::HandleContextReadClicked()
+{
+	const int32 TargetSlotIndex = ContextMenuSlotIndex;
+	CloseItemContextMenu();
+
+	const UInventoryComponent* Inventory = BoundInventory.Get();
+	if (Inventory && Inventory->GetItems().IsValidIndex(TargetSlotIndex))
+	{
+		const FInventoryItem& Item = Inventory->GetItems()[TargetSlotIndex];
+		ShowNote(Item.DisplayName, Item.Description);
+	}
+}
+
+void UInventoryWidget::HandleNoteCloseClicked()
+{
+	HideNote();
+}
+
+void UInventoryWidget::ShowNote(const FText& Title, const FText& Body)
+{
+	BuildWidgetTreeIfNeeded();
+	VisibleNoteText = Body;
+	bIsNoteVisible = true;
+	if (NoteTitleText)
+	{
+		NoteTitleText->SetText(Title.IsEmpty() ? NSLOCTEXT("LostWithin", "NoteDefaultTitle", "Note") : Title);
+	}
+	if (NoteBodyText)
+	{
+		NoteBodyText->SetText(Body);
+	}
+	if (NotePanelBorder)
+	{
+		NotePanelBorder->SetVisibility(ESlateVisibility::Visible);
+	}
+}
+
+void UInventoryWidget::HideNote()
+{
+	bIsNoteVisible = false;
+	VisibleNoteText = FText::GetEmpty();
+	if (NotePanelBorder)
+	{
+		NotePanelBorder->SetVisibility(ESlateVisibility::Collapsed);
+	}
+}
+
+void UInventoryWidget::ShowStatusMessage(const FText& Message, float DurationSeconds)
+{
+	BuildWidgetTreeIfNeeded();
+	StatusMessage = Message;
+	if (StatusMessageText && StatusMessageBorder)
+	{
+		StatusMessageText->SetText(Message);
+		StatusMessageBorder->SetVisibility(Message.IsEmpty() ? ESlateVisibility::Collapsed : ESlateVisibility::HitTestInvisible);
+	}
+
+	if (UWorld* World = GetWorld())
+	{
+		World->GetTimerManager().ClearTimer(StatusMessageTimerHandle);
+		if (!Message.IsEmpty() && DurationSeconds > 0.0f)
+		{
+			World->GetTimerManager().SetTimer(StatusMessageTimerHandle,
+				FTimerDelegate::CreateUObject(this, &UInventoryWidget::HideStatusMessage), DurationSeconds, false);
+		}
+	}
+}
+
+void UInventoryWidget::HideStatusMessage()
+{
+	StatusMessage = FText::GetEmpty();
+	if (StatusMessageBorder)
+	{
+		StatusMessageBorder->SetVisibility(ESlateVisibility::Collapsed);
+	}
+}
+
 void UInventoryWidget::HandleContextDropPrimaryClicked()
 {
 	ExecuteContextDrop(1);
@@ -616,7 +702,7 @@ void UInventoryWidget::BuildWidgetTreeIfNeeded()
 	ControlsHintBorder->SetPadding(FMargin(10.0f, 6.0f));
 	ControlsHintBorder->SetVisibility(ESlateVisibility::HitTestInvisible);
 	UTextBlock* ControlsHintText = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), TEXT("ControlsHintText"));
-	ControlsHintText->SetText(NSLOCTEXT("LostWithin", "ControlsHint", "[Tab] Placeholder Inventory  |  [LMB] Interact  |  [F] Flashlight  |  [R] Change Battery  |  [Shift] Walk  |  [Ctrl] Sprint  |  [C] Crouch"));
+	ControlsHintText->SetText(NSLOCTEXT("LostWithin", "ControlsHint", "[Tab] Placeholder Inventory  |  [LMB] Interact  |  [F] Flashlight  |  [R] Change Battery  |  [Shift] Walk (quiet)  |  [Ctrl] Sprint (loud)"));
 	ControlsHintText->SetFont(FCoreStyle::GetDefaultFontStyle("Regular", 10));
 	ControlsHintText->SetColorAndOpacity(FSlateColor(FLinearColor(0.85f, 0.88f, 0.94f, 0.85f)));
 	ControlsHintText->SetVisibility(ESlateVisibility::HitTestInvisible);
@@ -695,7 +781,7 @@ void UInventoryWidget::BuildWidgetTreeIfNeeded()
 	}
 
 	UTextBlock* ActionHintText = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), TEXT("InventoryActionHintText"));
-	ActionHintText->SetText(NSLOCTEXT("LostWithin", "InventoryActionHint", "[RMB] an item to Use / Drop  |  Drag Battery onto Flashlight  |  Drag outside panel to Drop"));
+	ActionHintText->SetText(NSLOCTEXT("LostWithin", "InventoryActionHint", "[RMB] an item to Read / Use / Drop  |  Drag Battery onto Flashlight  |  Drag outside panel to Drop"));
 	ActionHintText->SetFont(FCoreStyle::GetDefaultFontStyle("Regular", 11));
 	ActionHintText->SetColorAndOpacity(FSlateColor(FLinearColor(0.60f, 0.66f, 0.76f, 1.0f)));
 	ActionHintText->SetVisibility(ESlateVisibility::HitTestInvisible);
@@ -759,6 +845,13 @@ void UInventoryWidget::BuildWidgetTreeIfNeeded()
 		TitleSlot->SetPadding(FMargin(8.0f, 2.0f, 8.0f, 6.0f));
 	}
 
+	ContextReadButton = CreateContextMenuButton(
+		MenuLayout,
+		TEXT("ContextReadButton"),
+		NSLOCTEXT("LostWithin", "ContextRead", "Read"));
+	ContextReadButton->OnClicked.AddDynamic(this, &UInventoryWidget::HandleContextReadClicked);
+	ContextReadButton->SetVisibility(ESlateVisibility::Collapsed);
+
 	ContextChangeBatteryButton = CreateContextMenuButton(
 		MenuLayout,
 		TEXT("ContextChangeBatteryButton"),
@@ -789,5 +882,65 @@ void UInventoryWidget::BuildWidgetTreeIfNeeded()
 		MenuSlot->SetAlignment(FVector2D(0.0f, 0.0f));
 		MenuSlot->SetAutoSize(true);
 		MenuSlot->SetZOrder(20);
+	}
+
+	// Status message just above the interaction prompt ("Locked. It needs the Old Key.")
+	StatusMessageBorder = WidgetTree->ConstructWidget<UBorder>(UBorder::StaticClass(), TEXT("StatusMessageBorder"));
+	StatusMessageBorder->SetBrushColor(FLinearColor(0.10f, 0.03f, 0.03f, 0.80f));
+	StatusMessageBorder->SetPadding(FMargin(14.0f, 6.0f));
+	StatusMessageBorder->SetVisibility(ESlateVisibility::Collapsed);
+	StatusMessageText = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), TEXT("StatusMessageText"));
+	StatusMessageText->SetFont(FCoreStyle::GetDefaultFontStyle("Bold", 13));
+	StatusMessageText->SetColorAndOpacity(FSlateColor(FLinearColor(1.0f, 0.86f, 0.80f, 1.0f)));
+	StatusMessageText->SetJustification(ETextJustify::Center);
+	StatusMessageText->SetVisibility(ESlateVisibility::HitTestInvisible);
+	StatusMessageBorder->SetContent(StatusMessageText);
+	if (UCanvasPanelSlot* StatusSlot = RootCanvas->AddChildToCanvas(StatusMessageBorder))
+	{
+		StatusSlot->SetAnchors(FAnchors(0.5f, 0.66f, 0.5f, 0.66f));
+		StatusSlot->SetAlignment(FVector2D(0.5f, 0.5f));
+		StatusSlot->SetAutoSize(true);
+	}
+
+	// Paper note reader
+	NotePanelBorder = WidgetTree->ConstructWidget<UBorder>(UBorder::StaticClass(), TEXT("NotePanelBorder"));
+	NotePanelBorder->SetBrushColor(FLinearColor(0.80f, 0.74f, 0.60f, 0.97f));
+	NotePanelBorder->SetPadding(FMargin(32.0f, 26.0f));
+	NotePanelBorder->SetVisibility(ESlateVisibility::Collapsed);
+
+	UVerticalBox* NoteLayout = WidgetTree->ConstructWidget<UVerticalBox>(UVerticalBox::StaticClass(), TEXT("NoteLayout"));
+	NoteTitleText = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), TEXT("NoteTitleText"));
+	NoteTitleText->SetFont(FCoreStyle::GetDefaultFontStyle("Bold", 13));
+	NoteTitleText->SetColorAndOpacity(FSlateColor(FLinearColor(0.28f, 0.20f, 0.14f, 1.0f)));
+	if (UVerticalBoxSlot* NoteTitleSlot = NoteLayout->AddChildToVerticalBox(NoteTitleText))
+	{
+		NoteTitleSlot->SetPadding(FMargin(0.0f, 0.0f, 0.0f, 12.0f));
+	}
+
+	NoteBodyText = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), TEXT("NoteBodyText"));
+	NoteBodyText->SetFont(FCoreStyle::GetDefaultFontStyle("Italic", 20));
+	NoteBodyText->SetColorAndOpacity(FSlateColor(FLinearColor(0.10f, 0.07f, 0.06f, 1.0f)));
+	NoteBodyText->SetAutoWrapText(true);
+	if (UVerticalBoxSlot* NoteBodySlot = NoteLayout->AddChildToVerticalBox(NoteBodyText))
+	{
+		NoteBodySlot->SetPadding(FMargin(0.0f, 0.0f, 0.0f, 18.0f));
+	}
+
+	NoteCloseButton = CreateContextMenuButton(
+		NoteLayout,
+		TEXT("NoteCloseButton"),
+		NSLOCTEXT("LostWithin", "NoteClose", "Put away  [LMB]"));
+	NoteCloseButton->OnClicked.AddDynamic(this, &UInventoryWidget::HandleNoteCloseClicked);
+
+	USizeBox* NoteWidth = WidgetTree->ConstructWidget<USizeBox>(USizeBox::StaticClass(), TEXT("NoteWidth"));
+	NoteWidth->SetWidthOverride(480.0f);
+	NoteWidth->SetContent(NoteLayout);
+	NotePanelBorder->SetContent(NoteWidth);
+	if (UCanvasPanelSlot* NoteSlot = RootCanvas->AddChildToCanvas(NotePanelBorder))
+	{
+		NoteSlot->SetAnchors(FAnchors(0.5f, 0.42f, 0.5f, 0.42f));
+		NoteSlot->SetAlignment(FVector2D(0.5f, 0.5f));
+		NoteSlot->SetAutoSize(true);
+		NoteSlot->SetZOrder(30);
 	}
 }

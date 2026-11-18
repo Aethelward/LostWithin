@@ -7,6 +7,8 @@
 #include "Components/StaticMeshComponent.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/World.h"
+#include "Gameplay/LostWithinNoiseSubsystem.h"
+#include "Gameplay/RunSetupRules.h"
 #include "Kismet/GameplayStatics.h"
 #include "LostWithinCharacter.h"
 #include "PhysicsEngine/BodySetup.h"
@@ -56,6 +58,7 @@ const FName APickupItemActor::FairyTaleKittyKeyItemID = TEXT("FairyTaleKittyKey"
 const FName APickupItemActor::KeyItemID = TEXT("Key");
 const FName APickupItemActor::OldKeyItemID = TEXT("OldKey");
 const FName APickupItemActor::RoyalKeyItemID = TEXT("RoyalKey");
+const FName APickupItemActor::PaperNoteItemID = TEXT("PaperNote");
 
 const TCHAR* APickupItemActor::FlashlightMeshAssetPath =
 	TEXT("/Game/Item/Flashlight/StaticMeshes/defaultMaterial.defaultMaterial");
@@ -71,6 +74,8 @@ const TCHAR* APickupItemActor::OldKeyMeshAssetPath =
 	TEXT("/Game/Item/Keys/old_key/StaticMeshes/old_key.old_key");
 const TCHAR* APickupItemActor::RoyalKeyMeshAssetPath =
 	TEXT("/Game/Item/Keys/royal_key_2/StaticMeshes/royal_key_2.royal_key_2");
+const TCHAR* APickupItemActor::PaperNoteMeshAssetPath =
+	TEXT("/Game/Item/paper/StaticMeshes/paper.paper");
 
 namespace
 {
@@ -88,6 +93,7 @@ namespace
 		bool bIsFlashlight;
 		bool bIsKey;
 		bool bIsBattery;
+		bool bIsNote = false;
 	};
 
 	const FItemCatalogEntry GBuiltInItemCatalog[] = {
@@ -162,6 +168,19 @@ namespace
 			false,
 			true,
 			false
+		},
+		{
+			ELostWithinItemPreset::PaperNote,
+			APickupItemActor::PaperNoteItemID,
+			TEXT("Note"),
+			TEXT("A torn page with shaky handwriting."),
+			1,
+			APickupItemActor::PaperNoteMeshAssetPath,
+			nullptr,
+			false,
+			false,
+			false,
+			true
 		}
 	};
 
@@ -194,9 +213,10 @@ namespace
 			return nullptr;
 		}
 
+		const bool bIsNote = APickupItemActor::IsNoteItemID(ItemID);
 		for (const FItemCatalogEntry& Entry : GBuiltInItemCatalog)
 		{
-			if (Entry.ItemID == ItemID)
+			if (Entry.ItemID == ItemID || (bIsNote && Entry.bIsNote))
 			{
 				return &Entry;
 			}
@@ -246,6 +266,28 @@ namespace
 	{
 		return ItemID.IsNone() || ItemID == APickupItemActor::PlaceholderItemID;
 	}
+}
+
+bool APickupItemActor::IsNoteItemID(FName ItemID)
+{
+	return !ItemID.IsNone() && ItemID.ToString().StartsWith(PaperNoteItemID.ToString(), ESearchCase::CaseSensitive);
+}
+
+FName APickupItemActor::MakeUniqueNoteItemID()
+{
+	return FName(*FString::Printf(TEXT("%s_%s"), *PaperNoteItemID.ToString(), *FGuid::NewGuid().ToString(EGuidFormats::Base36Encoded)));
+}
+
+bool APickupItemActor::IsKeyItemID(FName ItemID)
+{
+	const FItemCatalogEntry* Entry = FindCatalogEntryByItemID(ItemID);
+	return Entry && Entry->bIsKey;
+}
+
+FText APickupItemActor::GetItemDisplayName(FName ItemID)
+{
+	const FItemCatalogEntry* Entry = FindCatalogEntryByItemID(ItemID);
+	return Entry ? FText::FromString(Entry->DisplayName) : FText::FromName(ItemID);
 }
 
 APickupItemActor::APickupItemActor()
@@ -311,20 +353,37 @@ void APickupItemActor::BeginPlay()
 	RefreshItemSetup(/*bForceApplyCatalogScale=*/false);
 	EnsureDefaultDropSounds();
 	EnableItemPhysicsSimulation();
+	if (IsNoteItem())
+	{
+		// A note placed by hand (not by the run setup) still gets a random phrase.
+		const TCHAR* DefaultNoteDescription = TEXT("A torn page with shaky handwriting.");
+		if (ItemData.Description.IsEmpty() || ItemData.Description.ToString() == DefaultNoteDescription)
+		{
+			const TArray<FString>& Phrases = LostWithinRunRules::DefaultFlavorPhrases();
+			ItemData.Description = FText::FromString(Phrases[FMath::RandRange(0, Phrases.Num() - 1)]);
+		}
+		PlaceFlatOnFloor(GetActorLocation());
+	}
 }
 
 void APickupItemActor::OnMeshHit(UPrimitiveComponent* HitComponent, AActor* OtherActor, UPrimitiveComponent* OtherComp, FVector NormalImpulse, const FHitResult& Hit)
 {
+	if (IsNoteItem())
+	{
+		return; // Paper is silent and has no impact sounds.
+	}
+
 	if (NormalImpulse.Size() > 50.0f && OtherActor != this)
 	{
 		// Only trigger for surface impacts (Z normal > 0.7)
 		if (Hit.ImpactNormal.Z < 0.7f) return;
-		static float LastImpactTime = -1.0f;
-		float CurrentTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+		// Per-item debounce. A function-local static outlived each PIE world while world time restarted at 0.
+		const double CurrentTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0;
 		
-		if (CurrentTime - LastImpactTime > 0.5f)
+		if (CurrentTime - LastImpactSoundTime > ImpactSoundCooldownSeconds)
 		{
-			LastImpactTime = CurrentTime;
+			LastImpactSoundTime = CurrentTime;
+			ReportImpactNoise(Hit.ImpactPoint);
 
             UE_LOG(LogTemp, Log, TEXT("OnMeshHit called for item: %s, Impulse: %f"), *ItemData.ItemID.ToString(), NormalImpulse.Size());
 
@@ -453,6 +512,56 @@ void APickupItemActor::ConfigureAsFairyTaleKittyKey()
 	ConfigureFromPreset(ELostWithinItemPreset::FairyTaleKittyKey, /*bForceApplyPresetScale=*/true);
 }
 
+void APickupItemActor::ConfigureAsNote(const FText& NoteText)
+{
+	ItemData.Quantity = 1;
+	ConfigureFromPreset(ELostWithinItemPreset::PaperNote, /*bForceApplyPresetScale=*/true);
+	ItemData.ItemID = MakeUniqueNoteItemID();
+	if (!NoteText.IsEmpty())
+	{
+		ItemData.Description = NoteText;
+	}
+}
+
+bool APickupItemActor::IsNoteItem() const
+{
+	return ItemPreset == ELostWithinItemPreset::PaperNote || IsNoteItemID(ItemData.ItemID);
+}
+
+void APickupItemActor::PlaceFlatOnFloor(const FVector& Around)
+{
+	UWorld* World = GetWorld();
+	if (!World || !MeshComponent)
+	{
+		return;
+	}
+
+	if (MeshComponent->IsSimulatingPhysics())
+	{
+		MeshComponent->SetSimulatePhysics(false);
+	}
+
+	SetActorRotation(FRotator(NoteFlatRotation.Pitch, FMath::FRandRange(-180.0f, 180.0f), NoteFlatRotation.Roll));
+
+	FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(LostWithinNoteFloorTrace), /*bTraceComplex=*/false, this);
+	FHitResult FloorHit;
+	const bool bHasFloor = World->LineTraceSingleByObjectType(
+		FloorHit,
+		Around + FVector(0.0f, 0.0f, 60.0f),
+		Around - FVector(0.0f, 0.0f, 1000.0f),
+		FCollisionObjectQueryParams(ECC_WorldStatic),
+		QueryParams);
+	const double FloorZ = bHasFloor ? FloorHit.ImpactPoint.Z : Around.Z;
+
+	SetActorLocation(FVector(Around.X, Around.Y, FloorZ));
+	const FBox WorldBounds = MeshComponent->Bounds.GetBox();
+	if (WorldBounds.IsValid)
+	{
+		// The mesh pivot is offset from the sheet; rest the sheet itself just above the floor.
+		AddActorWorldOffset(FVector(0.0f, 0.0f, (FloorZ + 0.4) - WorldBounds.Min.Z));
+	}
+}
+
 void APickupItemActor::ApplyItemData(const FInventoryItem& InItemData)
 {
 	ItemData = InItemData;
@@ -482,6 +591,13 @@ void APickupItemActor::ApplyItemData(const FInventoryItem& InItemData)
 
 void APickupItemActor::DropWithPhysics(const FVector& StartLocation, const FVector& InitialVelocity, const TArray<AActor*>& ActorsToIgnore)
 {
+	if (IsNoteItem())
+	{
+		SetActorLocation(StartLocation);
+		PlaceFlatOnFloor(StartLocation);
+		return;
+	}
+
 	RefreshItemSetup(/*bForceApplyCatalogScale=*/false);
 
 	if (MeshComponent)
@@ -613,6 +729,10 @@ void APickupItemActor::OnInteract_Implementation(AActor* Interactor)
 	if (UInventoryComponent* Inventory = Interactor->FindComponentByClass<UInventoryComponent>())
 	{
 		FInventoryItem ItemToAdd = ItemData;
+		if (IsNoteItem() && (ItemToAdd.ItemID == PaperNoteItemID || !IsNoteItemID(ItemToAdd.ItemID)))
+		{
+			ItemToAdd.ItemID = MakeUniqueNoteItemID();
+		}
 		if (MeshComponent && MeshComponent->GetStaticMesh())
 		{
 			ItemToAdd.WorldMesh = MeshComponent->GetStaticMesh();
@@ -629,6 +749,10 @@ void APickupItemActor::OnInteract_Implementation(AActor* Interactor)
 			if (ALostWithinCharacter* Character = Cast<ALostWithinCharacter>(Interactor))
 			{
 				Character->PlayPickupAnimation();
+				if (IsNoteItem())
+				{
+					Character->ShowNote(ItemToAdd.DisplayName, ItemToAdd.Description);
+				}
 			}
 
 			if (RemainingQuantity <= 0)
@@ -648,6 +772,11 @@ FText APickupItemActor::GetInteractionPrompt_Implementation() const
 	const FText SafeName = ItemData.DisplayName.IsEmpty()
 		? FText::FromName(ItemData.ItemID)
 		: ItemData.DisplayName;
+
+	if (IsNoteItem())
+	{
+		return NSLOCTEXT("LostWithin", "PickupNotePrompt", "[LMB] Read note");
+	}
 
 	if (ItemPreset == ELostWithinItemPreset::Battery || ItemData.ItemID == BatteryItemID)
 	{
@@ -726,7 +855,8 @@ void APickupItemActor::RefreshItemSetup(bool bForceApplyCatalogScale)
 	{
 		if (IsPlaceholderOrUnsetItemID(ItemData.ItemID) || ItemPreset == CatalogEntry->Preset)
 		{
-			ItemData.ItemID = CatalogEntry->ItemID;
+			const bool bKeepUniqueNoteID = CatalogEntry->bIsNote && IsNoteItemID(ItemData.ItemID);
+			ItemData.ItemID = bKeepUniqueNoteID ? ItemData.ItemID : CatalogEntry->ItemID;
 			if (ItemData.DisplayName.IsEmpty() || ItemData.DisplayName.ToString() == TEXT("Placeholder Item"))
 			{
 				ItemData.DisplayName = FText::FromString(CatalogEntry->DisplayName);
@@ -749,7 +879,14 @@ void APickupItemActor::RefreshItemSetup(bool bForceApplyCatalogScale)
 			ItemData.WorldMesh = TargetMesh;
 		}
 
-		ApplyPickupMeshScale(TargetMesh, CatalogEntry->bIsFlashlight, CatalogEntry->bIsKey, CatalogEntry->bIsBattery, bForceApplyCatalogScale);
+		if (CatalogEntry->bIsNote)
+		{
+			ItemPreset = ELostWithinItemPreset::PaperNote;
+			bSimulatePhysics = false;
+			ImpactNoiseRadius = 0.0f;
+		}
+
+		ApplyPickupMeshScale(TargetMesh, CatalogEntry->bIsFlashlight, CatalogEntry->bIsKey, CatalogEntry->bIsBattery, bForceApplyCatalogScale, CatalogEntry->bIsNote);
 		RefreshFlashlightLightState();
 		return;
 	}
@@ -799,7 +936,7 @@ void APickupItemActor::RefreshItemSetup(bool bForceApplyCatalogScale)
 	RefreshFlashlightLightState();
 }
 
-void APickupItemActor::ApplyPickupMeshScale(const UStaticMesh* Mesh, bool bIsFlashlight, bool bIsKey, bool bIsBattery, bool bForceApply)
+void APickupItemActor::ApplyPickupMeshScale(const UStaticMesh* Mesh, bool bIsFlashlight, bool bIsKey, bool bIsBattery, bool bForceApply, bool bIsNote)
 {
 	if (!MeshComponent)
 	{
@@ -813,7 +950,7 @@ void APickupItemActor::ApplyPickupMeshScale(const UStaticMesh* Mesh, bool bIsFla
 	}
 
 	const bool bHasUntouchedScale = MeshComponent->GetRelativeScale3D().Equals(FVector(DefaultFallbackMeshScale), 0.001f);
-	if (!bForceApply && !((bIsFlashlight || bIsKey || bIsBattery) && bHasUntouchedScale))
+	if (!bForceApply && !((bIsFlashlight || bIsKey || bIsBattery || bIsNote) && bHasUntouchedScale))
 	{
 		return;
 	}
@@ -827,10 +964,11 @@ void APickupItemActor::ApplyPickupMeshScale(const UStaticMesh* Mesh, bool bIsFla
 	{
 		TargetScale = BatteryPickupScale;
 	}
-	else if (bIsKey)
+	else if (bIsKey || bIsNote)
 	{
 		const float MaxUnscaledDim = Mesh ? Mesh->GetBoundingBox().GetSize().GetMax() : 0.0f;
-		TargetScale = (MaxUnscaledDim > KINDA_SMALL_NUMBER) ? (TargetKeyWorldSizeCm / MaxUnscaledDim) : DefaultFallbackMeshScale;
+		const float TargetSize = bIsNote ? TargetNoteWorldSizeCm : TargetKeyWorldSizeCm;
+		TargetScale = (MaxUnscaledDim > KINDA_SMALL_NUMBER) ? (TargetSize / MaxUnscaledDim) : DefaultFallbackMeshScale;
 	}
 
 	MeshComponent->SetRelativeScale3D(FVector(TargetScale));
@@ -1021,3 +1159,10 @@ void APickupItemActor::PlayRandomDropSound()
 	}
 }
 
+void APickupItemActor::ReportImpactNoise(const FVector& Location)
+{
+	if (ImpactNoiseRadius > 0.0f && !IsNoteItem())
+	{
+		ULostWithinNoiseSubsystem::ReportNoise(this, Location, ImpactNoiseRadius, ELostWithinNoiseKind::ItemImpact, this);
+	}
+}

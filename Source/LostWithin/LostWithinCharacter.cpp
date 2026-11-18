@@ -18,6 +18,7 @@
 #include "Engine/World.h"
 #include "EnhancedInputComponent.h"
 #include "EnhancedInputSubsystems.h"
+#include "Gameplay/LostWithinNoiseSubsystem.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/PlayerController.h"
 #include "GameFramework/SpringArmComponent.h"
@@ -30,6 +31,7 @@
 #include "Inventory/InventoryComponent.h"
 #include "Kismet/GameplayStatics.h"
 #include "LostWithin.h"
+#include "Player/PlayerDeathComponent.h"
 #include "Sound/SoundBase.h"
 #include "Sound/SoundWave.h"
 #include "UI/InventoryWidget.h"
@@ -90,6 +92,23 @@ namespace
 		return Sounds[ChosenIndex];
 	}
 
+	UObject* ResolveInteractableOnActor(AActor* Actor)
+	{
+		if (Actor->GetClass()->ImplementsInterface(UInteractableInterface::StaticClass()))
+		{
+			return Actor;
+		}
+
+		for (UActorComponent* Comp : Actor->GetComponents())
+		{
+			if (Comp && Comp->GetClass()->ImplementsInterface(UInteractableInterface::StaticClass()))
+			{
+				return Comp;
+			}
+		}
+		return nullptr;
+	}
+
 	UObject* ResolveInteractableFromHit(const FHitResult& Hit)
 	{
 		if (UPrimitiveComponent* HitComp = Hit.GetComponent())
@@ -100,20 +119,16 @@ namespace
 			}
 		}
 
-		if (AActor* HitActor = Hit.GetActor())
+		// Walk up from child actors (the ScaryDoor's padlock) and attached actors to the actor that owns the interaction.
+		constexpr int32 MaxParentDepth = 4;
+		AActor* Actor = Hit.GetActor();
+		for (int32 Depth = 0; Actor && Depth <= MaxParentDepth; ++Depth)
 		{
-			if (HitActor->GetClass()->ImplementsInterface(UInteractableInterface::StaticClass()))
+			if (UObject* Interactable = ResolveInteractableOnActor(Actor))
 			{
-				return HitActor;
+				return Interactable;
 			}
-
-			for (UActorComponent* Comp : HitActor->GetComponents())
-			{
-				if (Comp && Comp->GetClass()->ImplementsInterface(UInteractableInterface::StaticClass()))
-				{
-					return Comp;
-				}
-			}
+			Actor = Actor->GetParentActor() ? Actor->GetParentActor() : Actor->GetAttachParentActor();
 		}
 
 		return nullptr;
@@ -182,9 +197,9 @@ ALostWithinCharacter::ALostWithinCharacter()
 	MoveComp->BrakingDecelerationFalling = 1500.0f;
 	MoveComp->AirControl = 0.5f;
 	MoveComp->MaxWalkSpeed = DefaultRunSpeed;
-	MoveComp->MaxWalkSpeedCrouched = CrouchMoveSpeed;
-	MoveComp->GetNavAgentPropertiesRef().bCanCrouch = true;
-	MoveComp->SetCrouchedHalfHeight(55.0f);
+	MoveComp->GetNavAgentPropertiesRef().bCanCrouch = false;
+
+	DeathComponent = CreateDefaultSubobject<UPlayerDeathComponent>(TEXT("Death Component"));
 
 	InventoryWidgetClass = UInventoryWidget::StaticClass();
 }
@@ -192,11 +207,6 @@ ALostWithinCharacter::ALostWithinCharacter()
 void ALostWithinCharacter::BeginPlay()
 {
 	Super::BeginPlay();
-
-	if (ThirdPersonCameraBoom)
-	{
-		DefaultThirdPersonBoomRelativeLocation = ThirdPersonCameraBoom->GetRelativeLocation();
-	}
 
 	if (ThirdPersonCameraComponent)
 	{
@@ -283,16 +293,6 @@ void ALostWithinCharacter::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
 
-	const float TargetCrouchOffset = bIsCrouched ? CrouchCameraZOffset : 0.0f;
-	CurrentCrouchCameraOffset = FMath::FInterpTo(CurrentCrouchCameraOffset, TargetCrouchOffset, DeltaTime, CrouchCameraInterpSpeed);
-
-	if (ThirdPersonCameraBoom)
-	{
-		const FVector DesiredBoomLocation = DefaultThirdPersonBoomRelativeLocation
-			+ FVector(0.0f, 0.0f, CurrentCrouchCameraOffset);
-		ThirdPersonCameraBoom->SetRelativeLocation(DesiredBoomLocation);
-	}
-
 	const float CurrentAimPitch = FMath::Clamp(FRotator::NormalizeAxis(GetBaseAimRotation().Pitch), -89.0f, 89.0f);
 	if (FlashlightAnimInstance)
 	{
@@ -334,7 +334,8 @@ void ALostWithinCharacter::Landed(const FHitResult& Hit)
 {
 	Super::Landed(Hit);
 	FootstepTimer = 0.0f;
-	PlayRandomSoundAtFeet(LandingSounds, LastLandingSoundIndex, LandingSoundVolume, 0.96f, 1.04f);
+	PlayRandomSoundAtFeet(LandingSounds, LastLandingSoundIndex, LandingSoundVolume, 0.96f, 1.04f,
+		FMath::Max(GetCurrentGaitNoiseRadius(), RunNoiseRadius));
 }
 
 void ALostWithinCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
@@ -375,7 +376,7 @@ void ALostWithinCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInpu
 			EnhancedInputComponent->BindAction(ToggleInventoryAction, ETriggerEvent::Started, this, &ALostWithinCharacter::DoToggleInventory);
 		}
 
-		// Movement states: Walk ([Left Shift]), Sprint ([Left Ctrl]), Crouch ([C])
+		// Movement states: Walk ([Left Shift]), Sprint ([Left Ctrl])
 		if (WalkModeAction)
 		{
 			EnhancedInputComponent->BindAction(WalkModeAction, ETriggerEvent::Started, this, &ALostWithinCharacter::DoStartWalk);
@@ -385,10 +386,6 @@ void ALostWithinCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInpu
 		{
 			EnhancedInputComponent->BindAction(SprintModeAction, ETriggerEvent::Started, this, &ALostWithinCharacter::DoStartFastSprint);
 			EnhancedInputComponent->BindAction(SprintModeAction, ETriggerEvent::Completed, this, &ALostWithinCharacter::DoEndFastSprint);
-		}
-		if (CrouchAction)
-		{
-			EnhancedInputComponent->BindAction(CrouchAction, ETriggerEvent::Started, this, &ALostWithinCharacter::DoToggleCrouch);
 		}
 	}
 	else
@@ -417,7 +414,7 @@ void ALostWithinCharacter::LookInput(const FInputActionValue& Value)
 
 void ALostWithinCharacter::DoAim(float Yaw, float Pitch)
 {
-	if (bIsInventoryOpen)
+	if (bIsInventoryOpen || IsGameplayInputBlocked())
 	{
 		return;
 	}
@@ -432,6 +429,11 @@ void ALostWithinCharacter::DoAim(float Yaw, float Pitch)
 
 void ALostWithinCharacter::DoMove(float Right, float Forward)
 {
+	if (IsGameplayInputBlocked())
+	{
+		return;
+	}
+
 	if (GetController())
 	{
 		// pass the move inputs
@@ -442,9 +444,9 @@ void ALostWithinCharacter::DoMove(float Right, float Forward)
 
 void ALostWithinCharacter::DoJumpStart()
 {
-	if (bIsCrouched)
+	if (IsGameplayInputBlocked())
 	{
-		UnCrouch();
+		return;
 	}
 
 	// pass Jump to the character
@@ -459,8 +461,15 @@ void ALostWithinCharacter::DoJumpEnd()
 
 void ALostWithinCharacter::DoInteract()
 {
-	if (bIsInventoryOpen)
+	if (bIsInventoryOpen || IsGameplayInputBlocked())
 	{
+		return;
+	}
+
+	// [LMB] first puts away a note that is being read.
+	if (IsNoteOpen())
+	{
+		HideNote();
 		return;
 	}
 
@@ -476,7 +485,7 @@ void ALostWithinCharacter::DoInteract()
 
 void ALostWithinCharacter::DoToggleFlashlight()
 {
-	if (bIsInventoryOpen || !bHasFlashlight)
+	if (bIsInventoryOpen || bIsDead || !bHasFlashlight)
 	{
 		return;
 	}
@@ -514,7 +523,7 @@ void ALostWithinCharacter::DoToggleFlashlight()
 
 void ALostWithinCharacter::DoReloadFlashlight()
 {
-	if (bIsInventoryOpen || !bHasFlashlight || !InventoryComponent)
+	if (bIsInventoryOpen || bIsDead || !bHasFlashlight || !InventoryComponent)
 	{
 		return;
 	}
@@ -535,6 +544,11 @@ void ALostWithinCharacter::PlayPickupAnimation()
 
 void ALostWithinCharacter::DoToggleInventory()
 {
+	if (!bIsInventoryOpen && IsGameplayInputBlocked())
+	{
+		return;
+	}
+
 	bIsInventoryOpen = !bIsInventoryOpen;
 	if (InventoryWidget)
 	{
@@ -608,20 +622,6 @@ void ALostWithinCharacter::DoEndFastSprint()
 	UpdateMovementSpeed();
 }
 
-void ALostWithinCharacter::DoToggleCrouch()
-{
-	if (bIsCrouched)
-	{
-		UnCrouch();
-	}
-	else if (CanCrouch())
-	{
-		Crouch();
-	}
-
-	UpdateMovementSpeed();
-}
-
 UCameraComponent* ALostWithinCharacter::GetActiveGameplayCamera() const
 {
 	return ThirdPersonCameraComponent;
@@ -651,7 +651,6 @@ void ALostWithinCharacter::EnsureDefaultInputActionsAndMapping()
 	EnsureActionAndKey(ToggleInventoryAction, TEXT("IA_RuntimeToggleInventory"), EKeys::Tab);
 	EnsureActionAndKey(WalkModeAction, TEXT("IA_RuntimeWalk"), EKeys::LeftShift);
 	EnsureActionAndKey(SprintModeAction, TEXT("IA_RuntimeSprint"), EKeys::LeftControl);
-	EnsureActionAndKey(CrouchAction, TEXT("IA_RuntimeCrouch"), EKeys::C);
 }
 
 void ALostWithinCharacter::RegisterRuntimeInputMappingContext()
@@ -1017,8 +1016,6 @@ void ALostWithinCharacter::UpdateMovementSpeed()
 		return;
 	}
 
-	MoveComp->MaxWalkSpeedCrouched = CrouchMoveSpeed;
-
 	if (bIsWalking)
 	{
 		MoveComp->MaxWalkSpeed = SlowWalkSpeed;
@@ -1094,9 +1091,23 @@ void ALostWithinCharacter::UpdateInteractionPrompt()
 		return;
 	}
 
-	if (bIsInventoryOpen)
+	if (bIsInventoryOpen || bIsDead)
 	{
 		InventoryWidget->SetInteractionPrompt(FText::GetEmpty());
+		return;
+	}
+
+	if (IsGameplayInputBlocked())
+	{
+		// The ScaryDoor padlock has the camera; its own input turns the dials.
+		InventoryWidget->SetInteractionPrompt(NSLOCTEXT("LostWithin", "PadlockControlsPrompt",
+			"Point at a dial  |  [Mouse Wheel] Turn it  |  [E] Step back"));
+		return;
+	}
+
+	if (IsNoteOpen())
+	{
+		InventoryWidget->SetInteractionPrompt(NSLOCTEXT("LostWithin", "CloseNotePrompt", "[LMB] Put the note away"));
 		return;
 	}
 
@@ -1158,29 +1169,29 @@ void ALostWithinCharacter::UpdateFootstepAudio(float DeltaTime)
 	float StepInterval = RunStepInterval;
 	float StepVolume = RunStepVolume;
 
-	const bool bIsSprintGait = (bUseCustomMovementSpeeds && bIsSprintingHeld && !bIsWalking && !bIsCrouched)
-		|| (!bUseCustomMovementSpeeds && Speed2D > 400.0f);
-	if (bIsSprintGait)
+	const int32 Gait = ResolveFootstepGait();
+	if (Gait == 2)
 	{
 		StepInterval = SprintStepInterval;
 		StepVolume = SprintStepVolume;
 	}
-	else if (bIsWalking || bIsCrouched || Speed2D <= (SlowWalkSpeed + 25.0f))
+	else if (Gait == 0)
 	{
 		StepInterval = WalkStepInterval;
 		StepVolume = WalkStepVolume;
 	}
+	const float NoiseRadius = GetCurrentGaitNoiseRadius();
 
 	const float SafeInterval = FMath::Max(0.05f, StepInterval);
 	FootstepTimer += DeltaTime;
 	if (FootstepTimer >= SafeInterval)
 	{
 		FootstepTimer = FMath::Fmod(FootstepTimer, SafeInterval);
-		PlayRandomSoundAtFeet(FootstepSounds, LastFootstepSoundIndex, StepVolume, 0.95f, 1.05f);
+		PlayRandomSoundAtFeet(FootstepSounds, LastFootstepSoundIndex, StepVolume, 0.95f, 1.05f, NoiseRadius);
 	}
 }
 
-void ALostWithinCharacter::PlayRandomSoundAtFeet(const TArray<TObjectPtr<USoundBase>>& Sounds, int32& InOutLastIndex, float VolumeMultiplier, float MinPitch, float MaxPitch)
+void ALostWithinCharacter::PlayRandomSoundAtFeet(const TArray<TObjectPtr<USoundBase>>& Sounds, int32& InOutLastIndex, float VolumeMultiplier, float MinPitch, float MaxPitch, float NoiseRadius)
 {
 	if (VolumeMultiplier <= 0.0f)
 	{
@@ -1198,7 +1209,7 @@ void ALostWithinCharacter::PlayRandomSoundAtFeet(const TArray<TObjectPtr<USoundB
 			VolumeMultiplier,
 			FMath::FRandRange(MinPitch, MaxPitch));
 
-		MakeNoise(VolumeMultiplier, this, FeetLocation);
+		ULostWithinNoiseSubsystem::ReportNoise(this, FeetLocation, NoiseRadius, ELostWithinNoiseKind::Footstep, this);
 	}
 }
 
@@ -1361,4 +1372,111 @@ void ALostWithinCharacter::HandleExplorationBGMFinished()
 
 	CurrentBGMTrackIndex = (CurrentBGMTrackIndex + 1) % ExplorationBGMTracks.Num();
 	PlayCurrentExplorationBGMTrack();
+}
+
+int32 ALostWithinCharacter::ResolveFootstepGait() const
+{
+	const float Speed2D = GetVelocity().Size2D();
+	const bool bIsSprintGait = (bUseCustomMovementSpeeds && bIsSprintingHeld && !bIsWalking)
+		|| (!bUseCustomMovementSpeeds && Speed2D > 400.0f);
+	if (bIsSprintGait)
+	{
+		return 2;
+	}
+	if (bIsWalking || Speed2D <= (SlowWalkSpeed + 25.0f))
+	{
+		return 0;
+	}
+	return 1;
+}
+
+float ALostWithinCharacter::GetCurrentGaitNoiseRadius() const
+{
+	switch (ResolveFootstepGait())
+	{
+	case 0:
+		return WalkNoiseRadius;
+	case 2:
+		return SprintNoiseRadius;
+	default:
+		return RunNoiseRadius;
+	}
+}
+
+bool ALostWithinCharacter::IsGameplayInputBlocked() const
+{
+	if (bIsDead)
+	{
+		return true;
+	}
+	const APlayerController* PC = Cast<APlayerController>(GetController());
+	return PC && PC->GetViewTarget() && PC->GetViewTarget() != this;
+}
+
+void ALostWithinCharacter::EnterDeathState()
+{
+	if (bIsDead)
+	{
+		return;
+	}
+	bIsDead = true;
+
+	if (bIsInventoryOpen)
+	{
+		bIsInventoryOpen = false;
+		if (InventoryWidget)
+		{
+			InventoryWidget->SetInventoryOpen(false);
+		}
+		ApplyInventoryInputState();
+	}
+	if (InventoryWidget)
+	{
+		InventoryWidget->HideNote();
+		InventoryWidget->SetInteractionPrompt(FText::GetEmpty());
+		InventoryWidget->SetVisibility(ESlateVisibility::Collapsed);
+	}
+
+	bIsWalking = false;
+	bIsSprintingHeld = false;
+	StopJumping();
+	if (UCharacterMovementComponent* MoveComp = GetCharacterMovement())
+	{
+		MoveComp->StopMovementImmediately();
+		MoveComp->DisableMovement();
+	}
+	if (APlayerController* PC = Cast<APlayerController>(GetController()))
+	{
+		PC->SetIgnoreMoveInput(true);
+		PC->SetIgnoreLookInput(true);
+	}
+}
+
+void ALostWithinCharacter::ShowNote(const FText& Title, const FText& Body)
+{
+	if (InventoryWidget && !bIsDead)
+	{
+		InventoryWidget->ShowNote(Title, Body);
+	}
+}
+
+void ALostWithinCharacter::HideNote()
+{
+	if (InventoryWidget)
+	{
+		InventoryWidget->HideNote();
+	}
+}
+
+bool ALostWithinCharacter::IsNoteOpen() const
+{
+	return InventoryWidget && InventoryWidget->IsNoteVisible();
+}
+
+void ALostWithinCharacter::ShowStatusMessage(const FText& Message)
+{
+	if (InventoryWidget && !bIsDead)
+	{
+		InventoryWidget->ShowStatusMessage(Message, 3.0f);
+	}
 }

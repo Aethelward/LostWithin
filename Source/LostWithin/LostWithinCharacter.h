@@ -15,6 +15,7 @@ class UInputMappingContext;
 class UInventoryComponent;
 class UInventoryWidget;
 class ULostWithinFlashlightAnimInstance;
+class UPlayerDeathComponent;
 class UPointLightComponent;
 class USkeletalMeshComponent;
 class USoundBase;
@@ -58,6 +59,10 @@ class ALostWithinCharacter : public ACharacter
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Components", meta = (AllowPrivateAccess = "true"))
 	TObjectPtr<UPointLightComponent> FlashlightFillLight;
 
+	/** Ends the run with the death camera when a monster touches the player */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Components", meta = (AllowPrivateAccess = "true"))
+	TObjectPtr<UPlayerDeathComponent> DeathComponent;
+
 protected:
 
 	/** Jump Input Action */
@@ -100,10 +105,6 @@ protected:
 	UPROPERTY(EditAnywhere, Category ="Input")
 	TObjectPtr<UInputAction> SprintModeAction = nullptr;
 
-	/** Toggle Crouch Input Action ([C]) */
-	UPROPERTY(EditAnywhere, Category ="Input")
-	TObjectPtr<UInputAction> CrouchAction = nullptr;
-
 	/** Default running speed when moving normally */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Movement|Speeds", meta = (ClampMin = "0.0", Units = "cm/s"))
 	float DefaultRunSpeed = 500.0f;
@@ -116,19 +117,7 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Movement|Speeds", meta = (ClampMin = "0.0", Units = "cm/s"))
 	float FastSprintSpeed = 800.0f;
 
-	/** Movement speed while crouched ([C]) */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Movement|Speeds", meta = (ClampMin = "0.0", Units = "cm/s"))
-	float CrouchMoveSpeed = 200.0f;
-
-	/** Vertical camera offset applied while crouched so the third-person camera drops smoothly */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Movement|Crouch", meta = (Units = "cm"))
-	float CrouchCameraZOffset = -45.0f;
-
-	/** Interpolation speed for crouch camera height transitions */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Movement|Crouch", meta = (ClampMin = "0.1"))
-	float CrouchCameraInterpSpeed = 12.0f;
-
-	/** If true, this character manages default Run / Walk / Sprint / Crouch speeds */
+	/** If true, this character manages default Run / Walk / Sprint speeds */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Movement|Speeds")
 	bool bUseCustomMovementSpeeds = true;
 
@@ -204,7 +193,7 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Audio|Character")
 	TArray<TObjectPtr<USoundBase>> LandingSounds;
 
-	/** Quietest footstep loudness when walking ([Left Shift] / crouched) */
+	/** Quietest footstep loudness when walking ([Left Shift]) */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Audio|Character", meta = (ClampMin = "0.0", ClampMax = "4.0"))
 	float WalkStepVolume = 0.175f;
 
@@ -227,6 +216,18 @@ protected:
 	/** Time between footstep sounds while sprinting */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Audio|Character", meta = (ClampMin = "0.05", Units = "s"))
 	float SprintStepInterval = 0.30f;
+
+	/** Distance at which hearing monsters notice a walking footstep ([Left Shift]) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Noise", meta = (ClampMin = "0.0", Units = "cm"))
+	float WalkNoiseRadius = 400.0f;
+
+	/** Distance at which hearing monsters notice a running footstep (default gait) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Noise", meta = (ClampMin = "0.0", Units = "cm"))
+	float RunNoiseRadius = 900.0f;
+
+	/** Distance at which hearing monsters notice a sprinting footstep ([Left Ctrl]) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Noise", meta = (ClampMin = "0.0", Units = "cm"))
+	float SprintNoiseRadius = 1600.0f;
 
 	/** Volume multiplier for landing SFX */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Audio|Character", meta = (ClampMin = "0.0", ClampMax = "4.0"))
@@ -327,10 +328,6 @@ protected:
 	UFUNCTION(BlueprintCallable, Category="Input")
 	virtual void DoEndFastSprint();
 
-	/** Toggles crouch state ([C]) */
-	UFUNCTION(BlueprintCallable, Category="Input")
-	virtual void DoToggleCrouch();
-
 	/** Set up input action bindings */
 	virtual void SetupPlayerInputComponent(UInputComponent* InputComponent) override;
 
@@ -367,9 +364,40 @@ public:
 	UFUNCTION(BlueprintCallable, Category="Flashlight|Battery")
 	void SetFlashlightBatteryDurationSeconds(float InSeconds) { FlashlightBatteryDurationSeconds = FMath::Max(1.0f, InSeconds); }
 
-	/** Returns the vertical camera offset applied while crouched */
-	UFUNCTION(BlueprintPure, Category="Movement|Crouch")
-	float GetCrouchCameraZOffset() const { return CrouchCameraZOffset; }
+	/** Returns the death component (touch-a-monster game over) */
+	UFUNCTION(BlueprintPure, Category="Death")
+	UPlayerDeathComponent* GetDeathComponent() const { return DeathComponent; }
+
+	/** Freezes the player for the death camera: closes the UI, stops movement and blocks gameplay input */
+	void EnterDeathState();
+
+	/** True after a monster touched the player */
+	UFUNCTION(BlueprintPure, Category="Death")
+	bool IsDead() const { return bIsDead; }
+
+	/** True while dead or while another view target (the ScaryDoor padlock) has the camera */
+	UFUNCTION(BlueprintPure, Category="Input")
+	bool IsGameplayInputBlocked() const;
+
+	/** Noise radius of the current gait: walk, run or sprint */
+	UFUNCTION(BlueprintPure, Category="Noise")
+	float GetCurrentGaitNoiseRadius() const;
+
+	/** Shows a paper note's text on screen until [LMB] */
+	UFUNCTION(BlueprintCallable, Category="UI")
+	void ShowNote(const FText& Title, const FText& Body);
+
+	/** Hides the on-screen note */
+	UFUNCTION(BlueprintCallable, Category="UI")
+	void HideNote();
+
+	/** True while a note is on screen */
+	UFUNCTION(BlueprintPure, Category="UI")
+	bool IsNoteOpen() const;
+
+	/** Shows a short message above the interaction prompt ("Locked. It needs the Old Key.") */
+	UFUNCTION(BlueprintCallable, Category="UI")
+	void ShowStatusMessage(const FText& Message);
 
 private:
 
@@ -379,7 +407,7 @@ private:
 	/** Registers the runtime key mappings on the local player controller */
 	void RegisterRuntimeInputMappingContext();
 
-	/** Updates CharacterMovement->MaxWalkSpeed based on Walk/Run/Sprint/Crouch state */
+	/** Updates CharacterMovement->MaxWalkSpeed based on Walk/Run/Sprint state */
 	void UpdateMovementSpeed();
 
 	/** Traces along the active camera view for an actor or component implementing IInteractableInterface */
@@ -426,11 +454,14 @@ private:
 	/** Ensures default footstep, landing, and exploration BGM assets are loaded with looping disabled */
 	void EnsureDefaultAudioAssets();
 
+	/** Footstep gait from the held walk/sprint keys (or speed when custom speeds are off): 0 walk, 1 run, 2 sprint */
+	int32 ResolveFootstepGait() const;
+
 	/** Drives periodic footstep SFX scaled cleanly across Walk, Run, and Sprint gaits */
 	void UpdateFootstepAudio(float DeltaTime);
 
-	/** Plays a non-repeating random sound at the character's feet with randomized pitch */
-	void PlayRandomSoundAtFeet(const TArray<TObjectPtr<USoundBase>>& Sounds, int32& InOutLastIndex, float VolumeMultiplier, float MinPitch, float MaxPitch);
+	/** Plays a non-repeating random sound at the character's feet with randomized pitch and reports a footstep noise of NoiseRadius */
+	void PlayRandomSoundAtFeet(const TArray<TObjectPtr<USoundBase>>& Sounds, int32& InOutLastIndex, float VolumeMultiplier, float MinPitch, float MaxPitch, float NoiseRadius);
 
 	/** Computes the effective BGM volume multiplier from base volume and active fade factor */
 	float GetEffectiveExplorationBGMVolume() const;
@@ -466,15 +497,13 @@ private:
 	FTimerHandle FlickerTimerHandle;
 	FTimerHandle FlickerSeqTimerHandle;
 
-	FVector DefaultThirdPersonBoomRelativeLocation = FVector::ZeroVector;
-
-	float CurrentCrouchCameraOffset = 0.0f;
 	float FootstepTimer = 0.0f;
 	int32 LastFootstepSoundIndex = INDEX_NONE;
 	int32 LastLandingSoundIndex = INDEX_NONE;
 	int32 CurrentBGMTrackIndex = 0;
 	float CurrentBGMVolumeFactor = 1.0f;
 	bool bIsInventoryOpen = false;
+	bool bIsDead = false;
 	bool bIsWalking = false;
 	bool bIsSprintingHeld = false;
 	bool bHasFlashlight = false;

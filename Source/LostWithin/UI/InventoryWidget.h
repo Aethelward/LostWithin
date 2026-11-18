@@ -48,6 +48,30 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Interaction|UI")
 	void SetInteractionPrompt(const FText& PromptText);
 
+	/** Shows a paper note (title + handwritten text) in the middle of the screen */
+	UFUNCTION(BlueprintCallable, Category = "Note|UI")
+	void ShowNote(const FText& Title, const FText& Body);
+
+	/** Hides the note panel */
+	UFUNCTION(BlueprintCallable, Category = "Note|UI")
+	void HideNote();
+
+	/** True while the note panel is visible */
+	UFUNCTION(BlueprintPure, Category = "Note|UI")
+	bool IsNoteVisible() const { return bIsNoteVisible; }
+
+	/** The text of the note on screen (empty when hidden) */
+	UFUNCTION(BlueprintPure, Category = "Note|UI")
+	FText GetVisibleNoteText() const { return bIsNoteVisible ? VisibleNoteText : FText::GetEmpty(); }
+
+	/** Shows a short message above the interaction prompt for DurationSeconds */
+	UFUNCTION(BlueprintCallable, Category = "Interaction|UI")
+	void ShowStatusMessage(const FText& Message, float DurationSeconds = 3.0f);
+
+	/** The status message on screen (empty when hidden) */
+	UFUNCTION(BlueprintPure, Category = "Interaction|UI")
+	FText GetStatusMessage() const { return StatusMessage; }
+
 	/** Formats a single flashlight bay percentage (-1 -> "Empty", 0..100 -> "XX%") */
 	static FString FormatBatteryBayPercentString(float BayPercent);
 
@@ -104,6 +128,14 @@ private:
 
 	UFUNCTION()
 	void HandleContextDropAllClicked();
+
+	UFUNCTION()
+	void HandleContextReadClicked();
+
+	UFUNCTION()
+	void HandleNoteCloseClicked();
+
+	void HideStatusMessage();
 
 	/** Ensures the dynamic UMG widget hierarchy exists before accessing pointers */
 	void BuildWidgetTreeIfNeeded();
@@ -170,6 +202,32 @@ private:
 
 	UPROPERTY(Transient)
 	TObjectPtr<UButton> ContextDropAllButton = nullptr;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UButton> ContextReadButton = nullptr;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UBorder> NotePanelBorder = nullptr;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UTextBlock> NoteTitleText = nullptr;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UTextBlock> NoteBodyText = nullptr;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UButton> NoteCloseButton = nullptr;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UBorder> StatusMessageBorder = nullptr;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UTextBlock> StatusMessageText = nullptr;
+
+	FText VisibleNoteText;
+	FText StatusMessage;
+	FTimerHandle StatusMessageTimerHandle;
+	bool bIsNoteVisible = false;
 
 	bool bIsInventoryOpen = false;
 	bool bIsContextMenuOpen = false;
