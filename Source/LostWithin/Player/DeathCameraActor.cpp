@@ -11,6 +11,9 @@
 #include "GameFramework/Pawn.h"
 #include "GameFramework/PlayerController.h"
 #include "Kismet/GameplayStatics.h"
+#include "LostWithin.h"
+#include "Sound/SoundBase.h"
+#include "UObject/ConstructorHelpers.h"
 
 namespace
 {
@@ -39,6 +42,10 @@ ADeathCameraActor::ADeathCameraActor()
 		Camera->bConstrainAspectRatio = false;
 		Camera->SetFieldOfView(90.0f);
 	}
+
+	static ConstructorHelpers::FObjectFinder<USoundBase> DeathImpact(
+		TEXT("/Game/Audio/SFX/Player/Death/SFX_DeathImpact_01.SFX_DeathImpact_01"));
+	StingSound = DeathImpact.Object;
 }
 
 FVector ADeathCameraActor::FindLookTarget(const AActor* InKiller)
@@ -118,7 +125,9 @@ void ADeathCameraActor::StartSequence(APawn* InVictim, AActor* InKiller, const F
 
 	if (StingSound)
 	{
-		UGameplayStatics::PlaySound2D(this, StingSound);
+		// A UI sound, so the end screen's pause does not cut it off.
+		UGameplayStatics::PlaySound2D(this, StingSound, 1.0f, 1.0f, 0.0f, nullptr, nullptr, /*bIsUISound=*/true);
+		UE_LOG(LogLostWithin, Log, TEXT("Death camera: death impact %s"), *StingSound->GetName());
 	}
 }
 

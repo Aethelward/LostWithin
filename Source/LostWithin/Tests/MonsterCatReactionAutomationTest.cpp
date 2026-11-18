@@ -105,6 +105,7 @@ namespace
 		Cat->bEnableDirectedPath = false;
 		Cat->bJumpBeforeSpin = false;
 		Cat->bLoopMusic = false;
+		Cat->bRepelMonstersInSanctuary = false;
 		Cat->FloatHeight = 0.0f;
 		Cat->BobAmplitude = 0.0f;
 		Cat->SpinTriggerInteractionThreshold = 1;

@@ -5,7 +5,7 @@ collidable static geometry with a real NavMeshBoundsVolume, adds 200 cm of
 padding, matches the navigation agent to the monster capsule, then builds and
 saves navigation in `/Game/FirstPerson/Lvl_FirstPerson`.
 
-All four roaming monsters react: `BP_Monster`, `BP_BoneDog`, `BP_Doll` and
+All four roaming monsters react: `Lunger`, `BP_BoneDog`, `BP_Doll` and
 `BP_Ghoul`. They react whenever a cat's **float-spin sequence is running**: any
 spin window, the pauses between windows, and an active sequence after its last
 window. Idle cats, disabled float/spin components and despawned cats cause no

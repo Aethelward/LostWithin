@@ -16,6 +16,6 @@ public:
 	USetupMonsterCatReactionCommandlet();
 	virtual int32 Main(const FString& Params) override;
 
-	/** Configures BP_Monster, BP_BoneDog, BP_Doll and BP_Ghoul; shared by the commandlet and the LostWithin.SetupMonsterCatReaction console command. */
+	/** Configures Lunger, BP_BoneDog, BP_Doll and BP_Ghoul; shared by the commandlet and the LostWithin.SetupMonsterCatReaction console command. */
 	static bool ConfigureMonster();
 };

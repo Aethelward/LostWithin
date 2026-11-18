@@ -438,7 +438,7 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Sanctuary", meta = (ClampMin = "50.0", Units = "cm"))
 	float SanctuaryRepelRadius = 400.0f;
 
-	/** Outward impulse velocity strength applied to monsters inside SanctuaryRepelRadius */
+	/** Horizontal ragdoll velocity for monsters reached only by the sanctuary's repel radius */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Sanctuary", meta = (ClampMin = "0.0", Units = "cm/s"))
 	float SanctuaryRepelForce = 1200.0f;
 
@@ -657,9 +657,6 @@ private:
 
 	/** Destroys pooled shockwave components and material references */
 	void DestroyCatShockwaveVisuals();
-
-	/** Actively protects the sanctuary perimeter and repels any nearby monsters */
-	void UpdateChaosSanctuary(float DeltaTime);
 
 	/** Spawns the placeholder pickup item in front of the cat toward Interactor */
 	void SpawnDroppedItem(AActor* Owner, AActor* Interactor);

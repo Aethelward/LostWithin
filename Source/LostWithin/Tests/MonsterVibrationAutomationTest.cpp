@@ -79,6 +79,8 @@ namespace
 		Result.Vibration->RegisterComponent();
 
 		Result.Actor->FinishSpawning(Transform);
+		// The synthetic world has no floor, so establish the grounded state a maze NPC starts in.
+		Result.Actor->GetCharacterMovement()->SetMovementMode(MOVE_Walking);
 		return Result;
 	}
 
@@ -184,6 +186,10 @@ bool FLostWithinMonsterFloorTremorsTest::RunTest(const FString& Parameters)
 	const FVector HighFloorLocation(500.0f, 0.0f, 400.0f);
 	TestFalse(TEXT("Floor tremor does not conduct across large vertical gap"),
 		Monster.Vibration->CanSenseFloorVibration(HighFloorLocation, Monster.Vibration->SprintVibrationRadius));
+
+	MoveComp->SetMovementMode(MOVE_Falling);
+	TestFalse(TEXT("Airborne monster does not sense floor tremors"),
+		Monster.Vibration->CanSenseFloorVibration(SprintLocation, Monster.Vibration->SprintVibrationRadius));
 
 	return true;
 }

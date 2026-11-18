@@ -55,6 +55,11 @@ AToolboxActor::AToolboxActor()
 		TEXT("/Game/Level/MAZE/Objects/ScaryDoor/SFX/SC_Padlock_Interact_01.SC_Padlock_Interact_01"));
 	LockedSound = PadlockRattle.Object;
 
+	// Generated with ElevenLabs (Tools/SFX/sfx-manifest.json, id toolbox_open).
+	static ConstructorHelpers::FObjectFinder<USoundBase> LidOpen(
+		TEXT("/Game/Level/Objects/tool_box/SFX/SFX_ToolboxOpen_01.SFX_ToolboxOpen_01"));
+	OpenSound = LidOpen.Object;
+
 #if WITH_EDITORONLY_DATA
 	bIsSpatiallyLoaded = false;
 #endif

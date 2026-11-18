@@ -31,6 +31,7 @@
 #include "Inventory/InventoryComponent.h"
 #include "Kismet/GameplayStatics.h"
 #include "LostWithin.h"
+#include "Player/MonsterRevealSoundComponent.h"
 #include "Player/PlayerDeathComponent.h"
 #include "Sound/SoundBase.h"
 #include "Sound/SoundWave.h"
@@ -200,6 +201,7 @@ ALostWithinCharacter::ALostWithinCharacter()
 	MoveComp->GetNavAgentPropertiesRef().bCanCrouch = false;
 
 	DeathComponent = CreateDefaultSubobject<UPlayerDeathComponent>(TEXT("Death Component"));
+	MonsterRevealSound = CreateDefaultSubobject<UMonsterRevealSoundComponent>(TEXT("Monster Reveal Sound"));
 
 	InventoryWidgetClass = UInventoryWidget::StaticClass();
 }
@@ -1428,6 +1430,11 @@ void ALostWithinCharacter::EnterDeathState()
 		return;
 	}
 	bIsDead = true;
+	if (MonsterRevealSound)
+	{
+		MonsterRevealSound->StopReveal();
+	}
+	StopExplorationBGM();
 
 	if (bIsInventoryOpen)
 	{

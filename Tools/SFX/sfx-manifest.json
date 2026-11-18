@@ -1,0 +1,271 @@
+{
+  "version": 1,
+  "max_credits_per_run": 3000,
+  "defaults": {
+    "model_id": "eleven_text_to_sound_v3",
+    "output_format": "wav_48000",
+    "prompt_influence": 0.4,
+    "variations": 1
+  },
+  "sounds": [
+    {
+      "id": "death_jumpscare",
+      "notes": "Earlier death-camera cue, retained for the previous editor build and comparison. Live close sightings use monster_reveal. The death camera uses death_impact.",
+      "prompt": "Horror death stinger. A subtle 0.6 s eerie intro of quiet bowed contrabass harmonics and a faint breathy sul ponticello string swell suddenly cuts to a violent orchestral jumpscare hit: dissonant low-brass cluster blast, screeching violin stabs, booming bass drum, deep sub-bass thud. Then a cold dark concert hall reverb tail and an unsettling low cello drone. Real acoustic orchestra, high dynamic range, crisp attack, no vocals, beat or melody.",
+      "duration": 3.0,
+      "prompt_influence": 0.6,
+      "folder": "/Game/Audio/SFX/Player/Death",
+      "name": "SFX_DeathJumpscare"
+    },
+    {
+      "id": "monster_reveal",
+      "notes": "One of three variants on the first sudden close, unobstructed sighting during a live run.",
+      "prompt": "Sudden cinematic horror stinger, a single instant shock chord from the first sample. A sharp dissonant screeching violin scrape hits exactly together with a deep metallic sub-bass boom. Brief jagged bow noise, then an eerie dark stone-room reverb tail decaying to silence. No lead-in, no melody, no rhythm, no voice, no second hit.",
+      "duration": 2.0,
+      "variations": 3,
+      "prompt_influence": 0.7,
+      "trim_silence": true,
+      "normalize_peak_db": -5.0,
+      "folder": "/Game/Audio/SFX/Player/Scare",
+      "name": "SFX_MonsterReveal"
+    },
+    {
+      "id": "death_impact",
+      "notes": "Short death-camera impact. Fits before the 2.6-second camera sequence hands off to YOU DIED.",
+      "prompt": "A heavy close body impact as the player collapses onto cold stone. A deep muted thud and one abruptly cut breath, with settling cloth and a short low room reverb fading completely. Grim close foley, no orchestra, no violin, no melody, no second sting, no shout.",
+      "duration": 2.1,
+      "prompt_influence": 0.65,
+      "trim_silence": true,
+      "normalize_peak_db": -6.0,
+      "folder": "/Game/Audio/SFX/Player/Death",
+      "name": "SFX_DeathImpact"
+    },
+    {
+      "id": "death_game_over",
+      "notes": "ALostWithinPlayerController::DeathEndSound default: plays when the YOU DIED screen appears (UI sound, keeps playing while paused).",
+      "prompt": "Horror game over sting: one deep ominous sub-bass boom with a reversed metallic swell, then a dark dissonant low drone with faint distant echoes that slowly fades to silence. Final and hopeless, no melody, no voices.",
+      "duration": 5.0,
+      "trim_silence": true,
+      "normalize_peak_db": -6.0,
+      "folder": "/Game/Audio/SFX/Player/Death",
+      "name": "SFX_DeathGameOver"
+    },
+    {
+      "id": "toolbox_open",
+      "notes": "AToolboxActor::OpenSound default; the lid animation lasts 1 s.",
+      "prompt": "Old rusty metal toolbox lid creaking open on stiff hinges, a short metallic squeal and a dull clank as the lid stops. Close-mic, dry, no background.",
+      "duration": 1.5,
+      "folder": "/Game/Level/Objects/tool_box/SFX",
+      "name": "SFX_ToolboxOpen"
+    },
+
+    {
+      "id": "lunger_idle",
+      "notes": "Lunger is deaf, so it has no alert vocals.",
+      "prompt": "Gaunt humanoid monster breathing in a dark corridor: slow wet raspy inhale and a low guttural throat rattle. Unsettling, close-mic, dry, no music, no background.",
+      "duration": 2.5,
+      "variations": 3,
+      "folder": "/Game/NPC/Monster/SFX/Voice",
+      "name": "VO_Lunger_Idle"
+    },
+    {
+      "id": "lunger_panic",
+      "prompt": "Gaunt humanoid monster panicking: a sharp high-pitched terrified shriek breaking into frantic raspy gasps. Close-mic, dry, no music.",
+      "duration": 2.0,
+      "variations": 2,
+      "folder": "/Game/NPC/Monster/SFX/Voice",
+      "name": "VO_Lunger_Panic"
+    },
+    {
+      "id": "lunger_thrown",
+      "prompt": "Gaunt humanoid monster thrown hard through the air: a short pained yelp and a winded guttural grunt. Close-mic, dry, no impacts, no music.",
+      "duration": 1.5,
+      "variations": 2,
+      "folder": "/Game/NPC/Monster/SFX/Voice",
+      "name": "VO_Lunger_Thrown"
+    },
+
+    {
+      "id": "bonedog_idle",
+      "prompt": "Skeletal undead dog: low hollow growl with dry bones clicking and rattling in its chest, slow sniffing. Close-mic, dry, no music, no background.",
+      "duration": 2.5,
+      "variations": 3,
+      "folder": "/Game/NPC/BoneDog/SFX/Voice",
+      "name": "VO_BoneDog_Idle"
+    },
+    {
+      "id": "bonedog_alert",
+      "prompt": "Skeletal undead dog suddenly alert: a sharp rattling snarl and two harsh hollow barks, bones clacking. Close-mic, dry, no music.",
+      "duration": 2.0,
+      "variations": 2,
+      "folder": "/Game/NPC/BoneDog/SFX/Voice",
+      "name": "VO_BoneDog_Alert"
+    },
+    {
+      "id": "bonedog_panic",
+      "prompt": "Skeletal undead dog terrified: high frantic whimpering yelps with bones rattling. Close-mic, dry, no music.",
+      "duration": 2.0,
+      "variations": 2,
+      "folder": "/Game/NPC/BoneDog/SFX/Voice",
+      "name": "VO_BoneDog_Panic"
+    },
+    {
+      "id": "bonedog_thrown",
+      "prompt": "Skeletal undead dog knocked through the air: a short sharp yelp and a burst of clattering bones. Close-mic, dry, no music.",
+      "duration": 1.5,
+      "variations": 2,
+      "folder": "/Game/NPC/BoneDog/SFX/Voice",
+      "name": "VO_BoneDog_Thrown"
+    },
+
+    {
+      "id": "doll_idle",
+      "prompt": "Creepy porcelain doll: faint broken childlike humming and a soft distorted giggle, tiny porcelain joints creaking. Eerie, close-mic, dry, no music, no background.",
+      "duration": 2.5,
+      "variations": 3,
+      "folder": "/Game/NPC/Doll/SFX/Voice",
+      "name": "VO_Doll_Idle"
+    },
+    {
+      "id": "doll_alert",
+      "prompt": "Creepy porcelain doll noticing something: a sudden sharp distorted childlike gasp followed by a rising creepy giggle, porcelain joints clicking. Close-mic, dry, no music.",
+      "duration": 2.0,
+      "variations": 2,
+      "folder": "/Game/NPC/Doll/SFX/Voice",
+      "name": "VO_Doll_Alert"
+    },
+    {
+      "id": "doll_panic",
+      "prompt": "Creepy porcelain doll panicking: a shrill distorted childlike scream with rapid ceramic clattering. Close-mic, dry, no music.",
+      "duration": 2.0,
+      "variations": 2,
+      "folder": "/Game/NPC/Doll/SFX/Voice",
+      "name": "VO_Doll_Panic"
+    },
+    {
+      "id": "doll_thrown",
+      "prompt": "Creepy porcelain doll thrown: a short distorted childlike cry with hollow ceramic knocks and rattles. Close-mic, dry, no music.",
+      "duration": 1.5,
+      "variations": 2,
+      "folder": "/Game/NPC/Doll/SFX/Voice",
+      "name": "VO_Doll_Thrown"
+    },
+
+    {
+      "id": "ghoul_idle",
+      "prompt": "Undead ghoul moaning: a low wet gurgling groan and ragged breathing from a decaying throat. Close-mic, dry, no music, no background.",
+      "duration": 2.5,
+      "variations": 3,
+      "folder": "/Game/NPC/Ghoul/SFX/Voice",
+      "name": "VO_Ghoul_Idle"
+    },
+    {
+      "id": "ghoul_alert",
+      "prompt": "Undead ghoul alerted: a sudden harsh guttural snarl rising into a hissing growl. Close-mic, dry, no music.",
+      "duration": 2.0,
+      "variations": 2,
+      "folder": "/Game/NPC/Ghoul/SFX/Voice",
+      "name": "VO_Ghoul_Alert"
+    },
+    {
+      "id": "ghoul_panic",
+      "prompt": "Undead ghoul panicking: a hoarse terrified screech and choking gasps. Close-mic, dry, no music.",
+      "duration": 2.0,
+      "variations": 2,
+      "folder": "/Game/NPC/Ghoul/SFX/Voice",
+      "name": "VO_Ghoul_Panic"
+    },
+    {
+      "id": "ghoul_thrown",
+      "prompt": "Undead ghoul thrown: a short wet grunt and a pained gargled cry. Close-mic, dry, no impacts, no music.",
+      "duration": 1.5,
+      "variations": 2,
+      "folder": "/Game/NPC/Ghoul/SFX/Voice",
+      "name": "VO_Ghoul_Thrown"
+    },
+
+    {
+      "id": "lunger_step",
+      "notes": "UMonsterFootstepComponent on Lunger; one take per stride.",
+      "prompt": "One single heavy bare clawed footstep on a damp stone floor: a dull thud with a faint wet slap. Only one step, close-mic, dry, no music, no background.",
+      "duration": 0.6,
+      "variations": 4,
+      "trim_silence": true,
+      "normalize_peak_db": -3.0,
+      "folder": "/Game/NPC/Monster/SFX/Footsteps",
+      "name": "SFX_Lunger_Step"
+    },
+    {
+      "id": "bonedog_step",
+      "prompt": "One single skeletal dog paw step on a stone floor: a dry bony click with a light claw scrape. Only one step, close-mic, dry, no music, no background.",
+      "duration": 0.6,
+      "variations": 4,
+      "trim_silence": true,
+      "normalize_peak_db": -3.0,
+      "folder": "/Game/NPC/BoneDog/SFX/Footsteps",
+      "name": "SFX_BoneDog_Step"
+    },
+    {
+      "id": "doll_step",
+      "prompt": "One single small porcelain doll foot step on a stone floor: a hollow ceramic tap with a tiny joint creak. Only one step, close-mic, dry, no music, no background.",
+      "duration": 0.6,
+      "variations": 4,
+      "trim_silence": true,
+      "normalize_peak_db": -3.0,
+      "folder": "/Game/NPC/Doll/SFX/Footsteps",
+      "name": "SFX_Doll_Step"
+    },
+    {
+      "id": "ghoul_step",
+      "prompt": "One single bare rotting foot step on a stone floor: a wet slap with a soft drag. Only one step, close-mic, dry, no music, no background.",
+      "duration": 0.6,
+      "variations": 4,
+      "trim_silence": true,
+      "normalize_peak_db": -3.0,
+      "folder": "/Game/NPC/Ghoul/SFX/Footsteps",
+      "name": "SFX_Ghoul_Step"
+    },
+
+    {
+      "id": "amb_maze_bed",
+      "notes": "Non-spatial room tone under the whole maze; keep it quiet.",
+      "prompt": "Dark abandoned underground maze room tone: deep low drone, faint distant rumbling and slow air movement. Subtle and unsettling, seamless loop, no music, no voices.",
+      "duration": 30.0,
+      "loop": true,
+      "folder": "/Game/Audio/Ambience",
+      "name": "AMB_MazeBed"
+    },
+    {
+      "id": "amb_wind",
+      "prompt": "Cold wind whistling softly through narrow stone corridors with occasional gusts. Eerie, seamless loop, no music.",
+      "duration": 15.0,
+      "loop": true,
+      "folder": "/Game/Audio/Ambience",
+      "name": "AMB_Wind"
+    },
+    {
+      "id": "amb_drip",
+      "prompt": "Slow irregular water drips echoing in a damp stone corridor, with a faint distant trickle. Seamless loop, no music.",
+      "duration": 15.0,
+      "loop": true,
+      "folder": "/Game/Audio/Ambience",
+      "name": "AMB_Drip"
+    },
+    {
+      "id": "amb_hum",
+      "prompt": "Old faulty electrical hum with occasional buzzing crackles from a failing fluorescent light. Seamless loop, no music.",
+      "duration": 15.0,
+      "loop": true,
+      "folder": "/Game/Audio/Ambience",
+      "name": "AMB_Hum"
+    },
+    {
+      "id": "amb_creak",
+      "prompt": "Distant old wooden structure creaking and settling, with occasional faint metallic groans far away. Sparse, seamless loop, no music.",
+      "duration": 15.0,
+      "loop": true,
+      "folder": "/Game/Audio/Ambience",
+      "name": "AMB_Creak"
+    }
+  ]
+}

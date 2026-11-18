@@ -61,12 +61,12 @@ namespace
 		const TCHAR* RecoveryBone;
 		/** Natural ground speed (cm/s) of the fastest gait clip, which plays faster while panicking. */
 		float PanicGaitSpeed;
-		/** Navigation is built once, sized for BP_Monster's capsule; the other monsters roam the same mesh. */
+		/** Navigation is built once, sized for Lunger's capsule; the other monsters roam the same mesh. */
 		bool bRepairNavigation;
 	};
 
 	const FReactionTarget ReactionTargets[] = {
-		{ TEXT("BP_Monster"), TEXT("/Game/NPC/Monster/BP_Monster.BP_Monster"), TEXT("/Game/NPC/Monster/PA_MonsterCatRagdoll"),
+		{ TEXT("Lunger"), TEXT("/Game/NPC/Monster/Lunger.Lunger"), TEXT("/Game/NPC/Monster/PA_MonsterCatRagdoll"),
 			MakeArrayView(HumanRagdollBones), TEXT("Hips"), 62.6f, true },
 		{ TEXT("BP_BoneDog"), TEXT("/Game/NPC/BoneDog/BP_BoneDog.BP_BoneDog"), TEXT("/Game/NPC/BoneDog/PA_BoneDogCatRagdoll"),
 			MakeArrayView(CanineRagdollBones), TEXT("Hips"), 350.0f, false },

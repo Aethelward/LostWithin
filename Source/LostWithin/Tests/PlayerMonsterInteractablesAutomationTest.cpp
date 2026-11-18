@@ -7,6 +7,7 @@
 #include "Components/CapsuleComponent.h"
 #include "Components/ProximityFloatSpinComponent.h"
 #include "Components/SceneComponent.h"
+#include "Components/StaticMeshComponent.h"
 #include "Engine/Engine.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
@@ -679,6 +680,56 @@ bool FLostWithinEscapeDoorTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("UnlockDoor clears the lock"), Escape->IsDoorLocked());
 	TestEqual(TEXT("An unlocked door offers escape"),
 		IInteractableInterface::Execute_GetInteractionPrompt(const_cast<UEscapeDoorComponent*>(Escape)).ToString(), FString(TEXT("[LMB] Open the door")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FLostWithinLightItemImpactTest, "LostWithin.Gameplay.LightItemImpact", LOSTWITHIN_GAMEPLAY_TEST_FLAGS)
+
+bool FLostWithinLightItemImpactTest::RunTest(const FString& Parameters)
+{
+	FScopedGameplayTestWorld TestWorld;
+	UWorld* World = TestWorld.World;
+	const FGameplayMonster Listener = SpawnGameplayMonster(World, FVector(2000.0f, 0.0f, 0.0f), true);
+	APickupItemActor* Battery = World->SpawnActor<APickupItemActor>();
+	if (!TestNotNull(TEXT("Hearing listener"), Listener.Hearing) || !TestNotNull(TEXT("Battery"), Battery))
+	{
+		return false;
+	}
+	Battery->ConfigureAsBattery();
+	UStaticMeshComponent* Mesh = Battery->FindComponentByClass<UStaticMeshComponent>();
+	if (!TestNotNull(TEXT("Battery mesh"), Mesh)
+		|| !TestTrue(TEXT("The production battery can simulate physics"), Battery->IsSimulatingItemPhysics()))
+	{
+		return false;
+	}
+	TestTrue(TEXT("Small pickups use continuous collision detection"), Mesh->BodyInstance.bUseCCD);
+	AActor* Floor = SpawnGameplayRootedActor(World, FVector::ZeroVector);
+	FHitResult Hit;
+	Hit.bBlockingHit = true;
+	Hit.Normal = Hit.ImpactNormal = FVector::UpVector;
+	Hit.ImpactPoint = FVector(0.0f, 0.0f, -50.0f);
+
+	Mesh->SetMassOverrideInKg(NAME_None, 0.02f, true);
+	Battery->OnMeshHit(Mesh, Floor, nullptr, FVector(0.0f, 0.0f, 2.0f), Hit);
+	TestTrue(TEXT("A light item's audible impact reaches a distant listener"), Listener.Hearing->IsInvestigating());
+	TestTrue(TEXT("The investigation targets the impact point"),
+		Listener.Hearing->GetInvestigationLocation().Equals(Hit.ImpactPoint));
+	Listener.Hearing->StopInvestigating();
+
+	APickupItemActor* Heavy = World->SpawnActor<APickupItemActor>();
+	if (!TestNotNull(TEXT("Heavy impact fixture"), Heavy))
+	{
+		return false;
+	}
+	Heavy->ConfigureAsBattery();
+	UStaticMeshComponent* HeavyMesh = Heavy->FindComponentByClass<UStaticMeshComponent>();
+	if (!TestNotNull(TEXT("Heavy impact mesh"), HeavyMesh))
+	{
+		return false;
+	}
+	HeavyMesh->SetMassOverrideInKg(NAME_None, 1.0f, true);
+	Heavy->OnMeshHit(HeavyMesh, Floor, nullptr, FVector(0.0f, 0.0f, 2.0f), Hit);
+	TestFalse(TEXT("A heavy object's tiny velocity change stays quiet"), Listener.Hearing->IsInvestigating());
 	return true;
 }
 

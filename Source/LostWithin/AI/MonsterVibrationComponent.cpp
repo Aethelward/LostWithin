@@ -15,10 +15,10 @@
 #include "Navigation/PathFollowingComponent.h"
 #include "NavigationSystem.h"
 
-namespace MonsterVibrationConstants
+namespace
 {
-	constexpr float MinMoveTimeBeforeIdleCountsAsArrived = 0.3f;
-	constexpr float SearchSweepPeriodSeconds = 2.5f;
+	constexpr float VibrationMinMoveTimeBeforeIdleCountsAsArrived = 0.3f;
+	constexpr float VibrationSearchSweepPeriodSeconds = 2.5f;
 }
 
 UMonsterVibrationComponent::UMonsterVibrationComponent()
@@ -389,7 +389,7 @@ bool UMonsterVibrationComponent::HasArrived() const
 		return true;
 	}
 
-	if (bMoveRequested && StateElapsed >= MonsterVibrationConstants::MinMoveTimeBeforeIdleCountsAsArrived)
+	if (bMoveRequested && StateElapsed >= VibrationMinMoveTimeBeforeIdleCountsAsArrived)
 	{
 		if (const AAIController* Controller = Cast<AAIController>(Character->GetController()))
 		{
@@ -435,7 +435,7 @@ void UMonsterVibrationComponent::UpdateSearching(float DeltaTime)
 
 	if (AActor* Owner = GetOwner())
 	{
-		const float Phase = (StateElapsed / MonsterVibrationConstants::SearchSweepPeriodSeconds) * 2.0f * UE_PI;
+		const float Phase = (StateElapsed / VibrationSearchSweepPeriodSeconds) * 2.0f * UE_PI;
 		FRotator Rotation = Owner->GetActorRotation();
 		Rotation.Yaw = SearchBaseYaw + FMath::Sin(Phase) * SearchSweepAngle;
 		Owner->SetActorRotation(Rotation);

@@ -3,6 +3,7 @@
 #include "AI/MonsterLightAverseComponent.h"
 
 #include "AI/MonsterAIComponent.h"
+#include "AI/MonsterHearingComponent.h"
 #include "AIController.h"
 #include "Components/CapsuleComponent.h"
 #include "Components/SkeletalMeshComponent.h"
@@ -307,7 +308,7 @@ void UMonsterLightAverseComponent::UpdateExposureAndRepulsion(float DeltaTime)
 
 		CurrentRetreatDirection = ComputeRetreatDirection(LightPos, BeamDirection);
 
-		if (!bIsRepelled)
+		if (!bIsRepelled || CurrentLightState == EGhoulLightState::Recovering)
 		{
 			CurrentLightState = EGhoulLightState::Startled;
 			StateElapsed = 0.0f;
@@ -406,7 +407,7 @@ void UMonsterLightAverseComponent::UpdateRetreatMovement(float DeltaTime)
 
 void UMonsterLightAverseComponent::UpdateDarkStalking(float DeltaTime, ALostWithinCharacter* PlayerChar)
 {
-	if (!bEnableAggressiveDarkStalking)
+	if (!bEnableAggressiveDarkStalking || UMonsterHearingComponent::IsActorInvestigating(GetOwner()))
 	{
 		return;
 	}
@@ -444,6 +445,10 @@ void UMonsterLightAverseComponent::ApplyRetreatSpeed()
 {
 	if (ACharacter* Character = Cast<ACharacter>(GetOwner()))
 	{
+		if (UMonsterHearingComponent* Hearing = Character->FindComponentByClass<UMonsterHearingComponent>(); Hearing && Hearing->IsInvestigating())
+		{
+			Hearing->StopInvestigating();
+		}
 		if (UCharacterMovementComponent* Move = Character->GetCharacterMovement())
 		{
 			if (!bSpeedApplied)

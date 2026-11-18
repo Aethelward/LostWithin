@@ -3,6 +3,8 @@
 #include "AI/MonsterHearingComponent.h"
 
 #include "AI/MonsterAIComponent.h"
+#include "AI/MonsterLightAverseComponent.h"
+#include "AI/MonsterSightFreezeComponent.h"
 #include "AIController.h"
 #include "Components/CapsuleComponent.h"
 #include "Engine/World.h"
@@ -12,14 +14,13 @@
 #include "Navigation/PathFollowingComponent.h"
 #include "NavigationSystem.h"
 
-namespace MonsterHearingConstants
+namespace
 {
 	/** A move request needs a moment before an Idle path-following status means "done" rather than "not started". */
-	constexpr float MinMoveTimeBeforeIdleCountsAsArrived = 0.3f;
+	constexpr float HearingMinMoveTimeBeforeIdleCountsAsArrived = 0.3f;
 	/** One full left-right-left look-around cycle while searching. */
-	constexpr float SearchSweepPeriodSeconds = 2.5f;
+	constexpr float HearingSearchSweepPeriodSeconds = 2.5f;
 }
-using namespace MonsterHearingConstants;
 
 UMonsterHearingComponent::UMonsterHearingComponent()
 {
@@ -100,7 +101,8 @@ bool UMonsterHearingComponent::CanHear(const FLostWithinNoiseEvent& Noise) const
 
 bool UMonsterHearingComponent::HearNoise(const FLostWithinNoiseEvent& Noise)
 {
-	if (!CanHear(Noise) || IsReactingToCat())
+	if (!CanHear(Noise) || IsReactingToCat() || UMonsterSightFreezeComponent::IsActorSightFrozen(GetOwner())
+		|| UMonsterLightAverseComponent::IsActorLightRepelled(GetOwner()))
 	{
 		return false;
 	}
@@ -267,7 +269,7 @@ bool UMonsterHearingComponent::HasArrived() const
 	}
 
 	// A partial path or a goal that could not be reached ends where the path ends.
-	if (bMoveRequested && StateElapsed >= MinMoveTimeBeforeIdleCountsAsArrived)
+	if (bMoveRequested && StateElapsed >= HearingMinMoveTimeBeforeIdleCountsAsArrived)
 	{
 		if (const AAIController* Controller = Cast<AAIController>(Character->GetController()))
 		{
@@ -317,7 +319,7 @@ void UMonsterHearingComponent::UpdateSearching(float DeltaTime)
 
 	if (AActor* Owner = GetOwner())
 	{
-		const float Phase = (StateElapsed / SearchSweepPeriodSeconds) * 2.0f * UE_PI;
+		const float Phase = (StateElapsed / HearingSearchSweepPeriodSeconds) * 2.0f * UE_PI;
 		FRotator Rotation = Owner->GetActorRotation();
 		Rotation.Yaw = SearchBaseYaw + FMath::Sin(Phase) * SearchSweepAngle;
 		Owner->SetActorRotation(Rotation);

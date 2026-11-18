@@ -106,7 +106,7 @@ private:
 	void UpdateCatProximity();
 	void UpdatePlayerProximity();
 	void UpdateFleeMovement(float DeltaTime);
-	bool ApplyRagdoll();
+	bool ApplyRagdoll(float LaunchStrength);
 	void RecoverFromRagdoll();
 	void RestoreCharacterSettings(ACharacter* Character);
 	void ScheduleRecovery(float Delay);

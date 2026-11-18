@@ -1,7 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Components/ProximityFloatSpinComponent.h"
-#include "AI/MonsterAIComponent.h"
 #include "Animation/AnimationAsset.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "CollisionQueryParams.h"
@@ -26,8 +25,6 @@
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "GameFramework/Actor.h"
-#include "GameFramework/Character.h"
-#include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/Pawn.h"
 #include "GameFramework/RotatingMovementComponent.h"
 #include "Interaction/PickupItemActor.h"
@@ -266,11 +263,6 @@ void UProximityFloatSpinComponent::TickComponent(float DeltaTime, ELevelTick Tic
 	}
 
 	UpdateDirectedPathMovement(Owner, DeltaTime);
-
-	if (IsChaosSanctuaryActive())
-	{
-		UpdateChaosSanctuary(DeltaTime);
-	}
 
 	if (bDrawDebugPath)
 	{
@@ -1847,74 +1839,6 @@ bool UProximityFloatSpinComponent::IsPlayerInChaosSanctuary(const APawn* PlayerP
 
 	const double DistSq = FVector::DistSquared(Owner->GetActorLocation(), PlayerPawn->GetActorLocation());
 	return DistSq <= FMath::Square(static_cast<double>(ChaosSanctuaryRadius));
-}
-
-void UProximityFloatSpinComponent::UpdateChaosSanctuary(float DeltaTime)
-{
-	if (!bRepelMonstersInSanctuary || !IsChaosSanctuaryActive())
-	{
-		return;
-	}
-
-	AActor* Owner = GetOwner();
-	UWorld* World = GetWorld();
-	if (!Owner || !World)
-	{
-		return;
-	}
-
-	const FVector CatLocation = Owner->GetActorLocation();
-	const double SanctuaryRadiusSq = FMath::Square(static_cast<double>(ChaosSanctuaryRadius));
-	const double RepelRadiusSq = FMath::Square(static_cast<double>(SanctuaryRepelRadius));
-
-	for (TActorIterator<ACharacter> It(World); It; ++It)
-	{
-		ACharacter* MonsterChar = *It;
-		if (!IsValid(MonsterChar) || MonsterChar == Owner || MonsterChar->IsActorBeingDestroyed())
-		{
-			continue;
-		}
-
-		UMonsterAIComponent* MonsterAI = MonsterChar->FindComponentByClass<UMonsterAIComponent>();
-		if (!MonsterAI && MonsterChar->IsPlayerControlled())
-		{
-			continue;
-		}
-
-		const FVector MonsterLocation = MonsterChar->GetActorLocation();
-		const double DistSq = FVector::DistSquared(CatLocation, MonsterLocation);
-		if (DistSq > SanctuaryRadiusSq)
-		{
-			continue;
-		}
-
-		FVector AwayDir = (MonsterLocation - CatLocation).GetSafeNormal2D();
-		if (AwayDir.IsNearlyZero())
-		{
-			AwayDir = MonsterChar->GetActorForwardVector().GetSafeNormal2D();
-			if (AwayDir.IsNearlyZero())
-			{
-				AwayDir = FVector::ForwardVector;
-			}
-		}
-
-		if (MonsterAI)
-		{
-			MonsterAI->bCatIsNear = true;
-			MonsterAI->bIsFleeing = true;
-		}
-
-		if (DistSq <= RepelRadiusSq)
-		{
-			if (UCharacterMovementComponent* MoveComp = MonsterChar->GetCharacterMovement())
-			{
-				const FVector RepelVelocity = AwayDir * SanctuaryRepelForce + FVector(0.0f, 0.0f, 150.0f);
-				MonsterChar->LaunchCharacter(RepelVelocity, true, true);
-			}
-
-			OnCatRepelledMonster.Broadcast(MonsterChar);
-		}
-	}
 }
 
 void UProximityFloatSpinComponent::UpdateCatGlow(float Intensity, float ElapsedTime)

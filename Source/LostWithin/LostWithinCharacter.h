@@ -15,6 +15,7 @@ class UInputMappingContext;
 class UInventoryComponent;
 class UInventoryWidget;
 class ULostWithinFlashlightAnimInstance;
+class UMonsterRevealSoundComponent;
 class UPlayerDeathComponent;
 class UPointLightComponent;
 class USkeletalMeshComponent;
@@ -62,6 +63,10 @@ class ALostWithinCharacter : public ACharacter
 	/** Ends the run with the death camera when a monster touches the player */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Components", meta = (AllowPrivateAccess = "true"))
 	TObjectPtr<UPlayerDeathComponent> DeathComponent;
+
+	/** Sudden close sightings play a one-shot during exploration. */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Audio", meta=(AllowPrivateAccess="true"))
+	TObjectPtr<UMonsterRevealSoundComponent> MonsterRevealSound;
 
 protected:
 

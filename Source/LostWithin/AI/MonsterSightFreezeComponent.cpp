@@ -3,6 +3,7 @@
 #include "AI/MonsterSightFreezeComponent.h"
 
 #include "AI/MonsterAIComponent.h"
+#include "AI/MonsterHearingComponent.h"
 #include "AIController.h"
 #include "Camera/PlayerCameraManager.h"
 #include "Components/CapsuleComponent.h"
@@ -540,6 +541,10 @@ void UMonsterSightFreezeComponent::ApplyFrozenState()
 	{
 		return;
 	}
+	if (UMonsterHearingComponent* Hearing = Character->FindComponentByClass<UMonsterHearingComponent>(); Hearing && Hearing->IsInvestigating())
+	{
+		Hearing->StopInvestigating();
+	}
 
 	// 1. Stop AI movement along paths
 	if (AAIController* AIC = Cast<AAIController>(Character->GetController()))
@@ -570,7 +575,9 @@ void UMonsterSightFreezeComponent::ApplyUnfrozenState()
 	}
 
 	// 1. Restore movement mode and apply creeping walk speed
-	if (UCharacterMovementComponent* MoveComp = Character->GetCharacterMovement())
+	const UMonsterAIComponent* MonsterAI = GetMonsterAI();
+	if (UCharacterMovementComponent* MoveComp = Character->GetCharacterMovement();
+		MoveComp && (!MonsterAI || !MonsterAI->bIsRagdolled))
 	{
 		MoveComp->SetMovementMode(MOVE_Walking);
 		MoveComp->MaxWalkSpeed = StalkWalkSpeed;
@@ -597,7 +604,7 @@ void UMonsterSightFreezeComponent::ResumeStalking()
 
 void UMonsterSightFreezeComponent::UpdateStalkingMovement(float DeltaTime)
 {
-	if (bIsFrozen)
+	if (bIsFrozen || IsReactingToCat() || UMonsterHearingComponent::IsActorInvestigating(GetOwner()))
 	{
 		return;
 	}

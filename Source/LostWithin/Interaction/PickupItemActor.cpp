@@ -373,7 +373,10 @@ void APickupItemActor::OnMeshHit(UPrimitiveComponent* HitComponent, AActor* Othe
 		return; // Paper is silent and has no impact sounds.
 	}
 
-	if (NormalImpulse.Size() > 50.0f && OtherActor != this)
+	// Impulse scales with mass; use the velocity change so light pickups can be heard too.
+	const float ImpactMass = HitComponent && HitComponent->IsSimulatingPhysics()
+		? FMath::Max(0.001f, HitComponent->GetMass()) : 1.0f;
+	if (NormalImpulse.Size() / ImpactMass > 50.0f && OtherActor != this)
 	{
 		// Per-item debounce. A function-local static outlived each PIE world while world time restarted at 0.
 		const double CurrentTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0;
@@ -1099,6 +1102,8 @@ void APickupItemActor::EnableItemPhysicsSimulation()
 	MeshComponent->SetLinearDamping(0.35f);
 	MeshComponent->SetAngularDamping(2.5f);
 	MeshComponent->SetEnableGravity(true);
+	// Small scaled items can cross a thin floor between physics frames.
+	MeshComponent->SetUseCCD(true);
 	MeshComponent->SetSimulatePhysics(true);
 	MeshComponent->WakeAllRigidBodies();
 }

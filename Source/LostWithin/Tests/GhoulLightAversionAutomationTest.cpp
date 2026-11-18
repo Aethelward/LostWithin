@@ -11,7 +11,10 @@
 #include "Engine/World.h"
 #include "GameFramework/Character.h"
 #include "GameFramework/CharacterMovementComponent.h"
+#include "GameFramework/PlayerController.h"
 #include "GameFramework/WorldSettings.h"
+#include "Interaction/InteractableInterface.h"
+#include "Interaction/PickupItemActor.h"
 #include "LostWithinCharacter.h"
 #include "Misc/AutomationTest.h"
 
@@ -111,12 +114,39 @@ bool FGhoulLightAverseAutomationTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("CanRunNormalAI is allowed when unlit"), UMonsterAIComponent::CanRunNormalAI(Ghoul.Actor));
 	TestFalse(TEXT("IsActorLightRepelled is false initially"), UMonsterLightAverseComponent::IsActorLightRepelled(Ghoul.Actor));
 
-	// 2. Trigger Light Repulsion (Beam hitting Ghoul)
-	const FVector FlashlightPos(0.0f, 0.0f, 50.0f);
-	const FVector FlashlightFwd(1.0f, 0.0f, 0.0f);
-	const float TestIntensity = 25.0f;
-
-	Ghoul.LightAverse->TriggerRepulsion(FlashlightPos, FlashlightFwd, TestIntensity);
+	// 2. Aim a real held flashlight down the cone toward Ghoul.
+	UClass* PlayerClass = LoadClass<ALostWithinCharacter>(
+		nullptr, TEXT("/Game/FirstPerson/Blueprints/BP_FirstPersonCharacter.BP_FirstPersonCharacter_C"));
+	if (!TestNotNull(TEXT("FirstPerson player Blueprint"), PlayerClass))
+	{
+		return false;
+	}
+	APlayerController* Controller = Env.World->SpawnActor<APlayerController>();
+	ALostWithinCharacter* Player = Env.World->SpawnActor<ALostWithinCharacter>(
+		PlayerClass, FVector::ZeroVector, FRotator::ZeroRotator);
+	APickupItemActor* Flashlight = Env.World->SpawnActor<APickupItemActor>(
+		APickupItemActor::StaticClass(), FVector(150.0f, 0.0f, 0.0f), FRotator::ZeroRotator);
+	if (!TestNotNull(TEXT("Player controller"), Controller) || !TestNotNull(TEXT("Player character"), Player)
+		|| !TestNotNull(TEXT("Flashlight pickup"), Flashlight))
+	{
+		return false;
+	}
+	Controller->Possess(Player);
+	Flashlight->ConfigureAsFlashlight();
+	IInteractableInterface::Execute_OnInteract(Flashlight, Player);
+	UFunction* ToggleFlashlight = Player->FindFunction(TEXT("DoToggleFlashlight"));
+	USpotLightComponent* SpotLight = Player->GetFlashlightSpotLight();
+	if (!TestNotNull(TEXT("Flashlight toggle"), ToggleFlashlight) || !TestNotNull(TEXT("Player spotlight"), SpotLight))
+	{
+		return false;
+	}
+	Player->ProcessEvent(ToggleFlashlight, nullptr);
+	SpotLight->SetWorldLocationAndRotation(FVector(0.0f, 0.0f, 50.0f), FRotator::ZeroRotator);
+	if (!TestTrue(TEXT("Held flashlight switched on"), Player->IsFlashlightOn()))
+	{
+		return false;
+	}
+	Ghoul.LightAverse->TickComponent(0.01f, LEVELTICK_All, nullptr);
 
 	TestEqual(TEXT("State transitioned to Startled"), Ghoul.LightAverse->GetLightState(), EGhoulLightState::Startled);
 	TestTrue(TEXT("Ghoul is marked repelled"), Ghoul.LightAverse->IsRepelled());
@@ -140,8 +170,19 @@ bool FGhoulLightAverseAutomationTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Still shielding face while retreating"), Ghoul.LightAverse->IsShieldingFace());
 	TestFalse(TEXT("CanRunNormalAI remains false while retreating"), UMonsterAIComponent::CanRunNormalAI(Ghoul.Actor));
 
-	// 6. Stop Repulsion (Light leaves / moves away into dark)
-	Ghoul.LightAverse->StopRepulsion();
+	// 6. Move the beam off Ghoul and back before it finishes recovering.
+	SpotLight->SetWorldRotation(FRotator(0.0f, 180.0f, 0.0f));
+	Ghoul.LightAverse->TickComponent(0.1f, LEVELTICK_All, nullptr);
+	TestEqual(TEXT("Turning away starts recovery"), Ghoul.LightAverse->GetLightState(), EGhoulLightState::Recovering);
+	SpotLight->SetWorldRotation(FRotator::ZeroRotator);
+	Ghoul.LightAverse->TickComponent(0.1f, LEVELTICK_All, nullptr);
+	TestEqual(TEXT("Reappearing light startles Ghoul again"), Ghoul.LightAverse->GetLightState(), EGhoulLightState::Startled);
+	Ghoul.LightAverse->TickComponent(0.5f, LEVELTICK_All, nullptr);
+	TestTrue(TEXT("Ghoul retreats again"), Ghoul.LightAverse->IsRetreating());
+
+	Player->ProcessEvent(ToggleFlashlight, nullptr);
+	Ghoul.LightAverse->TickComponent(0.1f, LEVELTICK_All, nullptr);
+	Ghoul.LightAverse->TickComponent(Ghoul.LightAverse->RecoveryDuration + 0.1f, LEVELTICK_All, nullptr);
 	TestEqual(TEXT("State returned to DarkStalking"), Ghoul.LightAverse->GetLightState(), EGhoulLightState::DarkStalking);
 	TestFalse(TEXT("No longer shielding face"), Ghoul.LightAverse->IsShieldingFace());
 	TestFalse(TEXT("No longer repelled"), Ghoul.LightAverse->IsRepelled());
@@ -150,7 +191,9 @@ bool FGhoulLightAverseAutomationTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("CanRunNormalAI resumes when back in darkness"), UMonsterAIComponent::CanRunNormalAI(Ghoul.Actor));
 
 	// 7. Cat Panic Priority Test: Cat reaction must override light aversion
-	Ghoul.LightAverse->TriggerRepulsion(FlashlightPos, FlashlightFwd, TestIntensity);
+	Player->ProcessEvent(ToggleFlashlight, nullptr);
+	SpotLight->SetWorldLocationAndRotation(FVector(0.0f, 0.0f, 50.0f), FRotator::ZeroRotator);
+	Ghoul.LightAverse->TickComponent(0.1f, LEVELTICK_All, nullptr);
 	TestTrue(TEXT("Repelled before cat panic"), Ghoul.LightAverse->IsRepelled());
 
 	Ghoul.AI->bIsFleeing = true;

@@ -8,6 +8,7 @@
 
 class UGameEndWidget;
 class UInputMappingContext;
+class USoundBase;
 class UUserWidget;
 
 /**
@@ -44,6 +45,10 @@ public:
 	/** End screen widget class */
 	UPROPERTY(EditAnywhere, Category="Game End")
 	TSubclassOf<UGameEndWidget> EndScreenWidgetClass;
+
+	/** Played once when the death end screen appears ("game over"); keeps playing while the game is paused */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Game End|Audio")
+	TObjectPtr<USoundBase> DeathEndSound;
 
 protected:
 

@@ -7,7 +7,9 @@
 #include "Components/CapsuleComponent.h"
 #include "Components/ProximityFloatSpinComponent.h"
 #include "Components/SceneComponent.h"
+#include "Components/SkeletalMeshComponent.h"
 #include "Engine/Engine.h"
+#include "Engine/SkeletalMesh.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "GameFramework/Character.h"
@@ -20,6 +22,7 @@
 #include "Inventory/InventoryComponent.h"
 #include "LostWithinCharacter.h"
 #include "Misc/AutomationTest.h"
+#include "TimerManager.h"
 
 #define LOSTWITHIN_TEST_FLAGS (EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter)
 
@@ -90,7 +93,7 @@ namespace BoneDogAndOiiaiCatTestHelpers
 		return Rig;
 	}
 
-	UProximityFloatSpinComponent* SpawnTestCat(UWorld* World, const FVector& Location)
+	UProximityFloatSpinComponent* SpawnOiiaiTestCat(UWorld* World, const FVector& Location)
 	{
 		const FTransform Transform(Location);
 		AActor* Actor = World->SpawnActorDeferred<AActor>(AActor::StaticClass(), Transform, nullptr, nullptr,
@@ -219,7 +222,7 @@ bool FLostWithinOiiaiCatKeyDropperTest::RunTest(const FString& Parameters)
 		return false;
 	}
 
-	UProximityFloatSpinComponent* Cat = SpawnTestCat(World, FVector::ZeroVector);
+	UProximityFloatSpinComponent* Cat = SpawnOiiaiTestCat(World, FVector::ZeroVector);
 	if (!TestNotNull(TEXT("Cat component"), Cat))
 	{
 		return false;
@@ -292,14 +295,14 @@ bool FLostWithinOiiaiCatChaosSanctuaryTest::RunTest(const FString& Parameters)
 		return false;
 	}
 
-	UProximityFloatSpinComponent* Cat = SpawnTestCat(World, FVector::ZeroVector);
+	UProximityFloatSpinComponent* Cat = SpawnOiiaiTestCat(World, FVector::ZeroVector);
 	if (!TestNotNull(TEXT("Cat component"), Cat))
 	{
 		return false;
 	}
 
 	Cat->ChaosSanctuaryRadius = 700.0f;
-	Cat->SanctuaryRepelRadius = 350.0f;
+	Cat->SanctuaryRepelRadius = 400.0f;
 	Cat->bRepelMonstersInSanctuary = true;
 
 	TestFalse(TEXT("Sanctuary is dormant before float/spin activates"), Cat->IsChaosSanctuaryActive());
@@ -310,25 +313,34 @@ bool FLostWithinOiiaiCatChaosSanctuaryTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Float/spin is active"), Cat->IsFloatSpinActive());
 	TestTrue(TEXT("Chaos Sanctuary is active"), Cat->IsChaosSanctuaryActive());
 
-	// Spawn a monster inside the sanctuary perimeter (500 cm from cat)
-	const FBoneDogTestRig Monster = SpawnBoneDog(World, FVector(500.0f, 0.0f, 0.0f));
+	// The outer sanctuary should protect a point outside the standard 500 cm cat flee radius.
+	const FBoneDogTestRig Monster = SpawnBoneDog(World, FVector(600.0f, 0.0f, 0.0f));
 	if (!TestNotNull(TEXT("Monster exists"), Monster.Character) || !TestNotNull(TEXT("Monster AI exists"), Monster.AI))
 	{
 		return false;
 	}
 
-	// Update sanctuary
-	Cat->TickComponent(0.05f, LEVELTICK_All, nullptr);
+	static_cast<UActorComponent*>(Monster.AI)->TickComponent(0.05f, LEVELTICK_All, nullptr);
 
 	// Monster in sanctuary perimeter must be repelled/fleeing
 	TestTrue(TEXT("Monster inside Chaos Sanctuary is frightened"), Monster.AI->bCatIsNear);
 	TestTrue(TEXT("Monster inside Chaos Sanctuary is fleeing"), Monster.AI->bIsFleeing);
 
-	// Move monster inside the inner repel radius (250 cm from cat)
-	Monster.Character->SetActorLocation(FVector(250.0f, 0.0f, 0.0f));
-	Cat->TickComponent(0.05f, LEVELTICK_All, nullptr);
+	USkeletalMesh* Mesh = LoadObject<USkeletalMesh>(nullptr, TEXT("/Game/NPC/Monster/base_basic_pbr.base_basic_pbr"));
+	if (!TestNotNull(TEXT("Monster skeletal mesh for the ragdoll probe"), Mesh))
+	{
+		return false;
+	}
+	Monster.Character->GetMesh()->SetSkeletalMesh(Mesh);
+
+	// The inner sanctuary should throw the monster even outside its normal 300 cm capsule-surface radius.
+	Monster.Character->SetActorLocation(FVector(375.0f, 0.0f, 0.0f));
+	++GFrameCounter;
+	World->GetTimerManager().Tick(0.0f);
+	static_cast<UActorComponent*>(Monster.AI)->TickComponent(0.05f, LEVELTICK_All, nullptr);
 
 	TestTrue(TEXT("Monster inside repel radius entered ragdoll"), Monster.AI->bIsRagdolled);
+	TestTrue(TEXT("Ragdoll bodies simulate in the sanctuary"), Monster.Character->GetMesh()->IsSimulatingPhysics());
 
 	return true;
 }

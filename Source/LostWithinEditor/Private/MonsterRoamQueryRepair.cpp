@@ -256,7 +256,7 @@ namespace
 		UFunction* RoamFunction = Blueprint->GeneratedClass->FindFunctionByName(TEXT("RoamStep"));
 		if (!RoamFunction || Blueprint->UbergraphPages.IsEmpty())
 		{
-			UE_LOG(LogLostWithin, Error, TEXT("BP_Monster needs its existing RoamStep event and event graph; setup will not replace the authored AI."));
+			UE_LOG(LogLostWithin, Error, TEXT("Lunger needs its existing RoamStep event and event graph; setup will not replace the authored AI."));
 			return false;
 		}
 		UEdGraph* Graph = BeginPlay ? BeginPlay->GetGraph() : Blueprint->UbergraphPages[0].Get();
@@ -284,7 +284,7 @@ namespace
 				return true;
 			}
 			Graph->RemoveNode(Roam);
-			UE_LOG(LogLostWithin, Error, TEXT("Could not connect BP_Monster BeginPlay to RoamStep."));
+			UE_LOG(LogLostWithin, Error, TEXT("Could not connect Lunger BeginPlay to RoamStep."));
 			return false;
 		}
 		const TArray<UEdGraphPin*> Existing = Then->LinkedTo;

@@ -11,7 +11,9 @@
 #include "Kismet/GameplayStatics.h"
 #include "Kismet/KismetSystemLibrary.h"
 #include "LostWithin.h"
+#include "Sound/SoundBase.h"
 #include "UI/GameEndWidget.h"
+#include "UObject/ConstructorHelpers.h"
 #include "Widgets/Input/SVirtualJoystick.h"
 
 ALostWithinPlayerController::ALostWithinPlayerController()
@@ -24,6 +26,11 @@ ALostWithinPlayerController::ALostWithinPlayerController()
 	bEnableClickEvents = true;
 
 	EndScreenWidgetClass = UGameEndWidget::StaticClass();
+
+	// Game-over sound for the death screen, generated with ElevenLabs (Tools/SFX/sfx-manifest.json, id death_game_over).
+	static ConstructorHelpers::FObjectFinder<USoundBase> GameOver(
+		TEXT("/Game/Audio/SFX/Player/Death/SFX_DeathGameOver_01.SFX_DeathGameOver_01"));
+	DeathEndSound = GameOver.Object;
 }
 
 void ALostWithinPlayerController::ShowEndScreen(bool bEscaped)
@@ -43,6 +50,13 @@ void ALostWithinPlayerController::ShowEndScreen(bool bEscaped)
 
 	EndScreenWidget->Configure(bEscaped);
 	EndScreenWidget->AddToViewport(100);
+
+	if (!bEscaped && DeathEndSound)
+	{
+		// A UI sound, so SetPause below does not stop it.
+		UGameplayStatics::PlaySound2D(this, DeathEndSound, 1.0f, 1.0f, 0.0f, nullptr, nullptr, /*bIsUISound=*/true);
+		UE_LOG(LogLostWithin, Log, TEXT("Death end screen: game over %s"), *DeathEndSound->GetName());
+	}
 
 	SetShowMouseCursor(true);
 	FInputModeUIOnly InputMode;

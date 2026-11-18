@@ -20,7 +20,7 @@
 
 namespace
 {
-	constexpr const TCHAR* MonsterClassPath = TEXT("/Game/NPC/Monster/BP_Monster.BP_Monster_C");
+	constexpr const TCHAR* MonsterClassPath = TEXT("/Game/NPC/Monster/Lunger.Lunger_C");
 
 	class FObserveMonsterMovement final : public IAutomationLatentCommand
 	{
@@ -93,7 +93,7 @@ namespace
 				}
 				if (!SpawnedMonster.IsValid())
 				{
-					Test->AddError(TEXT("Could not spawn BP_Monster on clear navigation near the player."));
+					Test->AddError(TEXT("Could not spawn Lunger on clear navigation near the player."));
 					return true;
 				}
 				SpawnedStart = SpawnedMonster->GetActorLocation();
@@ -114,7 +114,7 @@ namespace
 			}
 			if (bSpawnedMoved && bSpawnedVelocity && (!bHadPlacedMonster || (bPlacedMoved && bPlacedVelocity)))
 			{
-				Test->AddInfo(TEXT("Production BP_Monster moved more than 50 cm with nonzero horizontal velocity, using normal Blueprint AI in PIE."));
+				Test->AddInfo(TEXT("Production Lunger moved more than 50 cm with nonzero horizontal velocity, using normal Blueprint AI in PIE."));
 				return true;
 			}
 			if (World->GetTimeSeconds() - SpawnedAt > 20.0f)
@@ -136,7 +136,7 @@ namespace
 		{
 			if (!IsValid(Monster) || !Cast<AAIController>(Monster->GetController()))
 			{
-				Test->AddError(TEXT("BP_Monster was destroyed or failed automatic AIController possession."));
+				Test->AddError(TEXT("Lunger was destroyed or failed automatic AIController possession."));
 				return false;
 			}
 			TInlineComponentArray<UMonsterAIComponent*> Components(Monster);

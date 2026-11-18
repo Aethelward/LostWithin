@@ -53,14 +53,14 @@ Picking one up shows its text; [LMB] puts it away. In the inventory, right-click
 
 ## Monsters, noise and death
 
-- Touching any monster (BP_Monster, BP_BoneDog, BP_Doll, BP_Ghoul) ends the run: the camera turns to the monster's
+- Touching any monster (Lunger, BP_BoneDog, BP_Doll, BP_Ghoul) ends the run: the camera turns to the monster's
   face, stares, collapses and fades out, then **You died** offers Try again (new random run) or Quit. A monster
   thrown into ragdoll by the cat cannot kill.
 - Footsteps make noise: walk ([Shift]) 4 m, run 9 m, sprint ([Ctrl]) 16 m. A dropped or thrown item hitting the floor
   makes a 30 m noise. Paper is silent.
 - **BP_BoneDog, BP_Doll and BP_Ghoul** have a `MonsterHearingComponent`: they hurry to the noise at their fastest
   gait, search there for about 5 s, then roam again. A newer noise redirects them. The cat still wins: a monster near
-  the spinning cat ignores noise. BP_Monster is deaf.
+  the spinning cat ignores noise. Lunger is deaf.
 - Crouch is gone ([C] does nothing).
 
 ## Tuning
@@ -77,7 +77,7 @@ Picking one up shows its text; [LMB] puts it away. In the inventory, right-click
 ## Verify
 
 - Automation: `Automation RunTests LostWithin.Gameplay` (run rules, run setup, noise/hearing, toolbox lock, paper
-  note, touch death, escape door).
+  note, touch death, escape door, light-item floor-impact hearing).
 - Play: walk vs. sprint near the dog; drop a battery far away; read three hint notes and enter the digits; open the
   door; touch a monster.
 
@@ -94,9 +94,12 @@ translucent material. Dropped notes lie face up at roll 90 degrees with physics
 off. The ScaryDoor has the base three-dial skull padlock on its holder; the child
 compensates the holder scale, and the placed door has a matching fitted override.
 One Hearing and one canonical CatReactionAI component are retained per hearing
-NPC; BP_Monster has no Hearing component.
+NPC; Lunger has no Hearing component.
 
-Live checks have verified key consumption, note text/drop preservation, C not
-crouching, held-open toolbox lids, hint-driven padlock unlock, the escape screen
-and Play again, and actual-contact death camera/end UI. Final loaded-source
-automation and the footstep/impact hearing observation remain in the task's VERIFY.md.
+All 18 requested native checks pass on the loaded build. Live checks verified
+key consumption, note text/drop preservation and inventory Read, C not crouching,
+held-open toolbox lids, hint-driven padlock unlock, escape/Play again and actual
+contact death/Try again. Real sprint footsteps and default battery floor impacts
+draw all three hearing NPCs; Lunger stays deaf. Simulated pickups use CCD and
+a mass-normalized impact threshold so the tiny default battery lands and is heard.
+Detailed results and input-automation limits are in the task's VERIFY.md.

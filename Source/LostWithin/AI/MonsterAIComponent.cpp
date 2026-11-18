@@ -183,7 +183,7 @@ void UMonsterAIComponent::UpdateCatProximity()
 	ThreateningCat.Reset();
 	FleeDirection = FVector::ZeroVector;
 
-	const ACharacter* Character = Cast<ACharacter>(GetOwner());
+	ACharacter* Character = Cast<ACharacter>(GetOwner());
 	const UCapsuleComponent* Capsule = Character ? Character->GetCapsuleComponent() : nullptr;
 	UWorld* World = GetWorld();
 	if (!Character || !Capsule || !World)
@@ -192,12 +192,13 @@ void UMonsterAIComponent::UpdateCatProximity()
 	}
 
 	const float RagdollRadius = FMath::Max(0.0f, CatRagdollRadius);
-	const float FleeRadius = FMath::Max(0.0f, CatFleeRadius);
+	const double FleeRadiusSquared = FMath::Square(static_cast<double>(FMath::Max(0.0f, CatFleeRadius)));
 	const FVector OwnerLocation = Character->GetActorLocation();
-	double ClosestFleeDistanceSquared = FMath::Square(static_cast<double>(FleeRadius));
-	double ClosestThrowDistance = RagdollRadius;
+	double ClosestFleeDistanceSquared = TNumericLimits<double>::Max();
+	double ClosestThrowDistance = TNumericLimits<double>::Max();
 	AActor* FleeCat = nullptr;
 	AActor* ThrowCat = nullptr;
+	UProximityFloatSpinComponent* RepellingCat = nullptr;
 	for (TActorIterator<AActor> It(World); It; ++It)
 	{
 		AActor* Cat = *It;
@@ -205,21 +206,26 @@ void UMonsterAIComponent::UpdateCatProximity()
 		{
 			continue;
 		}
-		const UProximityFloatSpinComponent* FloatSpin = Cat->FindComponentByClass<UProximityFloatSpinComponent>();
+		UProximityFloatSpinComponent* FloatSpin = Cat->FindComponentByClass<UProximityFloatSpinComponent>();
 		if (!FloatSpin || !FloatSpin->IsFloatSpinThreatening())
 		{
 			continue;
 		}
 
 		const FVector CatLocation = Cat->GetActorLocation();
+		const double CenterDistanceSquared = FVector::DistSquared(OwnerLocation, CatLocation);
+		const bool bInsideSanctuary = FloatSpin->bRepelMonstersInSanctuary
+			&& CenterDistanceSquared <= FMath::Square(static_cast<double>(FloatSpin->ChaosSanctuaryRadius));
+		const bool bInsideRepelRadius = bInsideSanctuary
+			&& CenterDistanceSquared <= FMath::Square(static_cast<double>(FloatSpin->SanctuaryRepelRadius));
 		const double SurfaceDistance = DistanceToCapsuleSurface(*Capsule, CatLocation);
-		if (SurfaceDistance <= ClosestThrowDistance)
+		if ((SurfaceDistance <= RagdollRadius || bInsideRepelRadius) && SurfaceDistance <= ClosestThrowDistance)
 		{
 			ClosestThrowDistance = SurfaceDistance;
 			ThrowCat = Cat;
+			RepellingCat = bInsideRepelRadius ? FloatSpin : nullptr;
 		}
-		const double CenterDistanceSquared = FVector::DistSquared(OwnerLocation, CatLocation);
-		if (CenterDistanceSquared <= ClosestFleeDistanceSquared)
+		if ((CenterDistanceSquared <= FleeRadiusSquared || bInsideSanctuary) && CenterDistanceSquared <= ClosestFleeDistanceSquared)
 		{
 			ClosestFleeDistanceSquared = CenterDistanceSquared;
 			FleeCat = Cat;
@@ -231,6 +237,27 @@ void UMonsterAIComponent::UpdateCatProximity()
 	if (const AActor* Cat = ThreateningCat.Get())
 	{
 		bCatIsNear = true;
+		if (!bIsFleeing)
+		{
+			// Release movement and animation overrides before panic or ragdoll caches the character settings.
+			if (UMonsterHearingComponent* Hearing = Character->FindComponentByClass<UMonsterHearingComponent>(); Hearing && Hearing->IsInvestigating())
+			{
+				Hearing->StopInvestigating();
+			}
+			if (UMonsterVibrationComponent* Vibration = Character->FindComponentByClass<UMonsterVibrationComponent>(); Vibration && Vibration->IsInvestigating())
+			{
+				Vibration->StopInvestigating();
+			}
+			if (UMonsterLightAverseComponent* LightAverse = Character->FindComponentByClass<UMonsterLightAverseComponent>())
+			{
+				LightAverse->StopRepulsion();
+			}
+			if (UMonsterSightFreezeComponent* SightFreeze = Character->FindComponentByClass<UMonsterSightFreezeComponent>();
+				SightFreeze && SightFreeze->bCatReactionHasPriority && SightFreeze->IsFrozen())
+			{
+				SightFreeze->SetFrozen(false);
+			}
+		}
 		FleeDirection = (OwnerLocation - Cat->GetActorLocation()).GetSafeNormal2D();
 		if (FleeDirection.IsNearlyZero())
 		{
@@ -242,7 +269,12 @@ void UMonsterAIComponent::UpdateCatProximity()
 		}
 		if (ThrowCat)
 		{
-			ApplyRagdoll();
+			const float LaunchStrength = RepellingCat && ClosestThrowDistance > RagdollRadius
+				? RepellingCat->SanctuaryRepelForce : RagdollLaunchStrength;
+			if (ApplyRagdoll(LaunchStrength) && IsValid(RepellingCat))
+			{
+				RepellingCat->OnCatRepelledMonster.Broadcast(Character);
+			}
 		}
 	}
 }
@@ -329,7 +361,7 @@ void UMonsterAIComponent::UpdatePlayerProximity()
 	bPlayerIsNear = IsPlayerInSight();
 }
 
-bool UMonsterAIComponent::ApplyRagdoll()
+bool UMonsterAIComponent::ApplyRagdoll(float LaunchStrength)
 {
 	if (bIsRagdolled)
 	{
@@ -408,7 +440,7 @@ bool UMonsterAIComponent::ApplyRagdoll()
 	bPlayerIsNear = false;
 	bUseDirectFleeMovement = false;
 	Mesh->WakeAllRigidBodies();
-	const FVector LaunchVelocity = FleeDirection * FMath::Max(0.0f, RagdollLaunchStrength)
+	const FVector LaunchVelocity = FleeDirection * FMath::Max(0.0f, LaunchStrength)
 		+ FVector::UpVector * FMath::Max(0.0f, RagdollUpwardStrength);
 	Mesh->AddImpulseToAllBodiesBelow(LaunchVelocity, ActiveRagdollBone, true, true);
 	ScheduleRecovery(FMath::Max(0.1f, RagdollDuration));
