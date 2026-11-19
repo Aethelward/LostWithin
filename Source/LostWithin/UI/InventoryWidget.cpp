@@ -1,6 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "UI/InventoryWidget.h"
+#include "Gameplay/LostWithinNarrativeComponent.h"
+#include "LostWithinPlayerController.h"
 #include "Blueprint/DragDropOperation.h"
 #include "Blueprint/WidgetTree.h"
 #include "Brushes/SlateColorBrush.h"
@@ -244,7 +246,7 @@ void UInventoryWidget::RefreshInventory()
 	if (Items.IsEmpty())
 	{
 		UTextBlock* EmptyText = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass());
-		EmptyText->SetText(NSLOCTEXT("LostWithin", "EmptyInventory", "Inventory is empty. Pick up items with [LMB]."));
+		EmptyText->SetText(NSLOCTEXT("LostWithin", "EmptyInventory", "Inventory is empty. Pick up items with [E]."));
 		EmptyText->SetFont(FCoreStyle::GetDefaultFontStyle("Italic", 13));
 		EmptyText->SetColorAndOpacity(FSlateColor(FLinearColor(0.75f, 0.78f, 0.85f, 1.0f)));
 		EmptyText->SetAutoWrapText(true);
@@ -416,6 +418,17 @@ void UInventoryWidget::HandleItemDragCancelled(UDragDropOperation* InOperation, 
 
 FReply UInventoryWidget::NativeOnPreviewKeyDown(const FGeometry& InGeometry, const FKeyEvent& InKeyEvent)
 {
+	if (!InKeyEvent.IsRepeat() && bIsNoteVisible && InKeyEvent.GetKey() == EKeys::E)
+	{
+		HideNote(); return FReply::Handled();
+	}
+	if (!InKeyEvent.IsRepeat() && InKeyEvent.GetKey() == EKeys::Escape && !bIsContextMenuOpen)
+	{
+		if (ALostWithinPlayerController* PC = GetOwningPlayer<ALostWithinPlayerController>())
+		{
+			PC->HandleEscape(); return FReply::Handled();
+		}
+	}
 	if (bIsInventoryOpen && !InKeyEvent.IsRepeat())
 	{
 		if (InKeyEvent.GetKey() == EKeys::Tab)
@@ -528,7 +541,7 @@ void UInventoryWidget::HandleContextReadClicked()
 	if (Inventory && Inventory->GetItems().IsValidIndex(TargetSlotIndex))
 	{
 		const FInventoryItem& Item = Inventory->GetItems()[TargetSlotIndex];
-		ShowNote(Item.DisplayName, Item.Description);
+		ShowNote(Item.DisplayName, Item.Description, Item.StoryNoteID);
 	}
 }
 
@@ -537,11 +550,23 @@ void UInventoryWidget::HandleNoteCloseClicked()
 	HideNote();
 }
 
-void UInventoryWidget::ShowNote(const FText& Title, const FText& Body)
+void UInventoryWidget::ShowNote(const FText& Title, const FText& Body, FName StoryID)
 {
+	if (bIsNoteVisible)
+	{
+		HideNote();
+	}
 	BuildWidgetTreeIfNeeded();
 	VisibleNoteText = Body;
+	VisibleStoryNoteID = StoryID;
 	bIsNoteVisible = true;
+	if (APawn* Pawn = GetOwningPlayerPawn())
+	{
+		if (ULostWithinNarrativeComponent* Story = Pawn->FindComponentByClass<ULostWithinNarrativeComponent>())
+		{
+			Story->NoteOpened(StoryID);
+		}
+	}
 	if (NoteTitleText)
 	{
 		NoteTitleText->SetText(Title.IsEmpty() ? NSLOCTEXT("LostWithin", "NoteDefaultTitle", "Note") : Title);
@@ -558,11 +583,24 @@ void UInventoryWidget::ShowNote(const FText& Title, const FText& Body)
 
 void UInventoryWidget::HideNote()
 {
+	if (!bIsNoteVisible)
+	{
+		return;
+	}
+	const FName ClosedID = VisibleStoryNoteID;
+	VisibleStoryNoteID = NAME_None;
 	bIsNoteVisible = false;
 	VisibleNoteText = FText::GetEmpty();
 	if (NotePanelBorder)
 	{
 		NotePanelBorder->SetVisibility(ESlateVisibility::Collapsed);
+	}
+	if (APawn* Pawn = GetOwningPlayerPawn())
+	{
+		if (ULostWithinNarrativeComponent* Story = Pawn->FindComponentByClass<ULostWithinNarrativeComponent>())
+		{
+			Story->NoteClosed(ClosedID);
+		}
 	}
 }
 
@@ -790,7 +828,7 @@ void UInventoryWidget::BuildWidgetTreeIfNeeded()
 	ControlsHintBorder->SetPadding(FMargin(10.0f, 6.0f));
 	ControlsHintBorder->SetVisibility(ESlateVisibility::HitTestInvisible);
 	UTextBlock* ControlsHintText = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), TEXT("ControlsHintText"));
-	ControlsHintText->SetText(NSLOCTEXT("LostWithin", "ControlsHint", "[Tab] Inventory  |  [LMB] Interact  |  [F] Flashlight  |  [R] Change Battery  |  [Shift] Walk (quiet)  |  [Ctrl] Sprint (loud)"));
+	ControlsHintText->SetText(NSLOCTEXT("LostWithin", "ControlsHint", "[Tab] Inventory  |  [E] Interact  |  [F] Flashlight  |  [R] Change Battery  |  [Shift] Walk (quiet)  |  [Ctrl] Sprint (loud)"));
 	ControlsHintText->SetFont(FCoreStyle::GetDefaultFontStyle("Regular", 10));
 	ControlsHintText->SetColorAndOpacity(FSlateColor(FLinearColor(0.85f, 0.88f, 0.94f, 0.85f)));
 	ControlsHintText->SetVisibility(ESlateVisibility::HitTestInvisible);
@@ -1017,11 +1055,11 @@ void UInventoryWidget::BuildWidgetTreeIfNeeded()
 	NoteCloseButton = CreateContextMenuButton(
 		NoteLayout,
 		TEXT("NoteCloseButton"),
-		NSLOCTEXT("LostWithin", "NoteClose", "Put away  [LMB]"));
+		NSLOCTEXT("LostWithin", "NoteClose", "Put away  [E] / [Esc]"));
 	NoteCloseButton->OnClicked.AddDynamic(this, &UInventoryWidget::HandleNoteCloseClicked);
 
 	USizeBox* NoteWidth = WidgetTree->ConstructWidget<USizeBox>(USizeBox::StaticClass(), TEXT("NoteWidth"));
-	NoteWidth->SetWidthOverride(480.0f);
+	NoteWidth->SetWidthOverride(700.0f);
 	NoteWidth->SetContent(NoteLayout);
 	NotePanelBorder->SetContent(NoteWidth);
 	if (UCanvasPanelSlot* NoteSlot = RootCanvas->AddChildToCanvas(NotePanelBorder))

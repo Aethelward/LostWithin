@@ -36,6 +36,7 @@ public:
 protected:
 
 	virtual TSharedRef<SWidget> RebuildWidget() override;
+	virtual FReply NativeOnMouseButtonDown(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent) override;
 
 private:
 
@@ -47,7 +48,7 @@ private:
 
 	void BuildWidgetTreeIfNeeded();
 	void ApplyTexts();
-	UButton* CreateMenuButton(const FName Name, TObjectPtr<UTextBlock>& OutLabel);
+	UButton* CreateMenuButton(const FName Name, TObjectPtr<UTextBlock>& OutLabel, bool bPrimaryAccent = false);
 
 	UPROPERTY(Transient)
 	TObjectPtr<UTextBlock> TitleText = nullptr;

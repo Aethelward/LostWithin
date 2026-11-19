@@ -11,7 +11,7 @@ spin window, the pauses between windows, and an active sequence after its last
 window. Idle cats, disabled float/spin components and despawned cats cause no
 reaction. (Until 2026-11-18 only spin #3 counted.)
 
-How the player starts the cat's float-spin (chaos mode), since 2026-11-19: pet the cat ([LMB]), turn the view
+How the player starts the cat's float-spin (chaos mode), since 2026-11-19: pet the cat ([E]), turn the view
 one full circle within 5 m of it, and repeat three times (pet → spin → pet → spin → pet → spin). Turning back
 cancels a partial turn, and petting twice without spinning starts the ritual over. The prompt shows no chaos
 progress; it shows only the Fairy Tale Kitty Key count (5 pets), and a key still held drops when chaos starts.

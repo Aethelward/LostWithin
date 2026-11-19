@@ -3,7 +3,11 @@
 #include "Interaction/EscapeDoorComponent.h"
 
 #include "Components/ChildActorComponent.h"
+#include "Components/SkeletalMeshComponent.h"
+#include "Animation/AnimSequence.h"
+#include "Gameplay/LostWithinNarrativeComponent.h"
 #include "Engine/World.h"
+#include "Engine/SkeletalMesh.h"
 #include "EngineUtils.h"
 #include "GameFramework/Pawn.h"
 #include "LostWithin.h"
@@ -78,6 +82,8 @@ void UEscapeDoorComponent::BeginPlay()
 	Super::BeginPlay();
 
 	AActor* Owner = GetOwner();
+	if (const ALostWithinGameMode* Mode = GetWorld() ? Cast<ALostWithinGameMode>(GetWorld()->GetAuthGameMode()) : nullptr)
+	{ CachedCombination = Mode->GetDoorCombination(); }
 	Padlock = FindPadlock();
 	AActor* Lock = Padlock.Get();
 	if (!Lock)
@@ -164,6 +170,8 @@ AActor* UEscapeDoorComponent::FindPadlock() const
 
 bool UEscapeDoorComponent::ApplyCombination(const FString& Combination)
 {
+	if (!IsValidCode(Combination)) { return false; }
+	CachedCombination = Combination;
 	AActor* Lock = Padlock.Get();
 	if (!Lock || !SetStringProperty(Lock, PadlockCombinationPropertyName, Combination))
 	{
@@ -175,53 +183,99 @@ bool UEscapeDoorComponent::ApplyCombination(const FString& Combination)
 
 bool UEscapeDoorComponent::IsDoorLocked() const
 {
+	if (bKeypadUnlocked) { return false; }
 	bool bLocked = false;
-	return GetBoolProperty(GetOwner(), DoorLockedPropertyName, bLocked) && bLocked;
+	if (GetBoolProperty(GetOwner(), DoorLockedPropertyName, bLocked)) { return bLocked; }
+	return bUseKeypadUI;
+}
+
+bool UEscapeDoorComponent::IsValidCode(const FString& Code)
+{
+	if (Code.Len() != 3) { return false; }
+	for (const TCHAR Digit : Code) { if (Digit < TEXT('0') || Digit > TEXT('9')) { return false; } }
+	return true;
 }
 
 void UEscapeDoorComponent::OnInteract_Implementation(AActor* Interactor)
 {
-	if (!CanInteract_Implementation(Interactor))
-	{
-		return;
-	}
-
+	if (!Interactor || !CanInteract_Implementation(Interactor)) { return; }
 	if (IsDoorLocked())
 	{
-		AActor* Lock = Padlock.Get();
-		if (!Lock || !CallBlueprintFunction(Lock, InteractFunctionName))
+		if (bUseKeypadUI)
+		{
+			const APawn* Pawn = Cast<APawn>(Interactor);
+			if (ALostWithinPlayerController* PC = Pawn ? Cast<ALostWithinPlayerController>(Pawn->GetController()) : nullptr)
+			{ PC->ShowKeypad(this); }
+			return;
+		}
+		if (!Padlock.IsValid() || !CallBlueprintFunction(Padlock.Get(), InteractFunctionName))
 		{
 			if (ALostWithinCharacter* Character = Cast<ALostWithinCharacter>(Interactor))
-			{
-				Character->ShowStatusMessage(NSLOCTEXT("LostWithin", "EscapeDoorLocked", "It's locked."));
-			}
+			{ Character->ShowStatusMessage(NSLOCTEXT("LostWithin", "EscapeDoorLocked", "It's locked.")); }
 		}
 		return;
 	}
+	StartEscape(Interactor);
+}
 
+bool UEscapeDoorComponent::TrySubmitCode(const FString& Code, AActor* Interactor)
+{
+	if (!Interactor || !bUseKeypadUI || !IsDoorLocked() || !CanInteract_Implementation(Interactor) || !IsValidCode(Code)) { return false; }
+	const ALostWithinGameMode* Mode = GetWorld() ? Cast<ALostWithinGameMode>(GetWorld()->GetAuthGameMode()) : nullptr;
+	const FString Expected = Mode ? Mode->GetDoorCombination() : CachedCombination;
+	if (!IsValidCode(Expected) || Code != Expected)
+	{
+		if (ALostWithinCharacter* Character = Cast<ALostWithinCharacter>(Interactor))
+		{
+			Character->ShowStatusMessage(NSLOCTEXT("LostWithin", "CodeIncorrect", "INCORRECT CODE — DOOR LOCKED"));
+			if (ULostWithinNarrativeComponent* Story = Character->FindComponentByClass<ULostWithinNarrativeComponent>())
+			{ Story->QueueSubtitle(NSLOCTEXT("LostWithinStory", "WrongCode", "Wrong code! What were the three numbers in those notes?"), 30, 6.0f); }
+		}
+		return false;
+	}
+	bKeypadUnlocked = true;
+	if (FBoolProperty* Locked = FindFProperty<FBoolProperty>(GetOwner()->GetClass(), DoorLockedPropertyName))
+	{ Locked->SetPropertyValue_InContainer(GetOwner(), false); }
+	PlayPadlockUnlock();
+	if (!StartEscape(Interactor)) { bKeypadUnlocked = false; return false; }
+	return true;
+}
+
+void UEscapeDoorComponent::PlayPadlockUnlock()
+{
+	AActor* Lock = Padlock.Get();
+	if (!Lock) { return; }
+	UAnimSequence* Animation = LoadObject<UAnimSequence>(nullptr,
+		TEXT("/Game/Level/MAZE/Objects/ScaryDoor/Animations/AS_Padlock_Skull_Open.AS_Padlock_Skull_Open"));
+	TArray<USkeletalMeshComponent*> Meshes;
+	Lock->GetComponents(Meshes);
+	for (USkeletalMeshComponent* Mesh : Meshes)
+	{
+		if (Animation && Mesh->GetSkeletalMeshAsset() && Mesh->GetSkeletalMeshAsset()->GetSkeleton() == Animation->GetSkeleton())
+		{ Mesh->PlayAnimation(Animation, false); }
+	}
+}
+
+bool UEscapeDoorComponent::StartEscape(AActor* Interactor)
+{
 	ALostWithinGameMode* GameMode = GetWorld() ? Cast<ALostWithinGameMode>(GetWorld()->GetAuthGameMode()) : nullptr;
-	if (GameMode && !GameMode->BeginEscape())
-	{
-		return;
-	}
-
-	if (!CallBlueprintFunction(GetOwner(), InteractFunctionName))
-	{
-		UE_LOG(LogLostWithin, Warning, TEXT("%s has no %s function; ending the run without the door animation."),
-			*GetNameSafe(GetOwner()), *InteractFunctionName.ToString());
-	}
-
+	if (GameMode && !GameMode->BeginEscape()) { return false; }
 	bEscaping = true;
 	const APawn* Pawn = Cast<APawn>(Interactor);
 	EscapingController = Pawn ? Pawn->GetController() : nullptr;
-
-	UWorld* World = GetWorld();
-	if (!World || EscapeDelay <= 0.0f)
+	if (ALostWithinPlayerController* PC = Cast<ALostWithinPlayerController>(EscapingController.Get())) { PC->CloseGameplayModal(); }
+	if (ALostWithinCharacter* Character = Cast<ALostWithinCharacter>(Interactor))
 	{
-		CompleteEscape();
-		return;
+		Character->CloseGameplayPanels();
+		if (bKeypadUnlocked) { Character->ShowStatusMessage(NSLOCTEXT("LostWithin", "CodeAccepted", "PASSCODE ACCEPTED — EXIT UNLOCKED")); }
+		if (ULostWithinNarrativeComponent* Story = Character->FindComponentByClass<ULostWithinNarrativeComponent>()) { Story->NotifyEnding(true); }
 	}
+	if (!CallBlueprintFunction(GetOwner(), InteractFunctionName))
+	{ UE_LOG(LogLostWithin, Warning, TEXT("%s has no door animation event %s."), *GetNameSafe(GetOwner()), *InteractFunctionName.ToString()); }
+	UWorld* World = GetWorld();
+	if (!World || EscapeDelay <= 0.0f) { CompleteEscape(); return true; }
 	World->GetTimerManager().SetTimer(EscapeTimerHandle, this, &UEscapeDoorComponent::CompleteEscape, EscapeDelay, false);
+	return true;
 }
 
 void UEscapeDoorComponent::CompleteEscape()
@@ -241,11 +295,12 @@ FText UEscapeDoorComponent::GetInteractionPrompt_Implementation() const
 {
 	if (IsDoorLocked())
 	{
+		if (bUseKeypadUI) { return NSLOCTEXT("LostWithin", "EscapeDoorKeypadPrompt", "Locked — Press [E] to Enter Passcode"); }
 		return Padlock.IsValid()
-			? NSLOCTEXT("LostWithin", "EscapeDoorPadlockPrompt", "[LMB] Try the skull padlock")
+			? NSLOCTEXT("LostWithin", "EscapeDoorPadlockPrompt", "[E] Try the skull padlock")
 			: NSLOCTEXT("LostWithin", "EscapeDoorLockedPrompt", "Locked");
 	}
-	return NSLOCTEXT("LostWithin", "EscapeDoorOpenPrompt", "[LMB] Open the door");
+	return NSLOCTEXT("LostWithin", "EscapeDoorOpenPrompt", "[E] Open the door");
 }
 
 bool UEscapeDoorComponent::CanInteract_Implementation(AActor* Interactor) const

@@ -38,6 +38,9 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Run")
 	int32 RunSeed = 0;
 
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Run|Story")
+	bool bIncludeSubject09Story = true;
+
 	/** Keys placed once each at key spawn points (the Fairy Tale Kitty Key is never placed; only the cat drops it) */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Run|Keys")
 	TArray<FName> SpawnableKeys;

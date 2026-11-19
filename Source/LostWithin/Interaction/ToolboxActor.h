@@ -28,7 +28,7 @@ enum class ELostWithinToolboxLockMode : uint8
 
 /**
  *  A toolbox (/Game/Level/Objects/tool_box) that may be padlocked by one specific unique key and holds one item or
- *  nothing. The game mode decides its lock and contents when the run starts; [LMB] unlocks (using up the key) and
+ *  nothing. The game mode decides its lock and contents when the run starts; [E] unlocks (using up the key) and
  *  opens the lid, revealing the contents resting inside. The actor origin is the bottom centre: place it on the floor.
  *
  *  Collision follows the visible box: a floor, four walls up to the rim and a lid cap that swings open with the lid

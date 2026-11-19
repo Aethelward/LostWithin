@@ -4,6 +4,8 @@
 
 #include "AI/MonsterAIComponent.h"
 #include "AI/MonsterHearingComponent.h"
+#include "AI/MonsterVibrationComponent.h"
+#include "AI/MonsterSightFreezeComponent.h"
 #include "Components/CapsuleComponent.h"
 #include "Components/ProximityFloatSpinComponent.h"
 #include "Components/SceneComponent.h"
@@ -209,6 +211,45 @@ bool FLostWithinBoneDogAudioHunterTest::RunTest(const FString& Parameters)
 }
 
 // -----------------------------------------------------------------------------
+// Test 1b: Monsters walk onto a sound source (so a player standing there is touched), not stop in front of it
+// -----------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FLostWithinMonsterApproachesToContactTest, "LostWithin.AI.MonsterApproachesToContact", LOSTWITHIN_TEST_FLAGS)
+
+bool FLostWithinMonsterApproachesToContactTest::RunTest(const FString& Parameters)
+{
+	using namespace BoneDogAndOiiaiCatTestHelpers;
+
+	FScopedBoneDogTestWorld Env;
+	UWorld* World = Env.World;
+	if (!TestNotNull(TEXT("World"), World))
+	{
+		return false;
+	}
+	const FBoneDogTestRig Dog = SpawnBoneDog(World, FVector::ZeroVector);
+	if (!TestNotNull(TEXT("BoneDog Character"), Dog.Character) || !TestNotNull(TEXT("BoneDog Hearing"), Dog.Hearing))
+	{
+		return false;
+	}
+	TestTrue(TEXT("Hearing arrives within 25 cm of the source"), Dog.Hearing->AcceptanceRadius <= 25.0f);
+	TestTrue(TEXT("Doll stalk ends within 10 cm of the player"), GetDefault<UMonsterSightFreezeComponent>()->StalkAcceptanceRadius <= 10.0f);
+	TestTrue(TEXT("Vibration arrives within 25 cm of the source"), GetDefault<UMonsterVibrationComponent>()->AcceptanceRadius <= 25.0f);
+
+	// A footstep 70 cm away: the capsules (35 + 34 cm) would already overlap, but the bodies do not touch yet.
+	const FVector Source(70.0f, 0.0f, 0.0f);
+	TestEqual(TEXT("The footstep is heard"),
+		ULostWithinNoiseSubsystem::ReportNoise(World, Source, 900.0f, ELostWithinNoiseKind::Footstep, nullptr), 1);
+	static_cast<UActorComponent*>(Dog.Hearing)->TickComponent(0.05f, LEVELTICK_All, nullptr);
+	TestTrue(TEXT("Still investigating"), Dog.Hearing->IsInvestigating());
+	TestFalse(TEXT("70 cm in front of the source is not arrival (it used to stop at 90 cm + capsule)"), Dog.Hearing->IsSearching());
+
+	Dog.Character->SetActorLocation(FVector(55.0f, 0.0f, 0.0f));
+	static_cast<UActorComponent*>(Dog.Hearing)->TickComponent(0.05f, LEVELTICK_All, nullptr);
+	TestTrue(TEXT("Standing on the source counts as arrival"), Dog.Hearing->IsSearching());
+	Dog.Hearing->StopInvestigating();
+	return true;
+}
+
+// -----------------------------------------------------------------------------
 // Test 2: Oiiai Cat Key Dropper & Clear Player Feedback
 // -----------------------------------------------------------------------------
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FLostWithinOiiaiCatKeyDropperTest, "LostWithin.Components.OiiaiCat.KeyDropper", LOSTWITHIN_TEST_FLAGS)
@@ -276,7 +317,7 @@ bool FLostWithinOiiaiCatKeyDropperTest::RunTest(const FString& Parameters)
 
 	// After the key drops, the prompt is plain: chaos progress is hidden.
 	const FString PostDropPrompt = Cat->GetInteractionPrompt_Implementation().ToString();
-	TestEqual(TEXT("Prompt is plain after the key drop"), PostDropPrompt, FString(TEXT("[LMB] Pet Cat")));
+	TestEqual(TEXT("Prompt is plain after the key drop"), PostDropPrompt, FString(TEXT("[E] Pet Cat")));
 	TestFalse(TEXT("Prompt shows no chaos count"), PostDropPrompt.Contains(TEXT("Chaos")));
 
 	return true;

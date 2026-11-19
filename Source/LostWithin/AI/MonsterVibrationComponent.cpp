@@ -345,7 +345,7 @@ void UMonsterVibrationComponent::IssueMove()
 	}
 
 	const EPathFollowingRequestResult::Type Result = UNavigationSystemV1::GetCurrent(GetWorld())
-		? Controller->MoveToLocation(InvestigationLocation, AcceptanceRadius, /*bStopOnOverlap=*/true,
+		? Controller->MoveToLocation(InvestigationLocation, AcceptanceRadius, /*bStopOnOverlap=*/false,
 			/*bUsePathfinding=*/true, /*bProjectDestinationToNavigation=*/true, /*bCanStrafe=*/false,
 			/*FilterClass=*/nullptr, /*bAllowPartialPath=*/true)
 		: EPathFollowingRequestResult::Failed;
@@ -383,8 +383,8 @@ bool UMonsterVibrationComponent::HasArrived() const
 		return true;
 	}
 
-	const float CapsuleRadius = Character->GetCapsuleComponent() ? Character->GetCapsuleComponent()->GetScaledCapsuleRadius() : 0.0f;
-	if (FVector::Dist2D(Character->GetActorLocation(), InvestigationLocation) <= AcceptanceRadius + CapsuleRadius)
+	// Arrived means the monster stands on the source, not a capsule-plus-radius in front of it.
+	if (FVector::Dist2D(Character->GetActorLocation(), InvestigationLocation) <= AcceptanceRadius)
 	{
 		return true;
 	}

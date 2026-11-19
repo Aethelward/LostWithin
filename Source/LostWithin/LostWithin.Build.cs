@@ -22,6 +22,7 @@ public class LostWithin : ModuleRules
 			"SlateCore",
 			"AssetRegistry",
 			"AnimGraphRuntime",
+			"IKRig",
 			"NavigationSystem",
 		});
 

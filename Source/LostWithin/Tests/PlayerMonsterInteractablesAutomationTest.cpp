@@ -9,6 +9,7 @@
 #include "Components/ProximityFloatSpinComponent.h"
 #include "Components/SceneComponent.h"
 #include "Components/StaticMeshComponent.h"
+#include "Components/SkeletalMeshComponent.h"
 #include "Engine/Engine.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/World.h"
@@ -26,9 +27,16 @@
 #include "Interaction/PickupItemActor.h"
 #include "Interaction/ToolboxActor.h"
 #include "Inventory/InventoryComponent.h"
+#include "InputCoreTypes.h"
+#include "LostWithinCharacter.h"
 #include "Misc/AutomationTest.h"
 #include "Player/DeathCameraActor.h"
 #include "Player/PlayerDeathComponent.h"
+#include "PhysicsEngine/PhysicsAsset.h"
+#include "Player/BodyContactComponent.h"
+#include "Gameplay/LostWithinStory.h"
+#include "Gameplay/LostWithinNarrativeComponent.h"
+#include "UI/LostWithinModalWidget.h"
 #include "Sound/SoundBase.h"
 #include "UObject/UnrealType.h"
 
@@ -672,6 +680,9 @@ bool FLostWithinPaperNoteTest::RunTest(const FString& Parameters)
 	APickupItemActor* NoteA = World->SpawnActor<APickupItemActor>(APickupItemActor::StaticClass(), FVector(0.0f, 0.0f, 50.0f), FRotator::ZeroRotator);
 	APickupItemActor* NoteB = World->SpawnActor<APickupItemActor>(APickupItemActor::StaticClass(), FVector(100.0f, 0.0f, 50.0f), FRotator::ZeroRotator);
 	NoteA->ConfigureAsNote(HintText);
+	NoteA->ItemData.StoryNoteID = LostWithinStory::Warning;
+	NoteA->ItemData.ClueDigitIndex = 0;
+	NoteA->ItemData.ClueDigit = 4;
 	NoteB->ConfigureAsNote(FText::FromString(TEXT("Every path I take leads back here.")));
 
 	TestTrue(TEXT("Note is recognized"), NoteA->IsNoteItem());
@@ -681,7 +692,7 @@ bool FLostWithinPaperNoteTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("The note keeps its text"), NoteA->ItemData.Description.ToString(), HintText.ToString());
 	TestFalse(TEXT("Notes do not simulate physics"), NoteA->IsSimulatingItemPhysics());
 	TestEqual(TEXT("Paper makes no impact noise"), NoteA->ImpactNoiseRadius, 0.0f);
-	TestEqual(TEXT("Prompt reads the note"), IInteractableInterface::Execute_GetInteractionPrompt(NoteA).ToString(), FString(TEXT("[LMB] Read note")));
+	TestEqual(TEXT("Prompt reads the note"), IInteractableInterface::Execute_GetInteractionPrompt(NoteA).ToString(), FString(TEXT("Press [E] to Read Note")));
 
 	AActor* Player = nullptr;
 	UInventoryComponent* Inventory = SpawnGameplayInventoryHolder(World, FVector(-300.0f, 0.0f, 100.0f), Player);
@@ -697,6 +708,8 @@ bool FLostWithinPaperNoteTest::RunTest(const FString& Parameters)
 	{
 		return false;
 	}
+	TestEqual(TEXT("Collected note keeps story identity"), Inventory->GetItems()[HintSlot].StoryNoteID, LostWithinStory::Warning);
+	TestEqual(TEXT("Collected note keeps explicit code digit"), Inventory->GetItems()[HintSlot].ClueDigit, 4);
 	TestTrue(TEXT("The note can be dropped"), Inventory->DropItemAtSlot(HintSlot, 1));
 
 	const APickupItemActor* Dropped = nullptr;
@@ -704,6 +717,8 @@ bool FLostWithinPaperNoteTest::RunTest(const FString& Parameters)
 	{
 		if (Pickup->IsNoteItem() && Pickup->ItemData.Description.ToString() == HintText.ToString())
 		{
+			TestEqual(TEXT("Dropped note keeps story identity"), Pickup->ItemData.StoryNoteID, LostWithinStory::Warning);
+			TestEqual(TEXT("Dropped note keeps its explicit code digit"), Pickup->ItemData.ClueDigit, 4);
 			Dropped = Pickup;
 		}
 	}
@@ -722,6 +737,12 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FLostWithinTouchDeathTest, "LostWithin.Gameplay
 
 bool FLostWithinTouchDeathTest::RunTest(const FString& Parameters)
 {
+	for (const TCHAR* Name : {TEXT("Subject09"), TEXT("Lunger"), TEXT("BoneDog"), TEXT("Doll"), TEXT("Ghoul")})
+	{
+		UPhysicsAsset* Profile = LoadObject<UPhysicsAsset>(nullptr, *FString::Printf(TEXT("/Game/Gameplay/Subject09/Contact/PA_BodyContact_%s.PA_BodyContact_%s"), Name, Name));
+		if (TestNotNull(FString::Printf(TEXT("%s contact profile loads"), Name), Profile))
+		{ TestTrue(FString::Printf(TEXT("%s contact fits separate body regions, not a merged whole-body capsule"), Name), Profile->SkeletalBodySetups.Num() >= 8); }
+	}
 	FScopedGameplayTestWorld TestWorld;
 	UWorld* World = TestWorld.World;
 	if (!TestNotNull(TEXT("Test world"), World))
@@ -737,19 +758,53 @@ bool FLostWithinTouchDeathTest::RunTest(const FString& Parameters)
 	UPlayerDeathComponent* Death = NewObject<UPlayerDeathComponent>(Player, TEXT("Death"));
 	Death->RegisterComponent();
 
-	const float PlayerRadius = Player->GetCapsuleComponent()->GetScaledCapsuleRadius();
-	const FGameplayMonster Monster = SpawnGameplayMonster(World, FVector(1000.0f, 0.0f, 0.0f), /*bWithHearing=*/false);
-	const float MonsterRadius = Monster.Actor->GetCapsuleComponent()->GetScaledCapsuleRadius();
-
+	const FGameplayMonster Monster = SpawnGameplayMonster(World, FVector(1000.0f, 0.0f, 0.0f), false);
+	Player->GetMesh()->SetRelativeLocation(FVector::ZeroVector);
+	Monster.Actor->GetMesh()->SetRelativeLocation(FVector::ZeroVector);
+	UBodyContactComponent* PlayerBody = NewObject<UBodyContactComponent>(Player);
+	PlayerBody->bPlayerBody = true;
+	PlayerBody->RegisterComponent();
+	UBodyContactComponent* MonsterBody = NewObject<UBodyContactComponent>(Monster.Actor);
+	MonsterBody->RegisterComponent();
+	PlayerBody->AddContactSphere(NAME_None, FVector::ZeroVector, 12.0f);
+	MonsterBody->AddContactSphere(NAME_None, FVector::ZeroVector, 12.0f);
+	PlayerBody->RefreshContactTransforms();
+	MonsterBody->RefreshContactTransforms();
 	TestNull(TEXT("A distant monster does not touch"), Death->FindTouchingMonster());
+	TestFalse(TEXT("An arbitrary BeginDeath call cannot kill from far away"), Death->BeginDeath(Monster.Actor));
 
-	Monster.Actor->SetActorLocation(FVector(PlayerRadius + MonsterRadius + 20.0f, 0.0f, 0.0f));
-	TestNull(TEXT("A 20 cm gap is not a touch"), Death->FindTouchingMonster());
+	Monster.Actor->SetActorLocation(FVector(30.0f, 0.0f, 0.0f));
+	MonsterBody->RefreshContactTransforms();
+	TestNull(TEXT("Movement capsules overlap but a visible body gap does not kill"), Death->FindTouchingMonster());
+	TestFalse(TEXT("A capsule-only direct death request is rejected"), Death->BeginDeath(Monster.Actor));
 
-	Monster.Actor->SetActorLocation(FVector(PlayerRadius + MonsterRadius + 2.0f, 0.0f, 0.0f));
-	TestTrue(TEXT("Capsules 2 cm apart touch"), UPlayerDeathComponent::AreCapsulesTouching(
-		*Player->GetCapsuleComponent(), *Monster.Actor->GetCapsuleComponent(), Death->TouchTolerance));
-	TestTrue(TEXT("The touching monster is found"), Death->FindTouchingMonster() == Monster.Actor);
+	Monster.Actor->SetActorLocation(FVector(22.0f, 0.0f, 0.0f));
+	MonsterBody->RefreshContactTransforms();
+	AActor* Wall = SpawnGameplayRootedActor(World, FVector(11.0f, 0.0f, 0.0f));
+	UBoxComponent* WallBox = NewObject<UBoxComponent>(Wall);
+	WallBox->SetupAttachment(Wall->GetRootComponent());
+	WallBox->InitBoxExtent(FVector(1.0f, 100.0f, 100.0f));
+	WallBox->SetCollisionProfileName(TEXT("BlockAll"));
+	WallBox->RegisterComponent();
+	TestNull(TEXT("A wall between touching body proxies prevents death"), Death->FindTouchingMonster());
+	Wall->Destroy();
+	TestTrue(TEXT("Unobstructed visible body contact is found"), Death->FindTouchingMonster() == Monster.Actor);
+
+	Monster.Actor->SetActorLocation(FVector(-100.0f, 0.0f, 0.0f));
+	MonsterBody->RefreshContactTransforms(); MonsterBody->RefreshContactTransforms();
+	TestNull(TEXT("Reset to a separated body pose"), Death->FindTouchingMonster());
+	Monster.Actor->SetActorLocation(FVector(100.0f, 0.0f, 0.0f));
+	MonsterBody->RefreshContactTransforms();
+	TestTrue(TEXT("A fast crossing body is detected between frames"), Death->FindTouchingMonster() == Monster.Actor);
+	// A teleport (a one-frame jump beyond MaxSweepDistance) is not a sweep: its path across the player is not contact.
+	Monster.Actor->SetActorLocation(FVector(-400.0f, 0.0f, 0.0f));
+	MonsterBody->RefreshContactTransforms(); MonsterBody->RefreshContactTransforms();
+	TestNull(TEXT("Reset beyond the teleport distance"), Death->FindTouchingMonster());
+	Monster.Actor->SetActorLocation(FVector(400.0f, 0.0f, 0.0f));
+	MonsterBody->RefreshContactTransforms();
+	TestNull(TEXT("A teleport across the player is not body contact"), Death->FindTouchingMonster());
+	Monster.Actor->SetActorLocation(FVector(22.0f, 0.0f, 0.0f));
+	MonsterBody->RefreshContactTransforms(); MonsterBody->RefreshContactTransforms();
 
 	Monster.AI->bIsRagdolled = true;
 	TestNull(TEXT("A ragdolled monster cannot kill"), Death->FindTouchingMonster());
@@ -770,6 +825,126 @@ bool FLostWithinTouchDeathTest::RunTest(const FString& Parameters)
 		&& DeathCameraDefaults->JumpscareSound->GetName() == TEXT("SFX_DeathJumpscare_01"));
 	TestTrue(TEXT("The death camera has the impact"), DeathCameraDefaults->StingSound
 		&& DeathCameraDefaults->StingSound->GetName() == TEXT("SFX_DeathImpact_01"));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FSubject09StoryNotesTest, "LostWithin.Gameplay.Subject09.StoryNotes", LOSTWITHIN_GAMEPLAY_TEST_FLAGS)
+
+bool FSubject09StoryNotesTest::RunTest(const FString& Parameters)
+{
+	FScopedGameplayTestWorld LegacyWorld, StoryWorld;
+	if (!LegacyWorld.World || !StoryWorld.World) { return false; }
+	auto Populate = [](UWorld* World)
+	{
+		for (int32 Index = 0; Index < 3; ++Index)
+		{ SpawnGameplayPoint(World, ELostWithinSpawnPointKind::Key, FVector(Index * 300.0f, 0.0f, 100.0f), *FString::Printf(TEXT("Key_%d"), Index)); }
+		for (int32 Index = 0; Index < 12; ++Index)
+		{ SpawnGameplayPoint(World, ELostWithinSpawnPointKind::Note, FVector(Index * 300.0f, 1000.0f, 100.0f), *FString::Printf(TEXT("Note_%d"), Index)); }
+		for (int32 Index = 0; Index < 11; ++Index)
+		{ SpawnGameplayToolbox(World, FVector(Index * 300.0f, 2000.0f, 0.0f), *FString::Printf(TEXT("Box_%d"), Index)); }
+	};
+	Populate(LegacyWorld.World); Populate(StoryWorld.World);
+	FLostWithinRunConfig Config;
+	Config.SpawnableKeys = {APickupItemActor::KeyItemID, APickupItemActor::OldKeyItemID, APickupItemActor::RoyalKeyItemID};
+	FRandomStream LegacyStream(909), StoryStream(909);
+	const TArray<int32> Digits{0, 7, 0};
+	const FLostWithinRunSummary Legacy = LostWithinRunSetup::SetupWorld(LegacyWorld.World, Config, Digits, LegacyStream);
+	Config.bIncludeSubject09Story = true;
+	const FLostWithinRunSummary Story = LostWithinRunSetup::SetupWorld(StoryWorld.World, Config, Digits, StoryStream);
+	TestEqual(TEXT("Story consumes no extra layout random draws"), StoryStream.GetCurrentSeed(), LegacyStream.GetCurrentSeed());
+	TestTrue(TEXT("Existing generated riddles are retained"), Legacy.HintTexts == Story.HintTexts);
+	TestTrue(TEXT("Existing unique keys are retained"), Legacy.SpawnedKeys == Story.SpawnedKeys);
+	TestEqual(TEXT("Locked box count retained"), Story.LockedToolboxes.Num(), Legacy.LockedToolboxes.Num());
+	TestEqual(TEXT("Battery loot retained"), Story.ToolboxBatteries, Legacy.ToolboxBatteries);
+	TestEqual(TEXT("Empty loot retained"), Story.EmptyToolboxes, Legacy.EmptyToolboxes);
+	TestEqual(TEXT("Five entries use existing notes"), Story.StoryNotesPlaced, 5);
+	TestTrue(TEXT("All clues obtainable"), Story.bAllHintsPlaced);
+	TSet<FName> IDs;
+	int32 ClueCount = 0;
+	auto InspectNote = [this, &IDs, &ClueCount, &Digits](const FInventoryItem& Item)
+	{
+		if (Item.StoryNoteID.IsNone()) { return; }
+		IDs.Add(Item.StoryNoteID);
+		TestFalse(TEXT("Digit placeholders substituted"), Item.Description.ToString().Contains(TEXT("{digit}")));
+		if (Item.ClueDigitIndex != INDEX_NONE)
+		{
+			++ClueCount;
+			TestEqual(TEXT("Clue matches run digit"), Item.ClueDigit, Digits[Item.ClueDigitIndex]);
+			TestTrue(TEXT("Clue printed visibly"), Item.Description.ToString().Contains(FString::Printf(TEXT("[ %d ]"), Item.ClueDigit)));
+		}
+	};
+	for (TActorIterator<APickupItemActor> It(StoryWorld.World); It; ++It) { InspectNote(It->ItemData); }
+	int32 BoxCount = 0;
+	for (TActorIterator<AToolboxActor> It(StoryWorld.World); It; ++It) { ++BoxCount; if (It->HasContents()) { InspectNote(It->GetContentsItem()); } }
+	TestEqual(TEXT("11 toolboxes retained"), BoxCount, 11);
+	TestEqual(TEXT("Five unique story IDs"), IDs.Num(), 5);
+	TestEqual(TEXT("Three explicit clues"), ClueCount, 3);
+	const FString Survival = LostWithinStory::FormatNote(LostWithinStory::Survival, Digits).Body.ToString();
+	TestTrue(TEXT("Instructions retain blind Lunger"), Survival.Contains(TEXT("blind and deaf")));
+	TestTrue(TEXT("Instructions explain cat protection"), Survival.Contains(TEXT("chaos sanctuary")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FSubject09NarrativeTest, "LostWithin.Gameplay.Subject09.Narrative", LOSTWITHIN_GAMEPLAY_TEST_FLAGS)
+
+bool FSubject09NarrativeTest::RunTest(const FString& Parameters)
+{
+	FScopedGameplayTestWorld TestWorld;
+	AActor* Owner = nullptr;
+	UInventoryComponent* Inventory = SpawnGameplayInventoryHolder(TestWorld.World, FVector::ZeroVector, Owner);
+	ULostWithinNarrativeComponent* Story = NewObject<ULostWithinNarrativeComponent>(Owner);
+	Story->RegisterComponent();
+	FInventoryItem Flashlight; Flashlight.ItemID = APickupItemActor::FlashlightItemID;
+	int32 Remaining = 0; Inventory->AddItem(Flashlight, Remaining);
+	Story->NoteOpened(LostWithinStory::Orientation);
+	Story->NoteOpened(LostWithinStory::FinalEntry);
+	Story->NoteClosed(LostWithinStory::FinalEntry);
+	TestEqual(TEXT("Final clue first discovers one digit"), Story->GetKnownDigitCount(), 1);
+	TestFalse(TEXT("Out-of-order reaction is truthful"), Story->GetSubtitle().ToString().Contains(TEXT("all three digits now")));
+	Story->NoteClosed(LostWithinStory::FinalEntry);
+	Story->TickComponent(9.0f, LEVELTICK_All, nullptr);
+	TestTrue(TEXT("Rereading does not repeat reaction"), Story->GetSubtitle().IsEmpty());
+	Story->NoteOpened(LostWithinStory::Warning); Story->NoteOpened(LostWithinStory::Report);
+	TestEqual(TEXT("Three unique digits discovered"), Story->GetKnownDigitCount(), 3);
+	TestTrue(TEXT("Objective points to exit"), Story->GetObjective().ToString().Contains(TEXT("southeastern exit")));
+	Story->ObserveBattery(true, 20.0f);
+	TestTrue(TEXT("20 percent does not warn"), Story->GetSubtitle().IsEmpty());
+	Story->ObserveBattery(true, 19.0f);
+	TestFalse(TEXT("Below 20 percent warns"), Story->GetSubtitle().IsEmpty());
+	Story->TickComponent(7.0f, LEVELTICK_All, nullptr);
+	Story->ObserveBattery(true, 19.0f);
+	TestTrue(TEXT("Low charge does not spam"), Story->GetSubtitle().IsEmpty());
+	Story->ObserveBattery(true, 100.0f); Story->ObserveBattery(true, 19.0f);
+	TestFalse(TEXT("Recharge rearms warning"), Story->GetSubtitle().IsEmpty());
+	Story->ObserveBattery(true, 0.0f);
+	TestTrue(TEXT("Depletion warning has priority"), Story->GetSubtitle().ToString().Contains(TEXT("dead")));
+	Story->NotifyEnding(true);
+	const FText Ending = Story->GetSubtitle();
+	Story->QueueSubtitle(FText::FromString(TEXT("stale exploration")), 1);
+	TestTrue(TEXT("Ending suppresses exploration"), Story->GetSubtitle().EqualTo(Ending));
+	Story->NoteOpened(LostWithinStory::Journal);
+	TestFalse(TEXT("Ending blocks new discoveries"), Story->HasReadNote(LostWithinStory::Journal));
+	ULostWithinNarrativeComponent* Fresh = NewObject<ULostWithinNarrativeComponent>(Owner);
+	TestEqual(TEXT("New run has no remembered digits"), Fresh->GetKnownDigitCount(), 0);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FSubject09KeypadTest, "LostWithin.Gameplay.Subject09.KeypadInput", LOSTWITHIN_GAMEPLAY_TEST_FLAGS)
+
+bool FSubject09KeypadTest::RunTest(const FString& Parameters)
+{
+	TestTrue(TEXT("Leading zeros valid"), UEscapeDoorComponent::IsValidCode(TEXT("007")));
+	TestTrue(TEXT("Repeated digits valid"), UEscapeDoorComponent::IsValidCode(TEXT("777")));
+	TestFalse(TEXT("Incomplete code invalid"), UEscapeDoorComponent::IsValidCode(TEXT("07")));
+	TestFalse(TEXT("Extra digits invalid"), UEscapeDoorComponent::IsValidCode(TEXT("0007")));
+	TestFalse(TEXT("Letters invalid"), UEscapeDoorComponent::IsValidCode(TEXT("0a7")));
+	TestFalse(TEXT("Whitespace invalid"), UEscapeDoorComponent::IsValidCode(TEXT(" 07")));
+	ULostWithinModalWidget* Keypad = NewObject<ULostWithinModalWidget>();
+	Keypad->ConfigureKeypad(nullptr);
+	Keypad->AppendDigit(0); Keypad->AppendDigit(0); Keypad->AppendDigit(7); Keypad->AppendDigit(9);
+	TestEqual(TEXT("Keypad preserves zeros and caps three digits"), Keypad->GetEnteredCode(), FString(TEXT("007")));
+	Keypad->Backspace(); Keypad->AppendDigit(-1);
+	TestEqual(TEXT("Backspace edits; invalid digit ignored"), Keypad->GetEnteredCode(), FString(TEXT("00")));
 	return true;
 }
 
@@ -802,6 +977,7 @@ bool FLostWithinEscapeDoorTest::RunTest(const FString& Parameters)
 	bool bLocked = false;
 	TestTrue(TEXT("The door's lock flag is readable"), UEscapeDoorComponent::GetBoolProperty(Door, Escape->DoorLockedPropertyName, bLocked));
 	TestTrue(TEXT("The door starts locked"), Escape->IsDoorLocked());
+	UEscapeDoorComponent* MutableDoor = const_cast<UEscapeDoorComponent*>(Escape);
 
 	AActor* Padlock = Escape->GetPadlock();
 	if (TestNotNull(TEXT("The skull padlock is attached to the door"), Padlock))
@@ -814,11 +990,24 @@ bool FLostWithinEscapeDoorTest::RunTest(const FString& Parameters)
 		const FStrProperty* Combination = FindFProperty<FStrProperty>(Padlock->GetClass(), Escape->PadlockCombinationPropertyName);
 		TestTrue(TEXT("The padlock holds the run combination"), Combination && Combination->GetPropertyValue_InContainer(Padlock) == TEXT("307"));
 	}
+	TestFalse(TEXT("The door uses the skull padlock dials by default"), Escape->bUseKeypadUI);
+	TestEqual(TEXT("A locked door offers the padlock"),
+		IInteractableInterface::Execute_GetInteractionPrompt(MutableDoor).ToString(), FString(TEXT("[E] Try the skull padlock")));
+	AActor* Interactor = SpawnGameplayRootedActor(World, FVector(300.0f, 0.0f, 0.0f));
+	TestFalse(TEXT("Without the keypad option a code cannot be submitted"), MutableDoor->TrySubmitCode(TEXT("307"), Interactor));
+	MutableDoor->bUseKeypadUI = true; // the optional keypad path stays covered
+	TestFalse(TEXT("Wrong keypad code is rejected"), MutableDoor->TrySubmitCode(TEXT("000"), Interactor));
+	TestTrue(TEXT("Wrong code keeps the actual door locked"), MutableDoor->IsDoorLocked());
+	TestTrue(TEXT("Correct keypad code starts escape"), MutableDoor->TrySubmitCode(TEXT("307"), Interactor));
+	TestFalse(TEXT("Correct code unlocks the actual door"), MutableDoor->IsDoorLocked());
+	TestFalse(TEXT("An escape cannot be submitted twice"), MutableDoor->TrySubmitCode(TEXT("307"), Interactor));
+	AActor* LegacyDoor = World->SpawnActor<AActor>(DoorClass, FVector(800.0f, 0.0f, 0.0f), FRotator::ZeroRotator);
+	const UEscapeDoorComponent* LegacyEscape = LegacyDoor->FindComponentByClass<UEscapeDoorComponent>();
 
-	TestTrue(TEXT("The door's UnlockDoor event is callable"), UEscapeDoorComponent::CallBlueprintFunction(Door, TEXT("UnlockDoor")));
-	TestFalse(TEXT("UnlockDoor clears the lock"), Escape->IsDoorLocked());
+	TestTrue(TEXT("The door's UnlockDoor event is callable"), UEscapeDoorComponent::CallBlueprintFunction(LegacyDoor, TEXT("UnlockDoor")));
+	TestFalse(TEXT("UnlockDoor clears the lock"), LegacyEscape->IsDoorLocked());
 	TestEqual(TEXT("An unlocked door offers escape"),
-		IInteractableInterface::Execute_GetInteractionPrompt(const_cast<UEscapeDoorComponent*>(Escape)).ToString(), FString(TEXT("[LMB] Open the door")));
+		IInteractableInterface::Execute_GetInteractionPrompt(const_cast<UEscapeDoorComponent*>(LegacyEscape)).ToString(), FString(TEXT("[E] Open the door")));
 	return true;
 }
 
@@ -869,6 +1058,46 @@ bool FLostWithinLightItemImpactTest::RunTest(const FString& Parameters)
 	HeavyMesh->SetMassOverrideInKg(NAME_None, 1.0f, true);
 	Heavy->OnMeshHit(HeavyMesh, Floor, nullptr, FVector(0.0f, 0.0f, 2.0f), Hit);
 	TestFalse(TEXT("A heavy object's tiny velocity change stays quiet"), Listener.Hearing->IsInvestigating());
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FSubject09InteractKeyTest, "LostWithin.Gameplay.Subject09.InteractKeyE", LOSTWITHIN_GAMEPLAY_TEST_FLAGS)
+
+bool FSubject09InteractKeyTest::RunTest(const FString& Parameters)
+{
+	FScopedGameplayTestWorld TestWorld;
+	if (!TestWorld.World) { return false; }
+	// ALostWithinCharacter is abstract; the game's player is its Blueprint.
+	UClass* PlayerClass = LoadClass<ALostWithinCharacter>(nullptr,
+		TEXT("/Game/FirstPerson/Blueprints/BP_FirstPersonCharacter.BP_FirstPersonCharacter_C"));
+	if (!TestNotNull(TEXT("BP_FirstPersonCharacter loaded"), PlayerClass)) { return false; }
+	FActorSpawnParameters Params;
+	Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	ALostWithinCharacter* Player = TestWorld.World->SpawnActor<ALostWithinCharacter>(
+		PlayerClass, FVector(0.0f, 0.0f, 200.0f), FRotator::ZeroRotator, Params);
+	if (!TestNotNull(TEXT("Player spawned"), Player)) { return false; }
+
+	const TArray<FKey> Keys = Player->GetInteractKeys();
+	TestTrue(TEXT("E interacts"), Keys.Contains(EKeys::E));
+	TestFalse(TEXT("The left mouse button does not interact"), Keys.Contains(EKeys::LeftMouseButton));
+	TestEqual(TEXT("E is the only interaction key"), Keys.Num(), 1);
+
+	// Every native prompt names [E] and never [LMB].
+	APickupItemActor* Item = TestWorld.World->SpawnActor<APickupItemActor>(APickupItemActor::StaticClass(), FVector(0.0f, 300.0f, 50.0f), FRotator::ZeroRotator);
+	AToolboxActor* Toolbox = SpawnGameplayToolbox(TestWorld.World, FVector(300.0f, 0.0f, 0.0f), TEXT("InteractKeyToolbox"));
+	AActor* CatActor = SpawnGameplayRootedActor(TestWorld.World, FVector(-300.0f, 0.0f, 0.0f));
+	UProximityFloatSpinComponent* Cat = NewObject<UProximityFloatSpinComponent>(CatActor, TEXT("FloatSpin"));
+	Cat->bAutoSetHierarchyMovable = false;
+	Cat->InteractionSoundSearchPaths.Reset();
+	Cat->RegisterComponent();
+	TArray<UObject*> Targets = { Item, Toolbox, Cat };
+	for (UObject* Target : Targets)
+	{
+		if (!TestNotNull(TEXT("Interactable spawned"), Target)) { continue; }
+		const FString Prompt = IInteractableInterface::Execute_GetInteractionPrompt(Target).ToString();
+		TestTrue(FString::Printf(TEXT("%s prompt names [E]: %s"), *Target->GetName(), *Prompt), Prompt.Contains(TEXT("[E]")));
+		TestFalse(FString::Printf(TEXT("%s prompt has no [LMB]: %s"), *Target->GetName(), *Prompt), Prompt.Contains(TEXT("[LMB]")));
+	}
 	return true;
 }
 

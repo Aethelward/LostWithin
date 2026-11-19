@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Interaction/PickupItemActor.h"
+#include "Player/BodyContactComponent.h"
 #include "Components/PointLightComponent.h"
 #include "Components/SphereComponent.h"
 #include "Components/SpotLightComponent.h"
@@ -302,6 +303,7 @@ APickupItemActor::APickupItemActor()
 	MeshComponent->SetCollisionObjectType(ECC_PhysicsBody);
 	MeshComponent->SetCollisionResponseToAllChannels(ECR_Block);
 	MeshComponent->SetCollisionResponseToChannel(ECC_Pawn, ECR_Ignore);
+	MeshComponent->SetCollisionResponseToChannel(UBodyContactComponent::PlayerMovementChannel, ECR_Ignore);
 	MeshComponent->SetCollisionResponseToChannel(ECC_Camera, ECR_Ignore);
 	MeshComponent->SetLinearDamping(0.35f);
 	MeshComponent->SetAngularDamping(2.5f);
@@ -752,7 +754,7 @@ void APickupItemActor::OnInteract_Implementation(AActor* Interactor)
 				Character->PlayPickupAnimation();
 				if (IsNoteItem())
 				{
-					Character->ShowNote(ItemToAdd.DisplayName, ItemToAdd.Description);
+					Character->ShowNote(ItemToAdd.DisplayName, ItemToAdd.Description, ItemToAdd.StoryNoteID);
 				}
 			}
 
@@ -776,13 +778,13 @@ FText APickupItemActor::GetInteractionPrompt_Implementation() const
 
 	if (IsNoteItem())
 	{
-		return NSLOCTEXT("LostWithin", "PickupNotePrompt", "[LMB] Read note");
+		return NSLOCTEXT("LostWithin", "PickupNotePrompt", "Press [E] to Read Note");
 	}
 
 	if (ItemPreset == ELostWithinItemPreset::Battery || ItemData.ItemID == BatteryItemID)
 	{
 		return FText::Format(
-			NSLOCTEXT("LostWithin", "PickupBatteryPrompt", "[LMB] Pick up {0} ({1}%)"),
+			NSLOCTEXT("LostWithin", "PickupBatteryPrompt", "[E] Pick up {0} ({1}%)"),
 			SafeName,
 			FText::AsNumber(FMath::RoundToInt(ItemData.BatteryChargePercent)));
 	}
@@ -793,13 +795,13 @@ FText APickupItemActor::GetInteractionPrompt_Implementation() const
 		if (BatteryCount < 2)
 		{
 			return FText::Format(
-				NSLOCTEXT("LostWithin", "PickupFlashlightNeedBatteriesPrompt", "[LMB] Pick up {0} ({1}/2 Batteries)"),
+				NSLOCTEXT("LostWithin", "PickupFlashlightNeedBatteriesPrompt", "[E] Pick up {0} ({1}/2 Batteries)"),
 				SafeName,
 				FText::AsNumber(BatteryCount));
 		}
 
 		return FText::Format(
-			NSLOCTEXT("LostWithin", "PickupFlashlightBatteryPrompt", "[LMB] Pick up {0} ({1}%)"),
+			NSLOCTEXT("LostWithin", "PickupFlashlightBatteryPrompt", "[E] Pick up {0} ({1}%)"),
 			SafeName,
 			FText::AsNumber(FMath::RoundToInt(ItemData.GetCombinedBatteryPercent())));
 	}
@@ -807,12 +809,12 @@ FText APickupItemActor::GetInteractionPrompt_Implementation() const
 	if (ItemData.Quantity > 1)
 	{
 		return FText::Format(
-			NSLOCTEXT("LostWithin", "PickupItemStackPrompt", "[LMB] Pick up {0} (x{1})"),
+			NSLOCTEXT("LostWithin", "PickupItemStackPrompt", "[E] Pick up {0} (x{1})"),
 			SafeName,
 			FText::AsNumber(ItemData.Quantity));
 	}
 
-	return FText::Format(NSLOCTEXT("LostWithin", "PickupItemPrompt", "[LMB] Pick up {0}"), SafeName);
+	return FText::Format(NSLOCTEXT("LostWithin", "PickupItemPrompt", "[E] Pick up {0}"), SafeName);
 }
 
 bool APickupItemActor::CanInteract_Implementation(AActor* Interactor) const
@@ -1094,6 +1096,7 @@ void APickupItemActor::EnableItemPhysicsSimulation()
 	MeshComponent->SetCollisionObjectType(ECC_PhysicsBody);
 	MeshComponent->SetCollisionResponseToAllChannels(ECR_Block);
 	MeshComponent->SetCollisionResponseToChannel(ECC_Pawn, ECR_Ignore);
+	MeshComponent->SetCollisionResponseToChannel(UBodyContactComponent::PlayerMovementChannel, ECR_Ignore);
 	MeshComponent->SetCollisionResponseToChannel(ECC_Camera, ECR_Ignore);
 	MeshComponent->SetLinearDamping(0.35f);
 	MeshComponent->SetAngularDamping(2.5f);

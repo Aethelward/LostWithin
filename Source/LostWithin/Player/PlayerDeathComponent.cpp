@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Player/PlayerDeathComponent.h"
+#include "Player/BodyContactComponent.h"
 
 #include "AI/MonsterAIComponent.h"
 #include "AI/MonsterHearingComponent.h"
@@ -22,19 +23,16 @@
 UPlayerDeathComponent::UPlayerDeathComponent()
 {
 	PrimaryComponentTick.bCanEverTick = true;
-	PrimaryComponentTick.TickGroup = TG_PostPhysics;
+	PrimaryComponentTick.TickGroup = TG_PostUpdateWork;
 	DeathCameraClass = ADeathCameraActor::StaticClass();
 }
 
 void UPlayerDeathComponent::BeginPlay()
 {
 	Super::BeginPlay();
-	if (const ACharacter* Character = Cast<ACharacter>(GetOwner()))
+	if (UBodyContactComponent* Contact = GetOwner()->FindComponentByClass<UBodyContactComponent>())
 	{
-		if (UCapsuleComponent* Capsule = Character->GetCapsuleComponent())
-		{
-			Capsule->OnComponentHit.AddDynamic(this, &UPlayerDeathComponent::HandleCapsuleHit);
-		}
+		AddTickPrerequisiteComponent(Contact);
 	}
 }
 
@@ -86,10 +84,8 @@ bool UPlayerDeathComponent::AreCapsulesTouching(const UCapsuleComponent& A, cons
 
 AActor* UPlayerDeathComponent::FindTouchingMonster() const
 {
-	const ACharacter* Owner = Cast<ACharacter>(GetOwner());
-	const UCapsuleComponent* OwnerCapsule = Owner ? Owner->GetCapsuleComponent() : nullptr;
 	UWorld* World = GetWorld();
-	if (!OwnerCapsule || !World)
+	if (!World)
 	{
 		return nullptr;
 	}
@@ -97,17 +93,24 @@ AActor* UPlayerDeathComponent::FindTouchingMonster() const
 	for (TActorIterator<ACharacter> It(World); It; ++It)
 	{
 		ACharacter* Candidate = *It;
-		if (Candidate == Owner || !IsLethalMonster(Candidate))
+		if (Candidate == GetOwner() || !IsLethalMonster(Candidate))
 		{
 			continue;
 		}
-		const UCapsuleComponent* Capsule = Candidate->GetCapsuleComponent();
-		if (Capsule && Capsule->IsCollisionEnabled() && AreCapsulesTouching(*OwnerCapsule, *Capsule, TouchTolerance))
+		if (IsTouchingMonster(Candidate))
 		{
 			return Candidate;
 		}
 	}
 	return nullptr;
+}
+
+bool UPlayerDeathComponent::IsTouchingMonster(const AActor* Monster) const
+{
+	if (!IsLethalMonster(Monster) || Monster == GetOwner() || Monster->GetWorld() != GetWorld()) { return false; }
+	const UBodyContactComponent* PlayerBody = GetOwner()->FindComponentByClass<UBodyContactComponent>();
+	const UBodyContactComponent* MonsterBody = Monster->FindComponentByClass<UBodyContactComponent>();
+	return PlayerBody && MonsterBody && PlayerBody->HasBodyContactWith(*MonsterBody);
 }
 
 void UPlayerDeathComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
@@ -142,7 +145,7 @@ void UPlayerDeathComponent::HandleCapsuleHit(UPrimitiveComponent* HitComponent, 
 
 bool UPlayerDeathComponent::BeginDeath(AActor* InKiller)
 {
-	if (bDead)
+	if (bDead || !IsTouchingMonster(InKiller))
 	{
 		return false;
 	}

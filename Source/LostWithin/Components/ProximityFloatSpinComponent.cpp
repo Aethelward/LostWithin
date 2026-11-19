@@ -486,7 +486,7 @@ void UProximityFloatSpinComponent::InitializeVisualMeshes(AActor* Owner)
 		}
 	}
 
-	// Ensure a reliable query-only hitbox exists solely for [F] interaction and [LMB] hit traces
+	// Ensure a reliable query-only hitbox exists solely for [F] interaction and [E] hit traces
 	if (USphereComponent* TraceSphere = NewObject<USphereComponent>(Owner))
 	{
 		TraceSphere->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
@@ -1911,13 +1911,13 @@ FText UProximityFloatSpinComponent::GetInteractionPrompt_Implementation() const
 	if (!bHasDroppedItem && ItemDropInteractionThreshold > 1)
 	{
 		return FText::Format(
-			NSLOCTEXT("LostWithin", "CatPetKeyProgressPrompt", "[LMB] Pet Cat ({0}/{1})"),
+			NSLOCTEXT("LostWithin", "CatPetKeyProgressPrompt", "[E] Pet Cat ({0}/{1})"),
 			FText::AsNumber(InteractionCount),
 			FText::AsNumber(ItemDropInteractionThreshold));
 	}
 
 	// Chaos progress is deliberately not shown.
-	return NSLOCTEXT("LostWithin", "CatInteractionPrompt", "[LMB] Pet Cat");
+	return NSLOCTEXT("LostWithin", "CatInteractionPrompt", "[E] Pet Cat");
 }
 
 bool UProximityFloatSpinComponent::IsPlayerInChaosSanctuary(const APawn* PlayerPawn) const

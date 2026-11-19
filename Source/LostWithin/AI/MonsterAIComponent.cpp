@@ -3,6 +3,7 @@
 #include "AI/MonsterAIComponent.h"
 
 #include "AI/MonsterHearingComponent.h"
+#include "AI/MonsterLightAttractionComponent.h"
 #include "AI/MonsterLightAverseComponent.h"
 #include "AI/MonsterSightFreezeComponent.h"
 #include "AI/MonsterVibrationComponent.h"
@@ -102,7 +103,14 @@ bool UMonsterAIComponent::CanRunNormalAI(AActor* Actor)
 		return false;
 	}
 	// A light-averse monster repelled by flashlight retreats and shields face until back in shadows.
-	return !UMonsterLightAverseComponent::IsActorLightRepelled(Actor);
+	if (UMonsterLightAverseComponent::IsActorLightRepelled(Actor))
+	{
+		return false;
+	}
+	// A Ghoul chasing the player in darkness, or a BoneDog drawn to the flashlight, owns its movement and runs with
+	// its fastest gait; the Blueprint roam loop waits.
+	return !UMonsterLightAverseComponent::IsActorDarkStalkingPlayer(Actor)
+		&& !UMonsterLightAttractionComponent::IsActorAttractedToLight(Actor);
 }
 
 AActor* UMonsterAIComponent::GetThreateningCat() const
@@ -251,6 +259,10 @@ void UMonsterAIComponent::UpdateCatProximity()
 			if (UMonsterLightAverseComponent* LightAverse = Character->FindComponentByClass<UMonsterLightAverseComponent>())
 			{
 				LightAverse->StopRepulsion();
+			}
+			if (UMonsterLightAttractionComponent* LightAttraction = Character->FindComponentByClass<UMonsterLightAttractionComponent>())
+			{
+				LightAttraction->ReleaseForCatReaction();
 			}
 			if (UMonsterSightFreezeComponent* SightFreeze = Character->FindComponentByClass<UMonsterSightFreezeComponent>();
 				SightFreeze && SightFreeze->bCatReactionHasPriority && SightFreeze->IsFrozen())

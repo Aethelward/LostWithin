@@ -15,8 +15,8 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnPlayerDeathStarted, AActor*, Kill
 /**
  *  Ends the run when the player touches a monster (any actor with UMonsterAIComponent that is not ragdolled):
  *  freezes the player and the killer, plays the death camera, then asks the game mode for the game-over screen.
- *  Contact is checked every tick (capsule to capsule, with a small tolerance) and on capsule hits, so it works
- *  whether the player walks into the monster or the monster walks into the player.
+ *  Contact is checked after animation using dedicated fitted body volumes and swept queries. Navigation
+ *  capsules and nearby monsters cannot cause death; walls, closed doors and ragdolls remain nonlethal.
  */
 UCLASS(ClassGroup=(Player), meta=(BlueprintSpawnableComponent))
 class LOSTWITHIN_API UPlayerDeathComponent : public UActorComponent
@@ -27,9 +27,9 @@ public:
 
 	UPlayerDeathComponent();
 
-	/** Gap between capsules that still counts as touching (blocking capsules never overlap) */
+	/** Legacy serialized setting; body contact does not use capsule tolerances. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Death", meta = (ClampMin = "0.0", Units = "cm"))
-	float TouchTolerance = 8.0f;
+	float TouchTolerance = 0.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Death")
 	TSubclassOf<ADeathCameraActor> DeathCameraClass;
@@ -55,6 +55,8 @@ public:
 
 	/** The first lethal monster touching the owner's capsule, if any */
 	AActor* FindTouchingMonster() const;
+	/** Requires fitted visible body contact and an unobstructed path. */
+	bool IsTouchingMonster(const AActor* Monster) const;
 
 	/** The death camera while it plays */
 	ADeathCameraActor* GetDeathCamera() const { return DeathCamera.Get(); }

@@ -64,9 +64,9 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Light Aversion|Detection")
 	TEnumAsByte<ECollisionChannel> LightTraceChannel = ECC_Visibility;
 
-	/** Duration of startled flinch before movement begins */
+	/** Flinch before the retreat starts; 0 (default) retreats in the same frame the beam hits */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Light Aversion|Repulsion", meta=(ClampMin="0.0", Units="s"))
-	float StartledDuration = 0.4f;
+	float StartledDuration = 0.0f;
 
 	/** Distance to retreat away from the flashlight cone */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Light Aversion|Repulsion", meta=(ClampMin="100.0", Units="cm"))
@@ -80,9 +80,17 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Light Aversion|Repulsion", meta=(ClampMin="0.0", Units="cm/s"))
 	float RetreatGaitSpeed = 450.0f;
 
-	/** Time spent recovering in darkness after beam leaves before returning to stalking */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Light Aversion|Repulsion", meta=(ClampMin="0.1", Units="s"))
-	float RecoveryDuration = 1.5f;
+	/** Pause in darkness after the beam leaves before the chase resumes; 0 (default) resumes in the same frame */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Light Aversion|Repulsion", meta=(ClampMin="0.0", Units="s"))
+	float RecoveryDuration = 0.0f;
+
+	/** Wall torch light (ULostWithinLightSubsystem) repels the Ghoul like the flashlight: it retreats out of it */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Light Aversion|Torches")
+	bool bTorchLightRepels = true;
+
+	/** While chasing, the Ghoul stops when its path's next stretch this far ahead would be torch-lit */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Light Aversion|Torches", meta=(ClampMin="0.0", Units="cm"))
+	float TorchEdgeLookAhead = 90.0f;
 
 	/** Whether aggressive dark stalking is enabled in unlit areas */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Light Aversion|Dark Stalking")
@@ -107,6 +115,14 @@ public:
 	/** True when the flashlight cone is currently illuminating the Ghoul */
 	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category="Light Aversion|State")
 	bool bIsIlluminatedByFlashlight = false;
+
+	/** True while a wall torch lights the Ghoul (repels it like the beam) */
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category="Light Aversion|State")
+	bool bIsTorchLit = false;
+
+	/** True while the dark chase waits at the edge of torch light instead of stepping into it */
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category="Light Aversion|State")
+	bool bIsHoldingAtTorchEdge = false;
 
 	/** True when shielding face from light (used by Animation Blueprint) */
 	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category="Light Aversion|State")
@@ -165,9 +181,28 @@ public:
 	UFUNCTION(BlueprintPure, Category="Monster AI|Light Averse")
 	EGhoulLightState GetLightState() const { return CurrentLightState; }
 
+	UFUNCTION(BlueprintPure, Category="Monster AI|Light Averse")
+	bool IsTorchLit() const { return bIsTorchLit; }
+
+	UFUNCTION(BlueprintPure, Category="Monster AI|Light Averse")
+	bool IsHoldingAtTorchEdge() const { return bIsHoldingAtTorchEdge; }
+
+	/** True when a wall torch lights any of the Ghoul's sample points; OutTorchLocation receives that torch light */
+	bool EvaluateTorchExposure(FVector& OutTorchLocation) const;
+
+	/** True when the stretch ahead toward Target (TorchEdgeLookAhead along it) is torch-lit */
+	bool WouldStepIntoTorchLight(const FVector& Target) const;
+
 	/** True when Actor has a light averse component that is repelled by light */
 	UFUNCTION(BlueprintPure, Category="Monster AI|Light Averse")
 	static bool IsActorLightRepelled(const AActor* Actor);
+
+	/** True while the dark chase is running toward the player (the Blueprint roam loop waits meanwhile) */
+	UFUNCTION(BlueprintPure, Category="Monster AI|Light Averse")
+	bool IsChasingPlayer() const { return bChasingPlayer; }
+
+	/** True when Actor has a light averse component that is chasing the player in darkness */
+	static bool IsActorDarkStalkingPlayer(const AActor* Actor);
 
 	/** Calculates flashlight cone intersection, distance attenuation, and intensity from player */
 	UFUNCTION(BlueprintCallable, Category="Monster AI|Light Averse")
@@ -201,10 +236,15 @@ private:
 	void ApplyRetreatSpeed();
 	void ApplyDarkStalkSpeed();
 	void RestoreWalkSpeed();
+	/** Cancels the current path move (chase or retreat) so a light change takes effect in the same frame */
+	void StopOwnerMove() const;
+	void EndChase();
+	void EndRepulsionNow();
 
 	float StateElapsed = 0.0f;
 	float RepathTimer = 0.0f;
 	bool bSpeedApplied = false;
 	float SavedMaxWalkSpeed = 0.0f;
 	bool bDirectMovementFallback = false;
+	bool bChasingPlayer = false;
 };

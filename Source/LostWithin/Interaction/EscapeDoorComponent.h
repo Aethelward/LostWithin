@@ -11,8 +11,8 @@
  *  Makes BP_ScaryDoor the exit of the maze.
  *
  *  The door and its skull padlock (BP_PadlockBase-3X, a child actor of the door) come from a Blueprint pack that only
- *  talks through BPI_InteractionPadlock::Interact. This component bridges the [LMB] interaction to it: while the door
- *  is locked, [LMB] starts the padlock's dial view; once the padlock has unlocked the door, [LMB] opens it and the run
+ *  talks through BPI_InteractionPadlock::Interact. This component bridges the [E] interaction to it: while the door
+ *  is locked, [E] starts the padlock's dial view; once the padlock has unlocked the door, [E] opens it and the run
  *  ends in an escape. At BeginPlay it gives the padlock this run's combination and points it at this door.
  */
 UCLASS(ClassGroup=(Interaction), meta=(BlueprintSpawnableComponent))
@@ -27,6 +27,10 @@ public:
 	/** Seconds between opening the door and the escape screen (lets the door swing open) */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Escape", meta = (ClampMin = "0.0", Units = "s"))
 	float EscapeDelay = 1.6f;
+
+	/** Off (default): [E] opens the skull padlock's own dial view. On: a three-digit keypad modal replaces it. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Escape")
+	bool bUseKeypadUI = false;
 
 	/** Gives the padlock the game mode's random combination; off keeps the padlock's own Combination */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Escape")
@@ -60,6 +64,10 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Escape")
 	bool ApplyCombination(const FString& Combination);
 
+	UFUNCTION(BlueprintCallable, Category="Escape")
+	bool TrySubmitCode(const FString& Code, AActor* Interactor);
+	static bool IsValidCode(const FString& Code);
+
 	/** Calls a parameterless Blueprint function or event by name (BPI_InteractionPadlock::Interact) */
 	static bool CallBlueprintFunction(UObject* Target, FName FunctionName);
 
@@ -84,10 +92,14 @@ private:
 
 	/** Child actor or attached actor with a Combination property; else a level padlock whose Door is the owner */
 	AActor* FindPadlock() const;
+	bool StartEscape(AActor* Interactor);
+	void PlayPadlockUnlock();
 	void CompleteEscape();
 
 	TWeakObjectPtr<AActor> Padlock;
 	TWeakObjectPtr<AController> EscapingController;
 	FTimerHandle EscapeTimerHandle;
 	bool bEscaping = false;
+	bool bKeypadUnlocked = false;
+	FString CachedCombination;
 };

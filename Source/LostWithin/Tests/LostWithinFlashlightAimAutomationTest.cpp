@@ -4,6 +4,7 @@
 
 #include "AIController.h"
 #include "Animation/LostWithinFlashlightAnimInstance.h"
+#include "Animation/LostWithinMetaHumanAnimInstance.h"
 #include "Camera/CameraComponent.h"
 #include "Components/PointLightComponent.h"
 #include "Components/SkeletalMeshComponent.h"
@@ -124,7 +125,16 @@ bool FLostWithinFlashlightAndAimAutomationTest::RunTest(const FString& Parameter
 
 		TArray<USkeletalMeshComponent*> SkelMeshes;
 		Char->GetComponents<USkeletalMeshComponent>(SkelMeshes);
-		TestEqual(TEXT("Only 3P character skeletal mesh component exists"), SkelMeshes.Num(), 1);
+		TestTrue(TEXT("Third-person driver and MetaHuman body, face and clothing exist"), SkelMeshes.Num() >= 4);
+		TestTrue(TEXT("Visible MetaHuman body differs from hidden animation driver"), Char->GetPresentationMesh() != Mesh3P);
+		TestTrue(TEXT("Visible MetaHuman body is visible"), Char->GetPresentationMesh()->IsVisible());
+		{
+			// Regression: the retarget node must get its retargeter, or the visible body stays in its reference pose.
+			const ULostWithinMetaHumanAnimInstance* BodyAnim = Cast<ULostWithinMetaHumanAnimInstance>(Char->GetPresentationMesh()->GetAnimInstance());
+			TestNotNull(TEXT("Visible body runs the MetaHuman retarget animation"), BodyAnim);
+			TestTrue(TEXT("The visible body retargets the hidden driver (not the reference pose)"), BodyAnim && BodyAnim->HasRetargeterForBody());
+		}
+		TestFalse(TEXT("Animation driver stays hidden"), Mesh3P->IsVisible());
 
 		for (UActorComponent* Comp : Char->GetComponents())
 		{
@@ -157,6 +167,7 @@ bool FLostWithinFlashlightAndAimAutomationTest::RunTest(const FString& Parameter
 		}
 	}
 	TestNotNull(TEXT("Flashlight 3P mesh component exists"), FlashlightMesh3P);
+	if (FlashlightMesh3P) { TestTrue(TEXT("Flashlight attaches to the visible body"), FlashlightMesh3P->GetAttachParent() == Char->GetPresentationMesh()); }
 	if (FlashlightMesh3P)
 	{
 		TestFalse(TEXT("Flashlight 3P mesh is visible to owner"), FlashlightMesh3P->bOwnerNoSee);

@@ -97,9 +97,9 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Senses|Investigation", meta = (ClampMin = "1.0", ClampMax = "4.0"))
 	float FallbackSpeedMultiplier = 1.5f;
 
-	/** Acceptance radius from the target location that counts as arrived. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Senses|Investigation", meta = (ClampMin = "10.0", Units = "cm"))
-	float AcceptanceRadius = 100.0f;
+	/** Distance from the monster's centre to the vibration source that counts as arrived (walks onto the source). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Senses|Investigation", meta = (ClampMin = "0.0", Units = "cm"))
+	float AcceptanceRadius = 25.0f;
 
 	/** Duration (seconds) spent searching and scanning the area at the vibration location. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Senses|Investigation", meta = (ClampMin = "0.0", Units = "s"))

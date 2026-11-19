@@ -30,6 +30,17 @@ struct LOSTWITHIN_API FInventoryItem
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Inventory")
 	FText Description;
 
+	/** Stable story identity; independent of the unique pickup/stack identifier. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Inventory|Story")
+	FName StoryNoteID = NAME_None;
+
+	/** Explicit clue metadata keeps numbers in the lore separate from the actual exit clue. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Inventory|Story")
+	int32 ClueDigitIndex = INDEX_NONE;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Inventory|Story")
+	int32 ClueDigit = INDEX_NONE;
+
 	/** Current quantity in this stack */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Inventory", meta = (ClampMin = "1"))
 	int32 Quantity = 1;

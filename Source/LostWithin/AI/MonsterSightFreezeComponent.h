@@ -89,6 +89,18 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Sight Freeze|Illumination", meta=(ClampMin="100.0", Units="cm"))
 	float IlluminatedMaxDistance = 3500.0f;
 
+	/**
+	 * If true (default), the Doll freezes only while the player watches it AND a watched point of it is lit, by the
+	 * flashlight beam or (with bTorchLightCounts) a wall torch. Watched in the dark, or lit but unwatched, it moves.
+	 * False restores the distance-based watched-to-freeze rules below.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Sight Freeze|Illumination")
+	bool bFreezeOnlyWhenLitAndWatched = true;
+
+	/** Wall torch light (ULostWithinLightSubsystem) counts as light for the Doll */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Sight Freeze|Illumination")
+	bool bTorchLightCounts = true;
+
 	/** If true, the Doll ONLY freezes when illuminated directly by the flashlight beam */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Sight Freeze|Illumination")
 	bool bRequireFlashlightAlways = false;
@@ -116,9 +128,9 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Sight Freeze|Stalking", meta=(ClampMin="10.0", Units="cm/s"))
 	float StalkWalkSpeed = 220.0f;
 
-	/** Distance (cm) from the player that counts as arrived */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Sight Freeze|Stalking", meta=(ClampMin="10.0", Units="cm"))
-	float StalkAcceptanceRadius = 90.0f;
+	/** Centre distance (cm) to the player that ends the stalk move; small so the Doll walks into the player (body contact) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Sight Freeze|Stalking", meta=(ClampMin="0.0", Units="cm"))
+	float StalkAcceptanceRadius = 5.0f;
 
 	/** Interval (seconds) between recalculating pathfinding toward the player */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Sight Freeze|Stalking", meta=(ClampMin="0.05", Units="s"))
@@ -140,7 +152,7 @@ public:
 	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category="Sight Freeze|State")
 	bool bIsObserved = false;
 
-	/** True when the Doll is currently illuminated by the player's flashlight */
+	/** True when a watched point of the Doll is lit (flashlight beam, or a torch with bTorchLightCounts) */
 	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category="Sight Freeze|State")
 	bool bIsIlluminated = false;
 

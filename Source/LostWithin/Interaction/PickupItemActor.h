@@ -141,7 +141,7 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Pickup")
 	ELostWithinItemPreset ItemPreset = ELostWithinItemPreset::Custom;
 
-	/** Inventory item data granted when picked up via [LMB] */
+	/** Inventory item data granted when picked up via [E] */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Pickup")
 	FInventoryItem ItemData;
 

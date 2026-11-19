@@ -2,6 +2,7 @@
 
 #include "LostWithinGameMode.h"
 
+#include "AI/MonsterLightAttractionComponent.h"
 #include "Engine/World.h"
 #include "GameFramework/PlayerController.h"
 #include "Gameplay/RunSetupRules.h"
@@ -9,6 +10,7 @@
 #include "LostWithin.h"
 #include "LostWithinPlayerController.h"
 #include "UI/LostWithinMenu.h"
+#include "Player/BodyContactComponent.h"
 
 ALostWithinGameMode::ALostWithinGameMode()
 {
@@ -28,11 +30,14 @@ void ALostWithinGameMode::StartPlay()
 
 	// Every placed spawn point and toolbox has begun play now.
 	RunSummary = LostWithinRunSetup::SetupWorld(GetWorld(), MakeRunConfig(), CombinationDigits, RunStream);
+	UBodyContactComponent::SetupMonstersForWorld(GetWorld());
+	UMonsterLightAttractionComponent::SetupForWorld(GetWorld());
 }
 
 FLostWithinRunConfig ALostWithinGameMode::MakeRunConfig() const
 {
 	FLostWithinRunConfig Config;
+	Config.bIncludeSubject09Story = bIncludeSubject09Story;
 	Config.SpawnableKeys = SpawnableKeys;
 	Config.ToolboxLockChance = ToolboxLockChance;
 	Config.BatteryLootWeight = BatteryLootWeight;

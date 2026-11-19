@@ -25,7 +25,10 @@ public class LostWithinEditor : ModuleRules
 			"AssetRegistry",
 			"BlueprintGraph",
 			"KismetCompiler",
-			"PhysicsCore"
+			"PhysicsCore",
+			"PhysicsUtilities",
+			"IKRig",
+			"IKRigEditor"
 		});
 	}
 }

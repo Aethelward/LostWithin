@@ -16,7 +16,9 @@ enum class ELostWithinSpawnPointKind : uint8
 	/** One of the unique keys (never the Fairy Tale Kitty Key, which only the cat drops) */
 	Key,
 	/** A paper note: a combination hint or a flavour note */
-	Note
+	Note,
+	/** Reserved orientation note on the starting table; not part of the randomized note pool. */
+	Orientation
 };
 
 /**

@@ -7,6 +7,7 @@
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "Gameplay/RunSetupRules.h"
+#include "Gameplay/LostWithinStory.h"
 #include "Interaction/ItemSpawnPoint.h"
 #include "Interaction/PickupItemActor.h"
 #include "Interaction/ToolboxActor.h"
@@ -144,9 +145,17 @@ namespace LostWithinRunSetup
 
 		TArray<AItemSpawnPoint*> KeyPoints;
 		TArray<AItemSpawnPoint*> NotePoints;
+		TArray<AItemSpawnPoint*> OrientationPoints;
 		for (AItemSpawnPoint* Point : GatherSortedByName<AItemSpawnPoint>(World))
 		{
-			(Point->Kind == ELostWithinSpawnPointKind::Key ? KeyPoints : NotePoints).Add(Point);
+			if (Point->Kind == ELostWithinSpawnPointKind::Orientation)
+			{
+				OrientationPoints.Add(Point);
+			}
+			else
+			{
+				(Point->Kind == ELostWithinSpawnPointKind::Key ? KeyPoints : NotePoints).Add(Point);
+			}
 		}
 		const TArray<AToolboxActor*> Toolboxes = GatherSortedByName<AToolboxActor>(World);
 		UClass* NoteClass = Config.NoteClass ? Config.NoteClass.Get() : APickupItemActor::StaticClass();
@@ -218,20 +227,29 @@ namespace LostWithinRunSetup
 		{
 			const FString Text = LostWithinRunRules::FormatHintPhrase(HintTemplates[Dial % HintTemplates.Num()], Dial, CombinationDigits[Dial]);
 			Summary.HintTexts.Add(Text);
+			FInventoryItem NoteItem = MakeNoteItem(Text);
+			NoteItem.ClueDigitIndex = Dial;
+			NoteItem.ClueDigit = CombinationDigits[Dial];
+			if (Config.bIncludeSubject09Story)
+			{
+				LostWithinStory::ApplyToItem(NoteItem, LostWithinStory::NoteForDigit(Dial), CombinationDigits);
+			}
 
 			const bool bUseToolbox = !FreeToolboxes.IsEmpty()
 				&& (FreeNotePoints.IsEmpty() || Stream.FRand() < Config.HintNoteInToolboxChance);
 			if (bUseToolbox)
 			{
-				FreeToolboxes.Pop(EAllowShrinking::No)->SetContents(NoteClass, MakeNoteItem(Text));
+				FreeToolboxes.Pop(EAllowShrinking::No)->SetContents(NoteClass, NoteItem);
 				++Summary.HintNotesInToolboxes;
+				Summary.StoryNotesPlaced += Config.bIncludeSubject09Story ? 1 : 0;
 			}
 			else if (!FreeNotePoints.IsEmpty())
 			{
 				const FVector Location = FreeNotePoints.Pop(EAllowShrinking::No)->GetSpawnLocation();
 				SpawnPickup(World, NoteClass, Location, Stream,
-					[&Text](APickupItemActor& Pickup) { Pickup.ConfigureAsNote(FText::FromString(Text)); });
+					[&NoteItem](APickupItemActor& Pickup) { Pickup.ConfigureAsNote(NoteItem.Description); Pickup.ItemData = NoteItem; });
 				++Summary.HintNotesAtPoints;
+				Summary.StoryNotesPlaced += Config.bIncludeSubject09Story ? 1 : 0;
 			}
 			else
 			{
@@ -244,8 +262,14 @@ namespace LostWithinRunSetup
 		for (int32 Index = 0; Index < Config.FlavorNoteCount && !FreeNotePoints.IsEmpty(); ++Index)
 		{
 			const FString& Text = FlavorPhrases[Index % FlavorPhrases.Num()];
+			FInventoryItem NoteItem = MakeNoteItem(Text);
+			if (Config.bIncludeSubject09Story && Index < 2)
+			{
+				LostWithinStory::ApplyToItem(NoteItem, Index == 0 ? LostWithinStory::Survival : LostWithinStory::Journal, CombinationDigits);
+				++Summary.StoryNotesPlaced;
+			}
 			SpawnPickup(World, NoteClass, FreeNotePoints.Pop(EAllowShrinking::No)->GetSpawnLocation(), Stream,
-				[&Text](APickupItemActor& Pickup) { Pickup.ConfigureAsNote(FText::FromString(Text)); });
+				[&NoteItem](APickupItemActor& Pickup) { Pickup.ConfigureAsNote(NoteItem.Description); Pickup.ItemData = NoteItem; });
 			++Summary.FlavorNotesAtPoints;
 		}
 
@@ -265,6 +289,23 @@ namespace LostWithinRunSetup
 			default:
 				++Summary.EmptyToolboxes;
 				break;
+			}
+		}
+
+		// A separate stream keeps the existing seeded key/loot/note layout unchanged.
+		if (Config.bIncludeSubject09Story)
+		{
+			FRandomStream OrientationStream(909);
+			for (AItemSpawnPoint* Point : OrientationPoints)
+			{
+				FInventoryItem Item = MakeNoteItem(FString());
+				LostWithinStory::ApplyToItem(Item, LostWithinStory::Orientation, CombinationDigits);
+				SpawnPickup(World, NoteClass, Point->GetSpawnLocation(), OrientationStream,
+					[&Item](APickupItemActor& Pickup) { Pickup.ConfigureAsNote(Item.Description); Pickup.ItemData = Item; });
+			}
+			if (Summary.StoryNotesPlaced != 5)
+			{
+				UE_LOG(LogLostWithin, Warning, TEXT("Subject 09: placed %d/5 story entries; check lore count and available note points."), Summary.StoryNotesPlaced);
 			}
 		}
 

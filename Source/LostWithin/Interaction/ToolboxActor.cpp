@@ -418,17 +418,17 @@ FText AToolboxActor::GetInteractionPrompt_Implementation() const
 {
 	if (!IsLocked())
 	{
-		return NSLOCTEXT("LostWithin", "ToolboxOpenPrompt", "[LMB] Open toolbox");
+		return NSLOCTEXT("LostWithin", "ToolboxOpenPrompt", "[E] Open toolbox");
 	}
 
 	if (!bRevealRequiredKey)
 	{
-		return NSLOCTEXT("LostWithin", "ToolboxLockedPrompt", "[LMB] Try the padlock");
+		return NSLOCTEXT("LostWithin", "ToolboxLockedPrompt", "[E] Try the padlock");
 	}
 
 	const APawn* Player = UGameplayStatics::GetPlayerPawn(this, 0);
 	return InteractorHasRequiredKey(Player)
-		? FText::Format(NSLOCTEXT("LostWithin", "ToolboxUnlockPrompt", "[LMB] Unlock with the {0}"), GetRequiredKeyName())
+		? FText::Format(NSLOCTEXT("LostWithin", "ToolboxUnlockPrompt", "[E] Unlock with the {0}"), GetRequiredKeyName())
 		: FText::Format(NSLOCTEXT("LostWithin", "ToolboxNeedsKeyPrompt", "Locked: needs the {0}"), GetRequiredKeyName());
 }
 

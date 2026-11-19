@@ -3,11 +3,13 @@
 #include "AI/MonsterHearingComponent.h"
 
 #include "AI/MonsterAIComponent.h"
+#include "AI/MonsterLightAttractionComponent.h"
 #include "AI/MonsterLightAverseComponent.h"
 #include "AI/MonsterSightFreezeComponent.h"
 #include "AIController.h"
 #include "Components/CapsuleComponent.h"
 #include "Engine/World.h"
+#include "Gameplay/LostWithinLightSubsystem.h"
 #include "GameFramework/Character.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "LostWithin.h"
@@ -102,7 +104,8 @@ bool UMonsterHearingComponent::CanHear(const FLostWithinNoiseEvent& Noise) const
 bool UMonsterHearingComponent::HearNoise(const FLostWithinNoiseEvent& Noise)
 {
 	if (!CanHear(Noise) || IsReactingToCat() || UMonsterSightFreezeComponent::IsActorSightFrozen(GetOwner())
-		|| UMonsterLightAverseComponent::IsActorLightRepelled(GetOwner()))
+		|| UMonsterLightAverseComponent::IsActorLightRepelled(GetOwner())
+		|| UMonsterLightAttractionComponent::IsActorAttractedToLight(GetOwner()))
 	{
 		return false;
 	}
@@ -126,7 +129,7 @@ bool UMonsterHearingComponent::HearNoise(const FLostWithinNoiseEvent& Noise)
 		}
 	}
 
-	InvestigationLocation = Noise.Location;
+	InvestigationLocation = ResolveInvestigationTarget(Noise.Location);
 	CurrentNoiseKind = Noise.Kind;
 	if (State == EInvestigationState::Idle)
 	{
@@ -150,6 +153,35 @@ void UMonsterHearingComponent::StopInvestigating()
 		StopOwnerMovement();
 	}
 	Finish(/*bRestoreSpeed=*/true);
+}
+
+FVector UMonsterHearingComponent::ResolveInvestigationTarget(const FVector& Source)
+{
+	const AActor* Owner = GetOwner();
+	const ULostWithinLightSubsystem* Light = ULostWithinLightSubsystem::Get(this);
+	bLitAtLastNoise = Owner && Light && Light->IsPointLit(Owner->GetActorLocation() + FVector(0.0f, 0.0f, 40.0f), Owner);
+	LastPinpointError = bLitAtLastNoise ? PinpointErrorInLight : PinpointErrorInDark;
+	if (LastPinpointError <= 0.0f)
+	{
+		return Source;
+	}
+
+	// A random horizontal miss of 40-100% of the error, so it never lands right on the source.
+	const float Angle = FMath::FRandRange(0.0f, 2.0f * PI);
+	const float Miss = LastPinpointError * FMath::FRandRange(0.4f, 1.0f);
+	const FVector Guess = Source + FVector(FMath::Cos(Angle), FMath::Sin(Angle), 0.0f) * Miss;
+
+	// Keep it reachable: the nearest navigable point, unless that would pull it back onto the source.
+	if (UNavigationSystemV1* NavSys = UNavigationSystemV1::GetCurrent(GetWorld()))
+	{
+		FNavLocation Projected;
+		if (NavSys->ProjectPointToNavigation(Guess, Projected, FVector(300.0f, 300.0f, 250.0f))
+			&& FVector::Dist2D(Projected.Location, Source) >= 0.4f * LastPinpointError)
+		{
+			return Projected.Location;
+		}
+	}
+	return Guess;
 }
 
 float UMonsterHearingComponent::ResolveInvestigateSpeed(const ACharacter* Character) const
@@ -224,7 +256,7 @@ void UMonsterHearingComponent::IssueMove()
 
 	// UE5.6 can project a missing-navigation goal to the origin and report AlreadyAtGoal, so check navigation first.
 	const EPathFollowingRequestResult::Type Result = NavSys
-		? Controller->MoveToLocation(MoveTarget, AcceptanceRadius, /*bStopOnOverlap=*/true,
+		? Controller->MoveToLocation(MoveTarget, AcceptanceRadius, /*bStopOnOverlap=*/false,
 			/*bUsePathfinding=*/true, /*bProjectDestinationToNavigation=*/true, /*bCanStrafe=*/false,
 			/*FilterClass=*/nullptr, /*bAllowPartialPath=*/true)
 		: EPathFollowingRequestResult::Failed;
@@ -262,8 +294,8 @@ bool UMonsterHearingComponent::HasArrived() const
 		return true;
 	}
 
-	const float CapsuleRadius = Character->GetCapsuleComponent() ? Character->GetCapsuleComponent()->GetScaledCapsuleRadius() : 0.0f;
-	if (FVector::Dist2D(Character->GetActorLocation(), InvestigationLocation) <= AcceptanceRadius + CapsuleRadius)
+	// Arrived means the monster stands on the source, not a capsule-plus-radius in front of it.
+	if (FVector::Dist2D(Character->GetActorLocation(), InvestigationLocation) <= AcceptanceRadius)
 	{
 		return true;
 	}

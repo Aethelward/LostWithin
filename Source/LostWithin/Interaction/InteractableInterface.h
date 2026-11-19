@@ -13,7 +13,7 @@ class UInteractableInterface : public UInterface
 };
 
 /**
- *  Common interface for interactable actors and components ([LMB] interact).
+ *  Common interface for interactable actors and components ([E] interact).
  */
 class LOSTWITHIN_API IInteractableInterface
 {
@@ -21,7 +21,7 @@ class LOSTWITHIN_API IInteractableInterface
 
 public:
 
-	/** Called when the player interacts with this target using [LMB] */
+	/** Called when the player interacts with this target using [E] */
 	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category = "Interaction")
 	void OnInteract(AActor* Interactor);
 

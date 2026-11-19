@@ -9,6 +9,7 @@
 #include "Components/CapsuleComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Components/SpotLightComponent.h"
+#include "Gameplay/LostWithinLightSubsystem.h"
 #include "Engine/World.h"
 #include "GameFramework/Character.h"
 #include "GameFramework/CharacterMovementComponent.h"
@@ -414,6 +415,7 @@ bool UMonsterSightFreezeComponent::EvaluatePlayerObservation(const APlayerContro
 
 	bool bAnyInFrustumAndLOS = false;
 	bool bAnyIlluminated = false;
+	const ULostWithinLightSubsystem* LightSubsystem = ULostWithinLightSubsystem::Get(this);
 
 	for (const FVector& Pt : SamplePoints)
 	{
@@ -436,7 +438,8 @@ bool UMonsterSightFreezeComponent::EvaluatePlayerObservation(const APlayerContro
 		}
 
 		// Point has clear line of sight in frustum
-		const bool bPtIlluminated = LostWithinChar && IsPointIlluminatedByFlashlight(LostWithinChar, Pt);
+		const bool bPtIlluminated = (LostWithinChar && IsPointIlluminatedByFlashlight(LostWithinChar, Pt))
+			|| (bTorchLightCounts && LightSubsystem && LightSubsystem->IsPointTorchLit(Pt, Owner, PlayerPawn));
 		if (bPtIlluminated)
 		{
 			bAnyIlluminated = true;
@@ -444,7 +447,7 @@ bool UMonsterSightFreezeComponent::EvaluatePlayerObservation(const APlayerContro
 
 		// Determine if visibility condition is met based on distance & illumination
 		bool bVisibleAtDistance = false;
-		if (bRequireFlashlightAlways)
+		if (bFreezeOnlyWhenLitAndWatched || bRequireFlashlightAlways)
 		{
 			bVisibleAtDistance = bPtIlluminated && (Dist <= IlluminatedMaxDistance);
 		}
@@ -640,7 +643,8 @@ void UMonsterSightFreezeComponent::UpdateStalkingMovement(float DeltaTime)
 
 	if (AAIController* AIC = Cast<AAIController>(Character->GetController()))
 	{
-		AIC->MoveToActor(Player, StalkAcceptanceRadius);
+		// No stop-on-overlap: the capsules overlap freely, so the Doll keeps walking until its body touches the player.
+		AIC->MoveToActor(Player, StalkAcceptanceRadius, /*bStopOnOverlap=*/false);
 	}
 	else
 	{

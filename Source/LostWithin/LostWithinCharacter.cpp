@@ -29,10 +29,15 @@
 #include "Interaction/InteractableInterface.h"
 #include "Interaction/PickupItemActor.h"
 #include "Inventory/InventoryComponent.h"
+#include "Gameplay/LostWithinNarrativeComponent.h"
+#include "Animation/LostWithinMetaHumanAnimInstance.h"
 #include "Kismet/GameplayStatics.h"
 #include "LostWithin.h"
+#include "LostWithinGameMode.h"
+#include "LostWithinPlayerController.h"
 #include "Player/MonsterRevealSoundComponent.h"
 #include "Player/PlayerDeathComponent.h"
+#include "Player/BodyContactComponent.h"
 #include "Sound/SoundBase.h"
 #include "Sound/SoundWave.h"
 #include "UI/InventoryWidget.h"
@@ -200,7 +205,13 @@ ALostWithinCharacter::ALostWithinCharacter()
 	MoveComp->MaxWalkSpeed = DefaultRunSpeed;
 	MoveComp->GetNavAgentPropertiesRef().bCanCrouch = false;
 
+	BodyContactComponent = CreateDefaultSubobject<UBodyContactComponent>(TEXT("Body Contact"));
+	BodyContactComponent->bPlayerBody = true;
+	BodyContactComponent->MeshComponentName = TEXT("Body");
+	BodyContactComponent->ContactPhysicsAsset = TSoftObjectPtr<UPhysicsAsset>(FSoftObjectPath(
+		TEXT("/Game/Gameplay/Subject09/Contact/PA_BodyContact_Subject09.PA_BodyContact_Subject09")));
 	DeathComponent = CreateDefaultSubobject<UPlayerDeathComponent>(TEXT("Death Component"));
+	NarrativeComponent = CreateDefaultSubobject<ULostWithinNarrativeComponent>(TEXT("Narrative"));
 	MonsterRevealSound = CreateDefaultSubobject<UMonsterRevealSoundComponent>(TEXT("Monster Reveal Sound"));
 
 	InventoryWidgetClass = UInventoryWidget::StaticClass();
@@ -222,8 +233,9 @@ void ALostWithinCharacter::BeginPlay()
 		ThirdPersonMesh->MarkRenderStateDirty();
 	}
 
-	InitializeFlashlightSetup();
 	SetupFlashlightAnimationWrapper();
+	SetupMetaHumanPresentation();
+	InitializeFlashlightSetup();
 
 	if (InventoryComponent)
 	{
@@ -358,7 +370,7 @@ void ALostWithinCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInpu
 		EnhancedInputComponent->BindAction(LookAction, ETriggerEvent::Triggered, this, &ALostWithinCharacter::LookInput);
 		EnhancedInputComponent->BindAction(MouseLookAction, ETriggerEvent::Triggered, this, &ALostWithinCharacter::LookInput);
 
-		// Interaction ([LMB]) & Flashlight Toggle ([F])
+		// Interaction ([E]) & Flashlight Toggle ([F])
 		if (InteractAction)
 		{
 			EnhancedInputComponent->BindAction(InteractAction, ETriggerEvent::Started, this, &ALostWithinCharacter::DoInteract);
@@ -468,7 +480,7 @@ void ALostWithinCharacter::DoInteract()
 		return;
 	}
 
-	// [LMB] first puts away a note that is being read.
+	// [E] first puts away a note that is being read.
 	if (IsNoteOpen())
 	{
 		HideNote();
@@ -546,9 +558,17 @@ void ALostWithinCharacter::PlayPickupAnimation()
 
 void ALostWithinCharacter::DoToggleInventory()
 {
-	if (!bIsInventoryOpen && IsGameplayInputBlocked())
+	if (!bIsInventoryOpen)
 	{
-		return;
+		if (IsGameplayInputBlocked())
+		{
+			return;
+		}
+		if (const ALostWithinGameMode* Mode = GetWorld() ? Cast<ALostWithinGameMode>(GetWorld()->GetAuthGameMode()) : nullptr;
+			Mode && !Mode->IsRunActive())
+		{
+			return;
+		}
 	}
 
 	bIsInventoryOpen = !bIsInventoryOpen;
@@ -629,6 +649,45 @@ UCameraComponent* ALostWithinCharacter::GetActiveGameplayCamera() const
 	return ThirdPersonCameraComponent;
 }
 
+USkeletalMeshComponent* ALostWithinCharacter::GetPresentationMesh() const
+{
+	TArray<USkeletalMeshComponent*> Meshes;
+	GetComponents(Meshes);
+	for (USkeletalMeshComponent* PartMesh : Meshes)
+	{
+		if (PartMesh->GetFName() == TEXT("Body") && PartMesh->GetSkeletalMeshAsset()) { return PartMesh; }
+	}
+	return GetMesh();
+}
+
+void ALostWithinCharacter::CloseGameplayPanels()
+{
+	HideNote();
+	bIsWalking = false;
+	bIsSprintingHeld = false;
+	StopJumping();
+	UpdateMovementSpeed();
+	if (bIsInventoryOpen)
+	{
+		bIsInventoryOpen = false;
+		if (InventoryWidget) { InventoryWidget->SetInventoryOpen(false); }
+		ApplyInventoryInputState();
+	}
+}
+
+bool ALostWithinCharacter::IsInventoryContextMenuOpen() const
+{
+	return bIsInventoryOpen && InventoryWidget && InventoryWidget->IsContextMenuOpen();
+}
+
+void ALostWithinCharacter::CloseInventoryContextMenu()
+{
+	if (InventoryWidget)
+	{
+		InventoryWidget->CloseItemContextMenu();
+	}
+}
+
 void ALostWithinCharacter::EnsureDefaultInputActionsAndMapping()
 {
 	if (!RuntimeExtraMappingContext)
@@ -647,12 +706,32 @@ void ALostWithinCharacter::EnsureDefaultInputActionsAndMapping()
 		}
 	};
 
-	EnsureActionAndKey(InteractAction, TEXT("IA_RuntimeInteract"), EKeys::LeftMouseButton);
+	// Interaction is [E] only: the left mouse button never interacts, picks up, reads or puts a note away.
+	EnsureActionAndKey(InteractAction, TEXT("IA_RuntimeInteract"), EKeys::E);
+	if (InteractAction)
+	{
+		RuntimeExtraMappingContext->UnmapKey(InteractAction, EKeys::LeftMouseButton);
+		if (!GetInteractKeys().Contains(EKeys::E)) { RuntimeExtraMappingContext->MapKey(InteractAction, EKeys::E); }
+	}
 	EnsureActionAndKey(ToggleFlashlightAction, TEXT("IA_RuntimeToggleFlashlight"), EKeys::F);
 	EnsureActionAndKey(ReloadFlashlightAction, TEXT("IA_RuntimeReloadFlashlight"), EKeys::R);
 	EnsureActionAndKey(ToggleInventoryAction, TEXT("IA_RuntimeToggleInventory"), EKeys::Tab);
 	EnsureActionAndKey(WalkModeAction, TEXT("IA_RuntimeWalk"), EKeys::LeftShift);
 	EnsureActionAndKey(SprintModeAction, TEXT("IA_RuntimeSprint"), EKeys::LeftControl);
+}
+
+TArray<FKey> ALostWithinCharacter::GetInteractKeys()
+{
+	if (!RuntimeExtraMappingContext || !InteractAction)
+	{
+		EnsureDefaultInputActionsAndMapping();
+	}
+	TArray<FKey> Keys;
+	for (const FEnhancedActionKeyMapping& Mapping : RuntimeExtraMappingContext->GetMappings())
+	{
+		if (Mapping.Action == InteractAction) { Keys.AddUnique(Mapping.Key); }
+	}
+	return Keys;
 }
 
 void ALostWithinCharacter::RegisterRuntimeInputMappingContext()
@@ -713,6 +792,25 @@ void ALostWithinCharacter::SetupFlashlightAnimationWrapper()
 	}
 }
 
+void ALostWithinCharacter::SetupMetaHumanPresentation()
+{
+	USkeletalMeshComponent* Body = GetPresentationMesh();
+	if (!Body || Body == GetMesh()) { return; }
+	GetMesh()->SetVisibility(false, false);
+	GetMesh()->VisibilityBasedAnimTickOption = EVisibilityBasedAnimTickOption::AlwaysTickPoseAndRefreshBones;
+	Body->AddTickPrerequisiteComponent(GetMesh());
+	TArray<USkeletalMeshComponent*> Meshes;
+	GetComponents(Meshes);
+	for (USkeletalMeshComponent* PartMesh : Meshes)
+	{
+		if (PartMesh == GetMesh() || !PartMesh->GetSkeletalMeshAsset()) { continue; }
+		PartMesh->VisibilityBasedAnimTickOption = EVisibilityBasedAnimTickOption::AlwaysTickPoseAndRefreshBones;
+		PartMesh->SetLeaderPoseComponent(nullptr);
+		if (PartMesh != Body) { PartMesh->AddTickPrerequisiteComponent(Body); }
+		PartMesh->SetAnimInstanceClass(ULostWithinMetaHumanAnimInstance::StaticClass());
+	}
+}
+
 FVector ALostWithinCharacter::GetHeldFlashlightLensLocation() const
 {
 	// Clearance between the lens and the beam origin, so the spotlight is not buried in the lens geometry.
@@ -740,7 +838,7 @@ void ALostWithinCharacter::InitializeFlashlightSetup()
 
 	if (FlashlightThirdPersonMesh)
 	{
-		if (USkeletalMeshComponent* CharacterMesh = GetMesh())
+		if (USkeletalMeshComponent* CharacterMesh = GetPresentationMesh())
 		{
 			FlashlightThirdPersonMesh->AttachToComponent(CharacterMesh, FAttachmentTransformRules::SnapToTargetNotIncludingScale, FlashlightHandSocket);
 		}
@@ -1123,6 +1221,10 @@ void ALostWithinCharacter::UpdateInteractionPrompt()
 	if (IsGameplayInputBlocked())
 	{
 		// The ScaryDoor padlock has the camera; its own input turns the dials.
+		if (const ALostWithinPlayerController* PC = Cast<ALostWithinPlayerController>(GetController()); PC && PC->IsGameplayModalOpen())
+		{
+			InventoryWidget->SetInteractionPrompt(FText::GetEmpty()); return;
+		}
 		InventoryWidget->SetInteractionPrompt(NSLOCTEXT("LostWithin", "PadlockControlsPrompt",
 			"Point at a dial  |  [Mouse Wheel] Turn it  |  [E] Step back"));
 		return;
@@ -1130,7 +1232,7 @@ void ALostWithinCharacter::UpdateInteractionPrompt()
 
 	if (IsNoteOpen())
 	{
-		InventoryWidget->SetInteractionPrompt(NSLOCTEXT("LostWithin", "CloseNotePrompt", "[LMB] Put the note away"));
+		InventoryWidget->SetInteractionPrompt(NSLOCTEXT("LostWithin", "CloseNotePrompt", "[E] Put the note away"));
 		return;
 	}
 
@@ -1138,7 +1240,17 @@ void ALostWithinCharacter::UpdateInteractionPrompt()
 	UObject* InteractableTarget = FindInteractableInView(HitResult, InteractionDistance);
 	if (InteractableTarget && IInteractableInterface::Execute_CanInteract(InteractableTarget, this))
 	{
-		InventoryWidget->SetInteractionPrompt(IInteractableInterface::Execute_GetInteractionPrompt(InteractableTarget));
+		if (NarrativeComponent)
+		{
+			if (const APickupItemActor* Item = Cast<APickupItemActor>(HitResult.GetActor()); Item && (Item->IsNoteItem() || Item->IsFlashlightItem()))
+			{
+				NarrativeComponent->NotifyTableApproach();
+			}
+		}
+		FString Prompt = IInteractableInterface::Execute_GetInteractionPrompt(InteractableTarget).ToString();
+		// Interactables written in Blueprint may still say [LMB]; interaction is [E] only.
+		Prompt.ReplaceInline(TEXT("[LMB]"), TEXT("[E]"));
+		InventoryWidget->SetInteractionPrompt(FText::FromString(Prompt));
 	}
 	else
 	{
@@ -1441,6 +1553,8 @@ bool ALostWithinCharacter::IsGameplayInputBlocked() const
 		return true;
 	}
 	const APlayerController* PC = Cast<APlayerController>(GetController());
+	if (const ALostWithinPlayerController* GameController = Cast<ALostWithinPlayerController>(PC);
+		GameController && GameController->IsGameplayModalOpen()) { return true; }
 	return PC && PC->GetViewTarget() && PC->GetViewTarget() != this;
 }
 
@@ -1451,6 +1565,11 @@ void ALostWithinCharacter::EnterDeathState()
 		return;
 	}
 	bIsDead = true;
+	if (NarrativeComponent) { NarrativeComponent->NotifyEnding(false); }
+	if (ALostWithinPlayerController* GameController = Cast<ALostWithinPlayerController>(GetController()))
+	{
+		GameController->CloseGameplayModal();
+	}
 	if (MonsterRevealSound)
 	{
 		MonsterRevealSound->StopReveal();
@@ -1488,11 +1607,11 @@ void ALostWithinCharacter::EnterDeathState()
 	}
 }
 
-void ALostWithinCharacter::ShowNote(const FText& Title, const FText& Body)
+void ALostWithinCharacter::ShowNote(const FText& Title, const FText& Body, FName StoryID)
 {
 	if (InventoryWidget && !bIsDead)
 	{
-		InventoryWidget->ShowNote(Title, Body);
+		InventoryWidget->ShowNote(Title, Body, StoryID);
 	}
 }
 

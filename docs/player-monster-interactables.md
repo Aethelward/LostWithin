@@ -35,7 +35,7 @@ All of these stay loaded with World Partition, so the run setup always finds the
 
 - **Lock Mode**: Random (default), Always Locked, Never Locked. **Fixed Key ID** (`Key`, `OldKey`, `RoyalKey`,
   `FairyTaleKittyKey`) pins a toolbox to one key when that key is obtainable.
-- [LMB] on a locked toolbox: with the right key it unlocks (the key is used up) and opens; without it, it rattles
+- [E] on a locked toolbox: with the right key it unlocks (the key is used up) and opens; without it, it rattles
   and says which key it needs.
 - Opening plays the one-second `tool_box_Open` clip and holds the lid open. The contents are placed inside the
   still-closed box as the lid starts to move, so the lid reveals them. They lie centred on the inner floor with
@@ -50,13 +50,13 @@ All of these stay loaded with World Partition, so the run setup always finds the
 ## Notes
 
 `BP_Paper` is a `PickupItemActor` with the **Paper Note** preset. Each note has its own item ID, so notes never stack.
-Picking one up shows its text; [LMB] puts it away. In the inventory, right-click a note and choose **Read**.
+Picking one up shows its text; [E] puts it away. In the inventory, right-click a note and choose **Read**.
 
 ## The ScaryDoor
 
-- [LMB] on the locked door (or its padlock) opens the padlock view: point at a dial, turn it with the mouse wheel,
+- [E] on the locked door (or its padlock) opens the padlock view: point at a dial, turn it with the mouse wheel,
   [E] steps back. Player movement and looking are paused while the padlock view is active.
-- When the dials match, the padlock opens and unlocks the door. [LMB] on the door opens it, and the run ends with
+- When the dials match, the padlock opens and unlocks the door. [E] on the door opens it, and the run ends with
   **You escaped**.
 
 ## Monsters, noise and death
@@ -69,6 +69,21 @@ Picking one up shows its text; [LMB] puts it away. In the inventory, right-click
 - **BP_BoneDog, BP_Doll and BP_Ghoul** have a `MonsterHearingComponent`: they hurry to the noise at their fastest
   gait, search there for about 5 s, then roam again. A newer noise redirects them. The cat still wins: a monster near
   the spinning cat ignores noise. Lunger is deaf.
+- **Light and monsters:** a lit flashlight draws the **BoneDog** when it is in the beam or within 15 m with a
+  clear view of the lens. It runs at the player with its fastest gait, and stops the moment the light goes off or
+  it loses sight of it. Light outranks hearing; the cat outranks both.
+- **Wall torches** count as light within 400 cm of a torch's light, with a clear line (`ULostWithinLightSubsystem`,
+  `TorchLitRadius`; lights named `TorchPointLight*`). That is about a fifth of the maze floor.
+- The **Ghoul** chases the player in the dark. When the beam or a torch lights it, it shields its face and retreats
+  (away from the torch), and when the light leaves it, it chases again (no flinch or recovery pause by default).
+  It never steps into a torch's light: the chase stops at the edge and waits.
+- The **Doll** freezes only while the player watches it and it is lit (beam or torch). Watched in the dark, or lit
+  but not watched, it keeps walking toward the player (`bFreezeOnlyWhenLitAndWatched`; false restores the old
+  freeze-when-watched rule).
+- The **BoneDog** cannot pinpoint sounds: it heads for a point 40-100% of its pinpoint error away from the source,
+  200 cm when it stands in light and 500 cm in the dark (BP_BoneDog `Hearing`; 0 = exact, the default for the others).
+- While a monster chases or investigates, the roam loop waits and the Animation Blueprint plays the panic (fastest)
+  gait.
 - Crouch is gone ([C] does nothing).
 
 ## Tuning
@@ -78,6 +93,11 @@ Picking one up shows its text; [LMB] puts it away. In the inventory, right-click
 | `BP_FirstPersonCharacter` | Noise: Walk/Run/Sprint Noise Radius |
 | `PickupItemActor` (or a pickup Blueprint) | Pickup / Noise: Impact Noise Radius |
 | `MonsterHearingComponent` on each NPC | Hearing Range Multiplier, Hear Footsteps / Item Impacts, Investigate Speed, Search Duration |
+| `MonsterLightAttractionComponent` (added to BoneDogs at run start) | Attraction Radius (1500 cm), Chase Speed (0 = Panic Gait Speed), Repath Interval |
+| `MonsterLightAverseComponent` on BP_Ghoul | Startled Duration / Recovery Duration (0 = same frame), Retreat Gait Speed, Dark Stalk Approach Speed, Torch Light Repels, Torch Edge Look Ahead |
+| `MonsterSightFreezeComponent` on BP_Doll | Freeze Only When Lit And Watched, Torch Light Counts, Illuminated Max Distance, Stalk Walk Speed |
+| `MonsterHearingComponent` | Pinpoint Error In Light / In Dark (BoneDog 200 / 500 cm) |
+| `ULostWithinLightSubsystem` (code default) | Torch Lit Radius (400 cm), Torch Light Name Prefix |
 | `BP_FirstPersonGameMode` | Run: Run Seed (0 = random), Spawnable Keys, Toolbox Lock Chance, loot weights, Flavor Note Count, Hint Note In Toolbox Chance, Hint Templates (`{number}`, `{ordinal}`), Flavor Phrases |
 | `PlayerDeathComponent` on the character | Touch Tolerance |
 | `DeathCameraActor` | phase durations, push-in, shake, collapse |

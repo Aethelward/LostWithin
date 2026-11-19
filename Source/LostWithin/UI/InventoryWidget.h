@@ -54,7 +54,7 @@ public:
 
 	/** Shows a paper note (title + handwritten text) in the middle of the screen */
 	UFUNCTION(BlueprintCallable, Category = "Note|UI")
-	void ShowNote(const FText& Title, const FText& Body);
+	void ShowNote(const FText& Title, const FText& Body, FName StoryID = NAME_None);
 
 	/** Hides the note panel */
 	UFUNCTION(BlueprintCallable, Category = "Note|UI")
@@ -101,6 +101,9 @@ public:
 
 	/** Hides the [RMB] drop dialog if currently open */
 	void CloseItemContextMenu();
+
+	/** Returns true if the [RMB] drop dialog is currently open */
+	bool IsContextMenuOpen() const { return bIsContextMenuOpen; }
 
 	/** Returns true if ScreenSpacePosition lies inside the centered Placeholder Inventory panel */
 	bool IsScreenPositionInsideInventoryPanel(const FVector2D& ScreenSpacePosition) const;
@@ -246,6 +249,7 @@ private:
 	TObjectPtr<UTextBlock> StatusMessageText = nullptr;
 
 	FText VisibleNoteText;
+	FName VisibleStoryNoteID = NAME_None;
 	FText StatusMessage;
 	FTimerHandle StatusMessageTimerHandle;
 	bool bIsNoteVisible = false;

@@ -5,6 +5,7 @@
 #include "AI/MonsterAIComponent.h"
 #include "AI/MonsterHearingComponent.h"
 #include "AIController.h"
+#include "Gameplay/LostWithinLightSubsystem.h"
 #include "Components/CapsuleComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Components/SpotLightComponent.h"
@@ -80,6 +81,46 @@ bool UMonsterLightAverseComponent::IsActorLightRepelled(const AActor* Actor)
 	}
 	const UMonsterLightAverseComponent* LightAverse = Actor->FindComponentByClass<UMonsterLightAverseComponent>();
 	return LightAverse && LightAverse->IsRepelled();
+}
+
+bool UMonsterLightAverseComponent::IsActorDarkStalkingPlayer(const AActor* Actor)
+{
+	const UMonsterLightAverseComponent* LightAverse = IsValid(Actor) ? Actor->FindComponentByClass<UMonsterLightAverseComponent>() : nullptr;
+	return LightAverse && LightAverse->IsChasingPlayer();
+}
+
+void UMonsterLightAverseComponent::StopOwnerMove() const
+{
+	const ACharacter* Character = Cast<ACharacter>(GetOwner());
+	if (AAIController* AI = Character ? Cast<AAIController>(Character->GetController()) : nullptr)
+	{
+		AI->StopMovement();
+	}
+}
+
+void UMonsterLightAverseComponent::EndChase()
+{
+	if (bChasingPlayer)
+	{
+		bChasingPlayer = false;
+		StopOwnerMove();
+	}
+}
+
+void UMonsterLightAverseComponent::EndRepulsionNow()
+{
+	StopOwnerMove(); // the retreat ends in this frame
+	CurrentLightState = EGhoulLightState::DarkStalking;
+	bIsRepelled = false;
+	bIsShieldingFace = false;
+	bIsRetreating = false;
+	bIsStalkingInDarkness = true;
+	StateElapsed = 0.0f;
+	RepathTimer = 0.0f;
+	bDirectMovementFallback = false;
+	RestoreWalkSpeed();
+	OnLightRecovered.Broadcast();
+	OnDarkStalkChanged.Broadcast(true);
 }
 
 ALostWithinCharacter* UMonsterLightAverseComponent::FindPlayerCharacter() const
@@ -215,6 +256,52 @@ bool UMonsterLightAverseComponent::EvaluateFlashlightExposure(const ALostWithinC
 	return MaxCalculatedIntensity >= LightToleranceThreshold;
 }
 
+bool UMonsterLightAverseComponent::EvaluateTorchExposure(FVector& OutTorchLocation) const
+{
+	const AActor* Owner = GetOwner();
+	const ULostWithinLightSubsystem* Light = ULostWithinLightSubsystem::Get(this);
+	if (!bTorchLightRepels || !IsValid(Owner) || !Light)
+	{
+		return false;
+	}
+	TArray<FVector, TInlineAllocator<2>> SamplePoints;
+	SamplePoints.Add(Owner->GetActorLocation() + FVector(0.0f, 0.0f, DetectionTraceOffsetZ));
+	if (const ACharacter* Character = Cast<ACharacter>(Owner))
+	{
+		if (const USkeletalMeshComponent* Mesh = Character->GetMesh(); Mesh && Mesh->DoesSocketExist(HeadSocketOrBoneName))
+		{
+			SamplePoints.Add(Mesh->GetSocketLocation(HeadSocketOrBoneName));
+		}
+	}
+	const AActor* Player = FindPlayerCharacter();
+	for (const FVector& Point : SamplePoints)
+	{
+		if (Light->IsPointTorchLit(Point, Owner, Player, &OutTorchLocation))
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+bool UMonsterLightAverseComponent::WouldStepIntoTorchLight(const FVector& Target) const
+{
+	const AActor* Owner = GetOwner();
+	const ULostWithinLightSubsystem* Light = ULostWithinLightSubsystem::Get(this);
+	if (!bTorchLightRepels || TorchEdgeLookAhead <= 0.0f || !IsValid(Owner) || !Light)
+	{
+		return false;
+	}
+	const FVector Origin = Owner->GetActorLocation();
+	const FVector Direction = (Target - Origin).GetSafeNormal2D();
+	if (Direction.IsNearlyZero())
+	{
+		return false;
+	}
+	const FVector Ahead = Origin + Direction * TorchEdgeLookAhead + FVector(0.0f, 0.0f, DetectionTraceOffsetZ);
+	return Light->IsPointTorchLit(Ahead, Owner, FindPlayerCharacter());
+}
+
 FVector UMonsterLightAverseComponent::ComputeRetreatDirection(const FVector& LightPos, const FVector& LightFwd) const
 {
 	const AActor* Owner = GetOwner();
@@ -252,11 +339,15 @@ void UMonsterLightAverseComponent::TriggerRepulsion(const FVector& LightOrigin, 
 	bIsIlluminatedByFlashlight = true;
 	CurrentRetreatDirection = ComputeRetreatDirection(LightOrigin, LightForward);
 
-	CurrentLightState = EGhoulLightState::Startled;
+	EndChase();
+	StopOwnerMove();
+	CurrentLightState = StartledDuration > 0.0f ? EGhoulLightState::Startled : EGhoulLightState::Retreating;
 	StateElapsed = 0.0f;
+	RepathTimer = 0.0f;
+	bDirectMovementFallback = false;
 	bIsRepelled = true;
 	bIsShieldingFace = true;
-	bIsRetreating = false;
+	bIsRetreating = CurrentLightState == EGhoulLightState::Retreating;
 	bIsStalkingInDarkness = false;
 
 	ApplyRetreatSpeed();
@@ -265,8 +356,11 @@ void UMonsterLightAverseComponent::TriggerRepulsion(const FVector& LightOrigin, 
 
 void UMonsterLightAverseComponent::StopRepulsion()
 {
+	bChasingPlayer = false; // a cat reaction or EndPlay owns movement now
 	CurrentLightState = EGhoulLightState::DarkStalking;
 	bIsIlluminatedByFlashlight = false;
+	bIsTorchLit = false;
+	bIsHoldingAtTorchEdge = false;
 	bIsRepelled = false;
 	bIsShieldingFace = false;
 	bIsRetreating = false;
@@ -285,18 +379,40 @@ void UMonsterLightAverseComponent::UpdateExposureAndRepulsion(float DeltaTime)
 		{
 			StopRepulsion();
 		}
+		else if (bChasingPlayer)
+		{
+			bChasingPlayer = false; // the cat reaction owns movement; do not stop its flee move
+			RestoreWalkSpeed();
+		}
 		return;
 	}
 
 	ALostWithinCharacter* PlayerChar = FindPlayerCharacter();
 	float Intensity = 0.0f;
 	FVector BeamDirection = FVector::ZeroVector;
-	const bool bLit = EvaluateFlashlightExposure(PlayerChar, Intensity, BeamDirection);
+	const bool bBeamLit = EvaluateFlashlightExposure(PlayerChar, Intensity, BeamDirection);
+	FVector TorchLocation = FVector::ZeroVector;
+	const bool bTorchLitNow = !bBeamLit && EvaluateTorchExposure(TorchLocation);
+	const bool bLit = bBeamLit || bTorchLitNow;
 
 	CurrentLightIntensity = Intensity;
-	bIsIlluminatedByFlashlight = bLit;
-
+	bIsIlluminatedByFlashlight = bBeamLit;
+	bIsTorchLit = bTorchLitNow;
 	if (bLit)
+	{
+		bIsHoldingAtTorchEdge = false;
+	}
+
+	if (bLit && bTorchLitNow)
+	{
+		// Straight away from the torch until out of its light.
+		CurrentRetreatDirection = (GetOwner()->GetActorLocation() - TorchLocation).GetSafeNormal2D();
+		if (CurrentRetreatDirection.IsNearlyZero())
+		{
+			CurrentRetreatDirection = -GetOwner()->GetActorForwardVector().GetSafeNormal2D();
+		}
+	}
+	else if (bLit)
 	{
 		FVector LightPos = PlayerChar ? PlayerChar->GetActorLocation() : (GetOwner()->GetActorLocation() - BeamDirection * 500.0f);
 		if (PlayerChar)
@@ -308,14 +424,23 @@ void UMonsterLightAverseComponent::UpdateExposureAndRepulsion(float DeltaTime)
 		}
 
 		CurrentRetreatDirection = ComputeRetreatDirection(LightPos, BeamDirection);
+	}
+
+	if (bLit)
+	{
 
 		if (!bIsRepelled || CurrentLightState == EGhoulLightState::Recovering)
 		{
-			CurrentLightState = EGhoulLightState::Startled;
+			// Same frame the beam lands: drop the chase and (without a configured flinch) start retreating.
+			EndChase();
+			StopOwnerMove();
+			CurrentLightState = StartledDuration > 0.0f ? EGhoulLightState::Startled : EGhoulLightState::Retreating;
 			StateElapsed = 0.0f;
+			RepathTimer = 0.0f;
+			bDirectMovementFallback = false;
 			bIsRepelled = true;
 			bIsShieldingFace = true;
-			bIsRetreating = false;
+			bIsRetreating = CurrentLightState == EGhoulLightState::Retreating;
 			bIsStalkingInDarkness = false;
 			ApplyRetreatSpeed();
 			OnLightRepelled.Broadcast(Intensity);
@@ -339,8 +464,14 @@ void UMonsterLightAverseComponent::UpdateExposureAndRepulsion(float DeltaTime)
 	{
 		if (bIsRepelled)
 		{
-			if (CurrentLightState != EGhoulLightState::Recovering)
+			if (RecoveryDuration <= 0.0f)
 			{
+				// Same frame the light goes off or leaves it: stop retreating and chase again below.
+				EndRepulsionNow();
+			}
+			else if (CurrentLightState != EGhoulLightState::Recovering)
+			{
+				StopOwnerMove();
 				CurrentLightState = EGhoulLightState::Recovering;
 				StateElapsed = 0.0f;
 				bIsRetreating = false;
@@ -350,18 +481,11 @@ void UMonsterLightAverseComponent::UpdateExposureAndRepulsion(float DeltaTime)
 				StateElapsed += DeltaTime;
 				if (StateElapsed >= RecoveryDuration)
 				{
-					CurrentLightState = EGhoulLightState::DarkStalking;
-					bIsRepelled = false;
-					bIsShieldingFace = false;
-					bIsRetreating = false;
-					bIsStalkingInDarkness = true;
-					RestoreWalkSpeed();
-					OnLightRecovered.Broadcast();
-					OnDarkStalkChanged.Broadcast(true);
+					EndRepulsionNow();
 				}
 			}
 		}
-		else
+		if (!bIsRepelled)
 		{
 			CurrentLightState = EGhoulLightState::DarkStalking;
 			bIsStalkingInDarkness = true;
@@ -408,36 +532,63 @@ void UMonsterLightAverseComponent::UpdateRetreatMovement(float DeltaTime)
 
 void UMonsterLightAverseComponent::UpdateDarkStalking(float DeltaTime, ALostWithinCharacter* PlayerChar)
 {
-	if (!bEnableAggressiveDarkStalking || UMonsterHearingComponent::IsActorInvestigating(GetOwner()))
+	ACharacter* Character = Cast<ACharacter>(GetOwner());
+	const bool bInvestigating = UMonsterHearingComponent::IsActorInvestigating(GetOwner());
+	const bool bShouldChase = bEnableAggressiveDarkStalking && !bInvestigating && Character && IsValid(PlayerChar)
+		&& !PlayerChar->IsDead()
+		&& FVector::Dist(Character->GetActorLocation(), PlayerChar->GetActorLocation()) <= DarkStalkDetectionRadius;
+
+	if (!bShouldChase)
 	{
+		bIsHoldingAtTorchEdge = false;
+		if (bChasingPlayer)
+		{
+			bChasingPlayer = false;
+			if (!bInvestigating)
+			{
+				// Out of range: hand the Ghoul back to its Blueprint roam loop at its own walk speed.
+				StopOwnerMove();
+				RestoreWalkSpeed();
+			}
+		}
 		return;
 	}
 
+	// While chasing, CanRunNormalAI reports false, so the roam loop cannot issue competing moves or idles and the
+	// Animation Blueprint plays the fastest gait (it used to look static: idle poses while the chase slid it along).
+	if (!bChasingPlayer)
+	{
+		bChasingPlayer = true;
+		RepathTimer = 0.0f;
+	}
 	ApplyDarkStalkSpeed();
 
-	if (!IsValid(PlayerChar))
+	if (AAIController* AI = Cast<AAIController>(Character->GetController()))
 	{
-		return;
-	}
-
-	ACharacter* Character = Cast<ACharacter>(GetOwner());
-	if (!Character)
-	{
-		return;
-	}
-
-	const float DistToPlayer = FVector::Dist(Character->GetActorLocation(), PlayerChar->GetActorLocation());
-	if (DistToPlayer <= DarkStalkDetectionRadius && DistToPlayer > 120.0f)
-	{
-		AAIController* AI = Cast<AAIController>(Character->GetController());
-		if (AI)
+		RepathTimer -= DeltaTime;
+		if (RepathTimer <= 0.0f)
 		{
-			RepathTimer -= DeltaTime;
-			if (RepathTimer <= 0.0f)
-			{
-				RepathTimer = 0.35f;
-				AI->MoveToLocation(PlayerChar->GetActorLocation(), 100.0f, false, true, true, false);
-			}
+			RepathTimer = 0.35f;
+			// Keep closing in all the way, so the Ghoul's body really touches the player.
+			AI->MoveToActor(PlayerChar, 5.0f, /*bStopOnOverlap=*/false);
+		}
+		// This tick runs before movement: if the path's next stretch enters torch light, stop before taking that step.
+		const UPathFollowingComponent* PathFollowing = AI->GetPathFollowingComponent();
+		const FVector NextTarget = PathFollowing && PathFollowing->GetStatus() == EPathFollowingStatus::Moving
+			? PathFollowing->GetCurrentTargetLocation() : PlayerChar->GetActorLocation();
+		bIsHoldingAtTorchEdge = WouldStepIntoTorchLight(NextTarget);
+		if (bIsHoldingAtTorchEdge)
+		{
+			StopOwnerMove();
+		}
+	}
+	else
+	{
+		const FVector Target = PlayerChar->GetActorLocation();
+		bIsHoldingAtTorchEdge = WouldStepIntoTorchLight(Target);
+		if (!bIsHoldingAtTorchEdge)
+		{
+			Character->AddMovementInput((Target - Character->GetActorLocation()).GetSafeNormal2D(), 1.0f);
 		}
 	}
 }

@@ -8,12 +8,14 @@
 #include "LostWithinCharacter.generated.h"
 
 class UAudioComponent;
+class UBodyContactComponent;
 class UCameraComponent;
 class UInputAction;
 class UInputComponent;
 class UInputMappingContext;
 class UInventoryComponent;
 class UInventoryWidget;
+class ULostWithinNarrativeComponent;
 class ULostWithinFlashlightAnimInstance;
 class UMonsterRevealSoundComponent;
 class UPlayerDeathComponent;
@@ -64,6 +66,12 @@ class ALostWithinCharacter : public ACharacter
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Components", meta = (AllowPrivateAccess = "true"))
 	TObjectPtr<UPlayerDeathComponent> DeathComponent;
 
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Body Contact", meta=(AllowPrivateAccess="true"))
+	TObjectPtr<UBodyContactComponent> BodyContactComponent;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Story", meta=(AllowPrivateAccess="true"))
+	TObjectPtr<ULostWithinNarrativeComponent> NarrativeComponent;
+
 	/** Sudden close sightings play a one-shot during exploration. */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Audio", meta=(AllowPrivateAccess="true"))
 	TObjectPtr<UMonsterRevealSoundComponent> MonsterRevealSound;
@@ -86,7 +94,7 @@ protected:
 	UPROPERTY(EditAnywhere, Category ="Input")
 	UInputAction* MouseLookAction;
 
-	/** Interact Input Action ([LMB]) */
+	/** Interact Input Action ([E] only; the left mouse button does not interact) */
 	UPROPERTY(EditAnywhere, Category ="Input")
 	TObjectPtr<UInputAction> InteractAction = nullptr;
 
@@ -126,7 +134,7 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Movement|Speeds")
 	bool bUseCustomMovementSpeeds = true;
 
-	/** Maximum trace distance in front of the player for [LMB] interaction */
+	/** Maximum trace distance in front of the player for [E] interaction */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Interaction", meta = (ClampMin = "10.0", Units = "cm"))
 	float InteractionDistance = 350.0f;
 
@@ -308,7 +316,7 @@ protected:
 	UFUNCTION(BlueprintCallable, Category="Input")
 	virtual void DoJumpEnd();
 
-	/** Interacts with the object currently in view ([LMB]) */
+	/** Interacts with the object currently in view ([E]) */
 	UFUNCTION(BlueprintCallable, Category="Input")
 	virtual void DoInteract();
 
@@ -352,6 +360,13 @@ public:
 	UFUNCTION(BlueprintPure, Category="Camera")
 	UCameraComponent* GetActiveGameplayCamera() const;
 
+	/** Visible MetaHuman body when present; otherwise the standard character mesh. */
+	UFUNCTION(BlueprintPure, Category="Presentation")
+	USkeletalMeshComponent* GetPresentationMesh() const;
+
+	/** Closes inventory/note before opening another modal. */
+	void CloseGameplayPanels();
+
 	/** Returns the player's inventory component */
 	UFUNCTION(BlueprintPure, Category="Inventory")
 	UInventoryComponent* GetInventoryComponent() const { return InventoryComponent; }
@@ -359,6 +374,14 @@ public:
 	/** Returns true when the player has the inventory menu open */
 	UFUNCTION(BlueprintPure, Category="Inventory")
 	bool IsInventoryOpen() const { return bIsInventoryOpen; }
+
+	/** Returns true when the inventory [RMB] item context menu is currently open */
+	UFUNCTION(BlueprintPure, Category="Inventory")
+	bool IsInventoryContextMenuOpen() const;
+
+	/** Closes only the inventory [RMB] item context menu, leaving inventory open */
+	UFUNCTION(BlueprintCallable, Category="Inventory")
+	void CloseInventoryContextMenu();
 
 	/** Returns true when the player owns at least one tactical flashlight */
 	UFUNCTION(BlueprintPure, Category="Flashlight")
@@ -406,9 +429,9 @@ public:
 	UFUNCTION(BlueprintPure, Category="Noise")
 	float GetCurrentGaitNoiseRadius() const;
 
-	/** Shows a paper note's text on screen until [LMB] */
+	/** Shows a paper note's text on screen until [E] or [Esc] */
 	UFUNCTION(BlueprintCallable, Category="UI")
-	void ShowNote(const FText& Title, const FText& Body);
+	void ShowNote(const FText& Title, const FText& Body, FName StoryID = NAME_None);
 
 	/** Hides the on-screen note */
 	UFUNCTION(BlueprintCallable, Category="UI")
@@ -421,6 +444,9 @@ public:
 	/** Shows a short message above the interaction prompt ("Locked. It needs the Old Key.") */
 	UFUNCTION(BlueprintCallable, Category="UI")
 	void ShowStatusMessage(const FText& Message);
+
+	/** Keys the runtime mapping context binds to the interact action (builds the mapping when missing) */
+	TArray<FKey> GetInteractKeys();
 
 private:
 
@@ -444,6 +470,7 @@ private:
 
 	/** Configures the character mesh with ULostWithinFlashlightAnimInstance over base locomotion */
 	void SetupFlashlightAnimationWrapper();
+	void SetupMetaHumanPresentation();
 
 	/** Loads the flashlight mesh onto the held component and applies lighting parameters */
 	void InitializeFlashlightSetup();

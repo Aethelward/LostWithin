@@ -44,7 +44,7 @@ enum class EDirectedPathTriggerMode : uint8
 	Manual UMETA(DisplayName = "Manual (Blueprint / C++ Call)"),
 	/** Starts following PathWaypoints immediately at BeginPlay */
 	OnBeginPlay UMETA(DisplayName = "On BeginPlay"),
-	/** Starts following PathWaypoints on the player's first [LMB] interaction */
+	/** Starts following PathWaypoints on the player's first [E] interaction */
 	OnFirstInteract UMETA(DisplayName = "On First Interact"),
 	/** Starts following PathWaypoints when InteractionCount drops the item */
 	OnItemDropped UMETA(DisplayName = "On Item Dropped"),
@@ -322,7 +322,7 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Path", meta = (EditCondition = "bSnapPathToGround"))
 	TEnumAsByte<ECollisionChannel> GroundTraceChannel = ECC_WorldStatic;
 
-	/** If true, spinning triggers after SpinTriggerInteractionThreshold [LMB] interactions instead of near-distance proximity */
+	/** If true, spinning triggers after SpinTriggerInteractionThreshold [E] interactions instead of near-distance proximity */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Interaction")
 	bool bTriggerSpinByInteractionCount = true;
 
@@ -346,23 +346,23 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Interaction", meta = (ClampMin = "50.0", Units = "cm", EditCondition = "bTriggerSpinByInteractionCount && bRequirePetSpinSequence"))
 	float PlayerSpinRadius = 500.0f;
 
-	/** Number of [LMB] interactions that trigger the spin sequence when bRequirePetSpinSequence is off */
+	/** Number of [E] interactions that trigger the spin sequence when bRequirePetSpinSequence is off */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Interaction", meta = (ClampMin = "1", EditCondition = "bTriggerSpinByInteractionCount && !bRequirePetSpinSequence"))
 	int32 SpinTriggerInteractionThreshold = 20;
 
-	/** Number of [LMB] interactions required before the cat drops the Fairy Tale Kitty Key pickup item */
+	/** Number of [E] interactions required before the cat drops the Fairy Tale Kitty Key pickup item */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Interaction", meta = (ClampMin = "1"))
 	int32 ItemDropInteractionThreshold = 5;
 
-	/** Fractional vertical compression at the peak of an [LMB] petting squeeze (0.22 = squishes to 78% Z height) */
+	/** Fractional vertical compression at the peak of an [E] petting squeeze (0.22 = squishes to 78% Z height) */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Interaction", meta = (ClampMin = "0.0", ClampMax = "0.75"))
 	float InteractionSqueezeScaleZ = 0.22f;
 
-	/** Fractional X/Y expansion at the peak of an [LMB] petting squeeze for squash-and-stretch volume preservation */
+	/** Fractional X/Y expansion at the peak of an [E] petting squeeze for squash-and-stretch volume preservation */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Interaction", meta = (ClampMin = "0.0", ClampMax = "0.5"))
 	float InteractionSqueezeHorizontalExpand = 0.08f;
 
-	/** Duration of each [LMB] petting squeeze pulse */
+	/** Duration of each [E] petting squeeze pulse */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Interaction", meta = (ClampMin = "0.01", Units = "s"))
 	float InteractionSqueezeDuration = 0.28f;
 
@@ -430,11 +430,11 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Disco", meta = (ClampMin = "100.0", Units = "cm", EditCondition = "bEnableDiscoEnvironmentOnSpinWindow"))
 	float DiscoLightAttenuationRadius = 1600.0f;
 
-	/** Radius of the query-only trace sphere added to the owner for [LMB] interaction targeting when no mesh collision exists */
+	/** Radius of the query-only trace sphere added to the owner for [E] interaction targeting when no mesh collision exists */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Interaction", meta = (ClampMin = "10.0", Units = "cm"))
 	float InteractionTraceRadius = 55.0f;
 
-	/** Sound assets played at random on [LMB] interaction; auto-populated from InteractionSoundSearchPaths if empty */
+	/** Sound assets played at random on [E] interaction; auto-populated from InteractionSoundSearchPaths if empty */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Interaction")
 	TArray<TObjectPtr<USoundBase>> InteractionSounds;
 
@@ -482,7 +482,7 @@ public:
 	UPROPERTY(BlueprintAssignable, Category = "Float & Spin|Events")
 	FOnProximityFloatStateChanged OnProximityFloatStateChanged;
 
-	/** Broadcast whenever the cat is interacted with via [LMB] */
+	/** Broadcast whenever the cat is interacted with via [E] */
 	UPROPERTY(BlueprintAssignable, Category = "Float & Spin|Events")
 	FOnCatInteracted OnCatInteracted;
 
@@ -549,7 +549,7 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Float & Spin|Audio")
 	bool IsSpinMusicActive() const;
 
-	/** Returns the number of times the player has interacted with the cat via [LMB] */
+	/** Returns the number of times the player has interacted with the cat via [E] */
 	UFUNCTION(BlueprintPure, Category = "Float & Spin|Interaction")
 	int32 GetInteractionCount() const { return InteractionCount; }
 
@@ -629,10 +629,10 @@ private:
 	/** Plays a random 3D sound from InteractionSounds at the owner's location */
 	void PlayRandomInteractionSound(AActor* Owner) const;
 
-	/** Triggers a brief vertical squash animation in response to [LMB] petting */
+	/** Triggers a brief vertical squash animation in response to [E] petting */
 	void TriggerInteractionSqueeze();
 
-	/** Advances or clears the [LMB] petting squash animation and returns current fractional squeeze [0..1] */
+	/** Advances or clears the [E] petting squash animation and returns current fractional squeeze [0..1] */
 	float UpdateInteractionSqueeze(AActor* Owner, float DeltaTime);
 
 	/** Applies the white-cyan glow effect based on unstable matter intensity */

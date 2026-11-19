@@ -10,6 +10,9 @@ class UGameEndWidget;
 class UInputMappingContext;
 class USoundBase;
 class UUserWidget;
+class UEscapeDoorComponent;
+class ULostWithinModalWidget;
+class ULostWithinOptionsMenu;
 
 /**
  *  Simple first person Player Controller
@@ -41,6 +44,15 @@ public:
 	/** Quits the game (ends Play In Editor) */
 	UFUNCTION(BlueprintCallable, Category="Game End")
 	void QuitRun();
+
+	UFUNCTION(BlueprintCallable, Category="Menus") void HandleEscape();
+	UFUNCTION(BlueprintCallable, Category="Menus") void ResumeRun();
+	UFUNCTION(BlueprintCallable, Category="Menus") void ReturnToMainMenu();
+	UFUNCTION(BlueprintCallable, Category="Menus") void OpenPauseOptions();
+	UFUNCTION(BlueprintCallable, Category="Menus") void ClosePauseOptions();
+	UFUNCTION(BlueprintCallable, Category="Menus") void ShowKeypad(UEscapeDoorComponent* Door);
+	UFUNCTION(BlueprintCallable, Category="Menus") void CloseGameplayModal();
+	UFUNCTION(BlueprintPure, Category="Menus") bool IsGameplayModalOpen() const;
 
 	/** End screen widget class */
 	UPROPERTY(EditAnywhere, Category="Game End")
@@ -76,5 +88,12 @@ protected:
 
 	/** Input mapping context setup */
 	virtual void SetupInputComponent() override;
+
+private:
+	void ShowPauseMenu();
+	void FocusModal(UUserWidget* Widget);
+	UPROPERTY(Transient) TObjectPtr<ULostWithinModalWidget> GameplayModal;
+	UPROPERTY(Transient) TObjectPtr<ULostWithinOptionsMenu> PauseOptions;
+	bool bPauseContext = false;
 
 };

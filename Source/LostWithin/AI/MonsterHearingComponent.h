@@ -68,9 +68,19 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hearing|Investigate", meta = (ClampMin = "1.0", ClampMax = "4.0"))
 	float FallbackSpeedMultiplier = 1.5f;
 
-	/** Distance from the noise (beyond the capsule) that counts as arrived. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hearing|Investigate", meta = (ClampMin = "10.0", Units = "cm"))
-	float AcceptanceRadius = 90.0f;
+	/** Distance from the monster's centre to the noise that counts as arrived. Small, so it walks onto the source and
+	 *  physically touches a player still standing there (it used to stop ~90 cm plus its capsule in front). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hearing|Investigate", meta = (ClampMin = "0.0", Units = "cm"))
+	float AcceptanceRadius = 25.0f;
+
+	/** The monster cannot pinpoint a sound: it heads for a point off the true source, 40-100% of this away (cm), while
+	 *  it stands in light (a torch or the flashlight). 0 (default) walks to the exact source. BoneDog: 200. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hearing|Pinpoint", meta = (ClampMin = "0.0", Units = "cm"))
+	float PinpointErrorInLight = 0.0f;
+
+	/** As PinpointErrorInLight, while the monster stands in darkness. BoneDog: 500. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hearing|Pinpoint", meta = (ClampMin = "0.0", Units = "cm"))
+	float PinpointErrorInDark = 0.0f;
 
 	/** Time spent looking around at the noise before roaming again. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hearing|Investigate", meta = (ClampMin = "0.0", Units = "s"))
@@ -105,6 +115,10 @@ public:
 
 	UFUNCTION(BlueprintPure, Category = "Hearing")
 	FVector GetInvestigationLocation() const { return InvestigationLocation; }
+
+	/** The pinpoint error used for the last accepted noise (0 = exact), and whether the monster was lit then. */
+	float GetLastPinpointError() const { return LastPinpointError; }
+	bool WasLitAtLastNoise() const { return bLitAtLastNoise; }
 
 	UFUNCTION(BlueprintPure, Category = "Hearing")
 	ELostWithinNoiseKind GetCurrentNoiseKind() const { return CurrentNoiseKind; }
@@ -150,6 +164,11 @@ private:
 	EInvestigationState State = EInvestigationState::Idle;
 	ELostWithinNoiseKind CurrentNoiseKind = ELostWithinNoiseKind::Other;
 	FVector InvestigationLocation = FVector::ZeroVector;
+	float LastPinpointError = 0.0f;
+	bool bLitAtLastNoise = false;
+
+	/** Where to investigate a noise heard at Source: Source itself, or a point off it by the pinpoint error. */
+	FVector ResolveInvestigationTarget(const FVector& Source);
 	float StateElapsed = 0.0f;
 	float SearchBaseYaw = 0.0f;
 	bool bUseDirectMovement = false;

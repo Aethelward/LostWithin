@@ -12,6 +12,8 @@ class UWorld;
 /** Tuning for one run; ALostWithinGameMode fills it from its editable properties. */
 struct LOSTWITHIN_API FLostWithinRunConfig
 {
+	/** Production story decorates the existing note slots; generic setup fixtures may leave it off. */
+	bool bIncludeSubject09Story = false;
 	/** Keys placed at key spawn points, one each. The Fairy Tale Kitty Key is always removed from this list. */
 	TArray<FName> SpawnableKeys;
 	float ToolboxLockChance = 0.5f;
@@ -42,6 +44,7 @@ struct LOSTWITHIN_API FLostWithinRunSummary
 	int32 ToolboxBatteries = 0;
 	int32 ToolboxFlavorNotes = 0;
 	int32 EmptyToolboxes = 0;
+	int32 StoryNotesPlaced = 0;
 	/** False when a hint note could not be placed anywhere */
 	bool bAllHintsPlaced = true;
 };
