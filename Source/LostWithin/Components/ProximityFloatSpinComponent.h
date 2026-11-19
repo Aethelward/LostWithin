@@ -326,8 +326,28 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Interaction")
 	bool bTriggerSpinByInteractionCount = true;
 
-	/** Number of [LMB] interactions required to trigger the spin sequence (replaces inner near-distance trigger) */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Interaction", meta = (ClampMin = "1", EditCondition = "bTriggerSpinByInteractionCount"))
+	/**
+	 *  If true (with bTriggerSpinByInteractionCount), chaos mode needs a ritual instead of a pet count: pet the cat, then
+	 *  turn the view one full circle near it, PetSpinRounds times in a row. Petting again before the turn restarts it.
+	 *  The player sees no progress.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Interaction", meta = (EditCondition = "bTriggerSpinByInteractionCount"))
+	bool bRequirePetSpinSequence = true;
+
+	/** Pet-then-spin rounds that start chaos mode (3 = pet, spin, pet, spin, pet, spin) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Interaction", meta = (ClampMin = "1", EditCondition = "bTriggerSpinByInteractionCount && bRequirePetSpinSequence"))
+	int32 PetSpinRounds = 3;
+
+	/** View (controller) yaw the player turns through, in one direction, for one spin */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Interaction", meta = (ClampMin = "90.0", Units = "deg", EditCondition = "bTriggerSpinByInteractionCount && bRequirePetSpinSequence"))
+	float PlayerSpinDegrees = 360.0f;
+
+	/** Spins count only while the player is this close to the cat (horizontal); a partial turn farther away is dropped */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Interaction", meta = (ClampMin = "50.0", Units = "cm", EditCondition = "bTriggerSpinByInteractionCount && bRequirePetSpinSequence"))
+	float PlayerSpinRadius = 500.0f;
+
+	/** Number of [LMB] interactions that trigger the spin sequence when bRequirePetSpinSequence is off */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Interaction", meta = (ClampMin = "1", EditCondition = "bTriggerSpinByInteractionCount && !bRequirePetSpinSequence"))
 	int32 SpinTriggerInteractionThreshold = 20;
 
 	/** Number of [LMB] interactions required before the cat drops the Fairy Tale Kitty Key pickup item */
@@ -533,6 +553,20 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Float & Spin|Interaction")
 	int32 GetInteractionCount() const { return InteractionCount; }
 
+	/** Pet-and-spin rounds completed in the current ritual (bRequirePetSpinSequence) */
+	UFUNCTION(BlueprintPure, Category = "Float & Spin|Interaction")
+	int32 GetCompletedPetSpinRounds() const { return CompletedPetSpinRounds; }
+
+	/** True after a pet, until the player's spin completes the round */
+	UFUNCTION(BlueprintPure, Category = "Float & Spin|Interaction")
+	bool IsAwaitingPlayerSpin() const { return bAwaitingPlayerSpin; }
+
+	/**
+	 *  Feeds the player's position and view yaw (degrees) to the pet-and-spin ritual; the component calls it every tick.
+	 *  Returns true when this completed the ritual and started chaos mode.
+	 */
+	bool UpdatePlayerSpin(const FVector& PlayerLocation, float PlayerViewYaw);
+
 	/** True while Chaos Sanctuary is active (protecting player and repelling monsters) */
 	UFUNCTION(BlueprintPure, Category = "Float & Spin|Sanctuary")
 	bool IsChaosSanctuaryActive() const { return IsFloatSpinThreatening(); }
@@ -661,6 +695,12 @@ private:
 	/** Spawns the placeholder pickup item in front of the cat toward Interactor */
 	void SpawnDroppedItem(AActor* Owner, AActor* Interactor);
 
+	/** Starts chaos mode from a pet trigger: drops the key if still held, then the spin sequence and status message */
+	void StartChaosFromPetting(AActor* Owner, AActor* Interactor);
+
+	/** Forgets the partial turn and the last sampled yaw */
+	void ResetPlayerSpinTracking();
+
 	/** Computes parabolic pre-spin jump Z offset for the given elapsed trigger time */
 	float ComputeJumpOffset(float TimeSeconds) const;
 
@@ -735,6 +775,14 @@ private:
 
 	int32 InteractionCount = 0;
 	bool bHasDroppedItem = false;
+
+	/** Pet-and-spin ritual state */
+	int32 CompletedPetSpinRounds = 0;
+	bool bAwaitingPlayerSpin = false;
+	float AccumulatedPlayerSpinYaw = 0.0f;
+	float LastPlayerSpinYaw = 0.0f;
+	bool bHasLastPlayerSpinYaw = false;
+	TWeakObjectPtr<AActor> LastPetInteractor;
 	bool bIsInteractionSqueezing = false;
 	float InteractionSqueezeElapsed = 0.0f;
 	float CurrentSqueezeFraction = 0.0f;

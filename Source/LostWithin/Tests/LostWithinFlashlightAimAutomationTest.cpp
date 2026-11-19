@@ -10,6 +10,7 @@
 #include "Components/SpotLightComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Engine/Engine.h"
+#include "Engine/StaticMesh.h"
 #include "Engine/World.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/SpringArmComponent.h"
@@ -162,8 +163,8 @@ bool FLostWithinFlashlightAndAimAutomationTest::RunTest(const FString& Parameter
 		TestEqual(TEXT("Flashlight 3P mesh FirstPersonPrimitiveType is None"), FlashlightMesh3P->FirstPersonPrimitiveType, EFirstPersonPrimitiveType::None);
 		TestFalse(TEXT("Flashlight 3P mesh starts hidden while unarmed"), FlashlightMesh3P->IsVisible());
 		TestTrue(
-			TEXT("Flashlight 3P held scale is updated to 0.15"),
-			FlashlightMesh3P->GetRelativeScale3D().Equals(FVector(0.15f), 0.001f));
+			TEXT("Flashlight 3P is held at full size (scale 1.0, like the placed pickup)"),
+			FlashlightMesh3P->GetRelativeScale3D().Equals(FVector(1.0f), 0.001f));
 	}
 
 	Mesh3P->bEnableUpdateRateOptimizations = false;
@@ -302,6 +303,23 @@ bool FLostWithinFlashlightAndAimAutomationTest::RunTest(const FString& Parameter
 	if (FlashlightMesh3P)
 	{
 		TestTrue(TEXT("Flashlight 3P mesh visible when held in inventory"), FlashlightMesh3P->IsVisible());
+
+		// Large enough to show outside the fist (at 0.15 the 30 cm mesh was a 4.5 cm sliver inside the hand).
+		const UStaticMesh* HeldMesh = FlashlightMesh3P->GetStaticMesh();
+		if (TestNotNull(TEXT("Held flashlight has its mesh"), HeldMesh))
+		{
+			const FVector LocalSize = HeldMesh->GetBoundingBox().GetSize();
+			const double HeldLength = LocalSize.X * FlashlightMesh3P->GetComponentScale().X;
+			TestTrue(FString::Printf(TEXT("Held flashlight is a real flashlight length (%.1f cm, 20-40 expected)"), HeldLength),
+				HeldLength >= 20.0 && HeldLength <= 40.0);
+
+			// The beam starts just ahead of the visible lens (the +X end), not from a constant tuned to an older mesh.
+			const FVector Lens = Char->GetHeldFlashlightLensLocation();
+			const FVector FromCentre = Lens - FlashlightMesh3P->Bounds.Origin;
+			const double AlongBeam = FVector::DotProduct(FromCentre, FlashlightMesh3P->GetForwardVector());
+			TestTrue(FString::Printf(TEXT("Beam origin sits 4 cm ahead of the lens (%.1f cm ahead of the centre, %.1f expected)"),
+				AlongBeam, HeldLength * 0.5 + 4.0), FMath::IsNearlyEqual(AlongBeam, HeldLength * 0.5 + 4.0, 1.0));
+		}
 	}
 
 	if (SpotLight && FillLight)

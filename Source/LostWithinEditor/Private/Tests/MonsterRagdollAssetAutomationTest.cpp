@@ -15,11 +15,24 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMonsterRagdollAssetGeometryTest,
 
 bool FMonsterRagdollAssetGeometryTest::RunTest(const FString& Parameters)
 {
-	auto CheckGeneratedRagdoll = [this](const TCHAR* Name) -> bool
+	/** Where a monster's production assets live; Lunger's folder and Blueprint no longer share its ragdoll's name. */
+	struct FGeneratedRagdollMonster
 	{
-		USkeletalMesh* Mesh = LoadObject<USkeletalMesh>(nullptr, *FString::Printf(TEXT("/Game/NPC/%s/base_basic_pbr.base_basic_pbr"), Name));
-		UPhysicsAsset* Asset = LoadObject<UPhysicsAsset>(nullptr, *FString::Printf(TEXT("/Game/NPC/%s/PA_%sCatRagdoll.PA_%sCatRagdoll"), Name, Name, Name));
-		UClass* MonsterClass = LoadClass<ACharacter>(nullptr, *FString::Printf(TEXT("/Game/NPC/%s/BP_%s.BP_%s_C"), Name, Name, Name));
+		const TCHAR* Name;
+		const TCHAR* Folder;
+		const TCHAR* RagdollName;
+		const TCHAR* BlueprintName;
+	};
+
+	auto CheckGeneratedRagdoll = [this](const FGeneratedRagdollMonster& Monster) -> bool
+	{
+		const TCHAR* Name = Monster.Name;
+		USkeletalMesh* Mesh = LoadObject<USkeletalMesh>(nullptr,
+			*FString::Printf(TEXT("/Game/NPC/%s/base_basic_pbr.base_basic_pbr"), Monster.Folder));
+		UPhysicsAsset* Asset = LoadObject<UPhysicsAsset>(nullptr,
+			*FString::Printf(TEXT("/Game/NPC/%s/%s.%s"), Monster.Folder, Monster.RagdollName, Monster.RagdollName));
+		UClass* MonsterClass = LoadClass<ACharacter>(nullptr,
+			*FString::Printf(TEXT("/Game/NPC/%s/%s.%s_C"), Monster.Folder, Monster.BlueprintName, Monster.BlueprintName));
 		if (!TestNotNull(*FString::Printf(TEXT("%s production skeletal mesh exists"), Name), Mesh)
 			|| !TestNotNull(*FString::Printf(TEXT("%s: run setup to create the articulated physics asset"), Name), Asset)
 			|| !TestNotNull(*FString::Printf(TEXT("%s production class exists"), Name), MonsterClass))
@@ -70,11 +83,15 @@ bool FMonsterRagdollAssetGeometryTest::RunTest(const FString& Parameters)
 	};
 
 	// Every monster whose setup generates a ragdoll (the Ghoul keeps its imported, already articulated asset).
-	const TCHAR* const Monsters[] = { TEXT("Monster"), TEXT("Doll"), TEXT("BoneDog") };
+	const FGeneratedRagdollMonster Monsters[] = {
+		{ TEXT("Lunger"), TEXT("Lunger"), TEXT("PA_MonsterCatRagdoll"), TEXT("Lunger") },
+		{ TEXT("Doll"), TEXT("Doll"), TEXT("PA_DollCatRagdoll"), TEXT("BP_Doll") },
+		{ TEXT("BoneDog"), TEXT("BoneDog"), TEXT("PA_BoneDogCatRagdoll"), TEXT("BP_BoneDog") },
+	};
 	bool bAllPassed = true;
-	for (const TCHAR* Name : Monsters)
+	for (const FGeneratedRagdollMonster& Monster : Monsters)
 	{
-		bAllPassed &= CheckGeneratedRagdoll(Name);
+		bAllPassed &= CheckGeneratedRagdoll(Monster);
 	}
 	return bAllPassed;
 }

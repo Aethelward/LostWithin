@@ -74,7 +74,7 @@ namespace
 		Result.Actor->AutoPossessAI = EAutoPossessAI::Disabled;
 		if (bWithPhysics)
 		{
-			USkeletalMesh* Mesh = LoadObject<USkeletalMesh>(nullptr, TEXT("/Game/NPC/Monster/base_basic_pbr.base_basic_pbr"));
+			USkeletalMesh* Mesh = LoadObject<USkeletalMesh>(nullptr, TEXT("/Game/NPC/Lunger/base_basic_pbr.base_basic_pbr"));
 			Result.Actor->GetMesh()->SetSkeletalMesh(Mesh);
 			Result.Actor->GetMesh()->SetRelativeLocation(FVector(0.0f, 0.0f, -Result.Actor->GetCapsuleComponent()->GetScaledCapsuleHalfHeight()));
 		}
@@ -108,6 +108,8 @@ namespace
 		Cat->bRepelMonstersInSanctuary = false;
 		Cat->FloatHeight = 0.0f;
 		Cat->BobAmplitude = 0.0f;
+		// One pet starts the sequence here; the pet-and-spin ritual has its own test.
+		Cat->bRequirePetSpinSequence = false;
 		Cat->SpinTriggerInteractionThreshold = 1;
 		Cat->ItemDropInteractionThreshold = 100;
 		Cat->InteractionSoundSearchPaths.Reset();

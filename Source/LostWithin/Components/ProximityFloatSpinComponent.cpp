@@ -170,6 +170,10 @@ void UProximityFloatSpinComponent::BeginPlay()
 	CurrentSpinOffsetYaw = 0.0f;
 	InteractionCount = 0;
 	bHasDroppedItem = false;
+	CompletedPetSpinRounds = 0;
+	bAwaitingPlayerSpin = false;
+	LastPetInteractor.Reset();
+	ResetPlayerSpinTracking();
 	bIsInteractionSqueezing = false;
 	InteractionSqueezeElapsed = 0.0f;
 	CurrentSqueezeFraction = 0.0f;
@@ -254,6 +258,15 @@ void UProximityFloatSpinComponent::TickComponent(float DeltaTime, ELevelTick Tic
 		if (bUseMorphVicinityCheck)
 		{
 			UpdateMorphVicinityState(PlayerPawn);
+		}
+
+		// Pet-and-spin ritual: the player's view yaw (controller, else the pawn's own facing) while near the cat.
+		if (bAwaitingPlayerSpin)
+		{
+			const float PlayerViewYaw = PlayerPawn->GetController()
+				? PlayerPawn->GetControlRotation().Yaw
+				: PlayerPawn->GetActorRotation().Yaw;
+			UpdatePlayerSpin(PlayerPawn->GetActorLocation(), PlayerViewYaw);
 		}
 
 		if (!bTriggerSpinByInteractionCount && !(bHasTriggered && bStayActiveOnceTriggered))
@@ -1788,13 +1801,103 @@ void UProximityFloatSpinComponent::OnInteract_Implementation(AActor* Interactor)
 		}
 	}
 
-	if (bTriggerSpinByInteractionCount && InteractionCount >= SpinTriggerInteractionThreshold && !bIsActive)
+	if (!bTriggerSpinByInteractionCount)
 	{
-		TriggerSpinSequence(Owner);
-		if (ALostWithinCharacter* Char = Cast<ALostWithinCharacter>(Interactor))
+		return;
+	}
+
+	if (bRequirePetSpinSequence)
+	{
+		// Each pet opens a round that a full spin closes. Petting again before spinning starts the ritual over,
+		// with this pet as its first.
+		if (bAwaitingPlayerSpin)
 		{
-			Char->ShowStatusMessage(NSLOCTEXT("LostWithin", "CatSanctuaryStatusMessage", "Oiiai Chaos Sanctuary Activated!"));
+			CompletedPetSpinRounds = 0;
 		}
+		bAwaitingPlayerSpin = true;
+		LastPetInteractor = Interactor;
+		ResetPlayerSpinTracking();
+		return;
+	}
+
+	if (InteractionCount >= SpinTriggerInteractionThreshold && !bIsActive)
+	{
+		StartChaosFromPetting(Owner, Interactor);
+	}
+}
+
+void UProximityFloatSpinComponent::ResetPlayerSpinTracking()
+{
+	AccumulatedPlayerSpinYaw = 0.0f;
+	LastPlayerSpinYaw = 0.0f;
+	bHasLastPlayerSpinYaw = false;
+}
+
+bool UProximityFloatSpinComponent::UpdatePlayerSpin(const FVector& PlayerLocation, float PlayerViewYaw)
+{
+	AActor* Owner = GetOwner();
+	if (!Owner || !bAwaitingPlayerSpin || bIsActive || bHasTriggered)
+	{
+		ResetPlayerSpinTracking();
+		return false;
+	}
+
+	// Turning only counts near the cat; a partial turn made farther away is dropped.
+	if (FVector::DistSquared2D(PlayerLocation, Owner->GetActorLocation()) > FMath::Square(static_cast<double>(PlayerSpinRadius)))
+	{
+		ResetPlayerSpinTracking();
+		return false;
+	}
+
+	if (!bHasLastPlayerSpinYaw)
+	{
+		LastPlayerSpinYaw = PlayerViewYaw;
+		bHasLastPlayerSpinYaw = true;
+		return false;
+	}
+
+	// Signed and unwrapped, so turning back cancels and a full circle in one direction adds up to 360 degrees.
+	AccumulatedPlayerSpinYaw += FRotator::NormalizeAxis(PlayerViewYaw - LastPlayerSpinYaw);
+	LastPlayerSpinYaw = PlayerViewYaw;
+	if (FMath::Abs(AccumulatedPlayerSpinYaw) < PlayerSpinDegrees)
+	{
+		return false;
+	}
+
+	bAwaitingPlayerSpin = false;
+	ResetPlayerSpinTracking();
+	++CompletedPetSpinRounds;
+	if (CompletedPetSpinRounds < PetSpinRounds)
+	{
+		return false;
+	}
+
+	CompletedPetSpinRounds = 0;
+	StartChaosFromPetting(Owner, LastPetInteractor.Get());
+	return bIsActive;
+}
+
+void UProximityFloatSpinComponent::StartChaosFromPetting(AActor* Owner, AActor* Interactor)
+{
+	if (!Owner || bIsActive)
+	{
+		return;
+	}
+
+	// Chaos mode stops petting, so a key the cat still holds must drop now or it could never be obtained.
+	if (!bHasDroppedItem)
+	{
+		SpawnDroppedItem(Owner, Interactor);
+		if (bHasDroppedItem)
+		{
+			TryTriggerDirectedPath(EDirectedPathTriggerMode::OnItemDropped);
+		}
+	}
+
+	TriggerSpinSequence(Owner);
+	if (ALostWithinCharacter* Char = Cast<ALostWithinCharacter>(Interactor))
+	{
+		Char->ShowStatusMessage(NSLOCTEXT("LostWithin", "CatSanctuaryStatusMessage", "Oiiai Chaos Sanctuary Activated!"));
 	}
 }
 
@@ -1813,14 +1916,7 @@ FText UProximityFloatSpinComponent::GetInteractionPrompt_Implementation() const
 			FText::AsNumber(ItemDropInteractionThreshold));
 	}
 
-	if (bTriggerSpinByInteractionCount && InteractionCount < SpinTriggerInteractionThreshold)
-	{
-		return FText::Format(
-			NSLOCTEXT("LostWithin", "CatPetChaosProgressPrompt", "[LMB] Pet Cat (Chaos: {0}/{1})"),
-			FText::AsNumber(InteractionCount),
-			FText::AsNumber(SpinTriggerInteractionThreshold));
-	}
-
+	// Chaos progress is deliberately not shown.
 	return NSLOCTEXT("LostWithin", "CatInteractionPrompt", "[LMB] Pet Cat");
 }
 

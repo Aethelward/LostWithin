@@ -25,7 +25,7 @@ The Output Log line `Run setup: combination ...` shows what was placed (useful f
 |---|---|
 | `ItemSpawnPoint` (Kind **Key**) | At least 3, a little above the floor where a key may appear. Gold arrow. |
 | `ItemSpawnPoint` (Kind **Note**) | At least 3 (better 6+), where a note may lie. The note is laid flat on the floor below. Pale arrow. |
-| `BP_ToolBox` (`/Game/Level/Objects/tool_box/`) | On the floor (its origin is the bottom centre). Its front (+X) is where items pop out. |
+| `BP_ToolBox` (`/Game/Level/Objects/tool_box/`) | On the floor (its origin is the bottom centre). The lid hinges on the -Y side; leave room behind it for the open lid. |
 | `BP_Paper` (`/Game/Item/paper/`) | Optional hand-placed notes; they get a random flavour phrase. |
 | `BP_ScaryDoor` | The exit. Its skull padlock (`BP_PadlockBase-3X`) is a child actor of the door, on the padlock holder. |
 
@@ -37,7 +37,15 @@ All of these stay loaded with World Partition, so the run setup always finds the
   `FairyTaleKittyKey`) pins a toolbox to one key when that key is obtainable.
 - [LMB] on a locked toolbox: with the right key it unlocks (the key is used up) and opens; without it, it rattles
   and says which key it needs.
-- Opening plays the one-second `tool_box_Open` clip and holds the lid open, then pops the contents out in front after 1.05 seconds. The imported two-second open/close clip is preserved.
+- Opening plays the one-second `tool_box_Open` clip and holds the lid open. The contents are placed inside the
+  still-closed box as the lid starts to move, so the lid reveals them. They lie centred on the inner floor with
+  their long side along the box, and a note lies flat. An empty toolbox says so after `Contents Delay`
+  (1.05 seconds). The imported two-second open/close clip is preserved.
+- Collision follows the visible box. A floor, four walls up to the rim (20.4 cm) and a lid cap block; the cavity
+  (about 56.5 x 26 x 20 cm) is free. The lid cap (`LidCollision`) is attached to the lid bone `Cover_Box`, so it
+  swings open with the lid and leaves no invisible barrier over the open box. The latches, hinges and lid handle
+  are decorative and have no collision. The sizes come from the mesh fitted to 60 cm and scale with
+  `Target Width Cm`.
 
 ## Notes
 

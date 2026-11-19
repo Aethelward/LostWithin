@@ -146,9 +146,12 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Flashlight")
 	FRotator FlashlightAttachRelativeRotation = FRotator(58.4f, 163.3f, 0.0f);
 
-	/** Uniform scale applied to the held flashlight mesh (/Game/Item/Flashlight/StaticMeshes/defaultMaterial) */
+	/**
+	 *  Uniform scale applied to the held flashlight mesh (/Game/Item/Flashlight/StaticMeshes/defaultMaterial, 30 cm long
+	 *  at 1.0, the same size as the placed pickup). Much smaller and the flashlight disappears inside the fist.
+	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Flashlight", meta = (ClampMin = "0.01"))
-	float FlashlightHeldScale = 0.15f;
+	float FlashlightHeldScale = 1.0f;
 
 	/** Seconds of continuous ON time per 100% combined flashlight battery charge */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Flashlight|Battery", meta = (ClampMin = "1.0", Units = "s"))
@@ -368,6 +371,9 @@ public:
 	/** Returns the tactical flashlight spot light component */
 	UFUNCTION(BlueprintPure, Category="Flashlight")
 	USpotLightComponent* GetFlashlightSpotLight() const { return FlashlightSpotLight; }
+
+	/** World point just ahead of the held flashlight's lens (its mesh's +X end), where the beam starts */
+	FVector GetHeldFlashlightLensLocation() const;
 
 	/** Returns the combined battery charge (%) of the held flashlight (0..100) */
 	UFUNCTION(BlueprintPure, Category="Flashlight|Battery")

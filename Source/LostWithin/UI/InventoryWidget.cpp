@@ -8,6 +8,9 @@
 #include "Components/Button.h"
 #include "Components/CanvasPanel.h"
 #include "Components/CanvasPanelSlot.h"
+#include "Components/Image.h"
+#include "Components/Overlay.h"
+#include "Components/OverlaySlot.h"
 #include "Components/ScrollBox.h"
 #include "Components/SizeBox.h"
 #include "Components/TextBlock.h"
@@ -19,14 +22,20 @@
 #include "Styling/CoreStyle.h"
 #include "Styling/SlateTypes.h"
 #include "Engine/World.h"
+#include "Engine/Texture2D.h"
 #include "TimerManager.h"
 #include "UI/InventoryDragDropOperation.h"
 #include "UI/InventoryItemRowWidget.h"
+#include "UObject/ConstructorHelpers.h"
 
 UInventoryWidget::UInventoryWidget(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
 	SetIsFocusable(false);
+	static ConstructorHelpers::FClassFinder<UUserWidget> StagedHotbar(TEXT("/Game/UI/Inventory/WBP_HUD"));
+	HotbarClass = StagedHotbar.Class;
+	static ConstructorHelpers::FObjectFinder<UTexture2D> SlotTexture(TEXT("/Game/UI/Inventory/Textures/blank.blank"));
+	EmptyHotbarIcon = SlotTexture.Object;
 }
 
 TSharedRef<SWidget> UInventoryWidget::RebuildWidget()
@@ -77,6 +86,10 @@ void UInventoryWidget::SetInventoryOpen(bool bOpen)
 
 	SetIsFocusable(bIsInventoryOpen);
 	SetVisibility(bIsInventoryOpen ? ESlateVisibility::SelfHitTestInvisible : ESlateVisibility::HitTestInvisible);
+	if (HotbarView)
+	{
+		HotbarView->SetVisibility(bIsInventoryOpen ? ESlateVisibility::Collapsed : ESlateVisibility::HitTestInvisible);
+	}
 
 	if (OutsideDropCatcher)
 	{
@@ -218,6 +231,7 @@ void UInventoryWidget::RefreshInventory()
 	const TArray<FInventoryItem> EmptyItems;
 	const TArray<FInventoryItem>& Items = Inventory ? Inventory->GetItems() : EmptyItems;
 	const int32 MaxSlots = Inventory ? Inventory->GetMaxSlots() : 16;
+	RefreshHotbar(Items);
 
 	if (SlotSummaryText)
 	{
@@ -230,7 +244,7 @@ void UInventoryWidget::RefreshInventory()
 	if (Items.IsEmpty())
 	{
 		UTextBlock* EmptyText = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass());
-		EmptyText->SetText(NSLOCTEXT("LostWithin", "EmptyInventory", "Placeholder Inventory is empty. Pick up items with [LMB]."));
+		EmptyText->SetText(NSLOCTEXT("LostWithin", "EmptyInventory", "Inventory is empty. Pick up items with [LMB]."));
 		EmptyText->SetFont(FCoreStyle::GetDefaultFontStyle("Italic", 13));
 		EmptyText->SetColorAndOpacity(FSlateColor(FLinearColor(0.75f, 0.78f, 0.85f, 1.0f)));
 		EmptyText->SetAutoWrapText(true);
@@ -660,6 +674,79 @@ UButton* UInventoryWidget::CreateContextMenuButton(UVerticalBox* ParentBox, cons
 	return Button;
 }
 
+void UInventoryWidget::BuildHotbar(UCanvasPanel* RootCanvas)
+{
+	APlayerController* Controller = GetOwningPlayer();
+	if (!Controller || !HotbarClass)
+	{
+		return;
+	}
+
+	HotbarView = CreateWidget<UUserWidget>(Controller, HotbarClass);
+	if (!HotbarView)
+	{
+		return;
+	}
+
+	HotbarView->SetVisibility(ESlateVisibility::HitTestInvisible);
+	if (UWidget* LegacyHelp = HotbarView->GetWidgetFromName(TEXT("TextBlock_56")))
+	{
+		LegacyHelp->SetVisibility(ESlateVisibility::Collapsed);
+	}
+	UCanvasPanelSlot* ViewSlot = RootCanvas->AddChildToCanvas(HotbarView);
+	ViewSlot->SetAnchors(FAnchors(0.0f, 0.0f, 1.0f, 1.0f));
+	ViewSlot->SetOffsets(FMargin(0.0f));
+
+	constexpr int32 HotbarSlots = 6;
+	HotbarImages.SetNum(HotbarSlots);
+	HotbarItemNames.SetNum(HotbarSlots);
+	for (int32 Index = 0; Index < HotbarSlots; ++Index)
+	{
+		const FString Suffix = Index == 0 ? FString() : FString::Printf(TEXT("_%d"), Index);
+		UImage* Image = Cast<UImage>(HotbarView->GetWidgetFromName(FName(*(FString(TEXT("SlotImage")) + Suffix))));
+		UBorder* Border = Cast<UBorder>(HotbarView->GetWidgetFromName(FName(*(FString(TEXT("SlotBorder")) + Suffix))));
+		if (!Image || !Border)
+		{
+			continue;
+		}
+
+		UOverlay* Content = WidgetTree->ConstructWidget<UOverlay>();
+		Border->SetContent(Content);
+		Content->AddChildToOverlay(Image);
+		const FName Name(*FString::Printf(TEXT("HotbarItemName_%d"), Index));
+		UTextBlock* ItemName = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), Name);
+		ItemName->SetFont(FCoreStyle::GetDefaultFontStyle("Bold", 11));
+		ItemName->SetAutoWrapText(true);
+		ItemName->SetJustification(ETextJustify::Center);
+		ItemName->SetVisibility(ESlateVisibility::Collapsed);
+		UOverlaySlot* NameSlot = Content->AddChildToOverlay(ItemName);
+		NameSlot->SetHorizontalAlignment(HAlign_Center);
+		NameSlot->SetVerticalAlignment(VAlign_Center);
+		NameSlot->SetPadding(FMargin(4.0f));
+		HotbarImages[Index] = Image;
+		HotbarItemNames[Index] = ItemName;
+	}
+}
+
+void UInventoryWidget::RefreshHotbar(const TArray<FInventoryItem>& Items)
+{
+	for (int32 Index = 0; Index < HotbarImages.Num(); ++Index)
+	{
+		UImage* Image = HotbarImages[Index];
+		UTextBlock* ItemName = HotbarItemNames[Index];
+		if (!Image || !ItemName)
+		{
+			continue;
+		}
+
+		const FInventoryItem* Item = Items.IsValidIndex(Index) ? &Items[Index] : nullptr;
+		UTexture2D* Icon = Item ? Item->Icon.Get() : nullptr;
+		Image->SetBrushFromTexture(Icon ? Icon : EmptyHotbarIcon.Get());
+		ItemName->SetText(Item ? Item->DisplayName : FText::GetEmpty());
+		ItemName->SetVisibility(Item && !Icon ? ESlateVisibility::HitTestInvisible : ESlateVisibility::Collapsed);
+	}
+}
+
 void UInventoryWidget::BuildWidgetTreeIfNeeded()
 {
 	if (!WidgetTree || WidgetTree->RootWidget)
@@ -670,8 +757,9 @@ void UInventoryWidget::BuildWidgetTreeIfNeeded()
 	UCanvasPanel* RootCanvas = WidgetTree->ConstructWidget<UCanvasPanel>(UCanvasPanel::StaticClass(), TEXT("RootCanvas"));
 	RootCanvas->SetVisibility(ESlateVisibility::SelfHitTestInvisible);
 	WidgetTree->RootWidget = RootCanvas;
+	BuildHotbar(RootCanvas);
 
-	// Fullscreen drop surface outside Placeholder Inventory panel
+	// Fullscreen drop surface outside the inventory panel
 	OutsideDropCatcher = WidgetTree->ConstructWidget<UBorder>(UBorder::StaticClass(), TEXT("OutsideDropCatcher"));
 	OutsideDropCatcher->SetBrushColor(FLinearColor::Transparent);
 	OutsideDropCatcher->SetVisibility(ESlateVisibility::Collapsed);
@@ -702,7 +790,7 @@ void UInventoryWidget::BuildWidgetTreeIfNeeded()
 	ControlsHintBorder->SetPadding(FMargin(10.0f, 6.0f));
 	ControlsHintBorder->SetVisibility(ESlateVisibility::HitTestInvisible);
 	UTextBlock* ControlsHintText = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), TEXT("ControlsHintText"));
-	ControlsHintText->SetText(NSLOCTEXT("LostWithin", "ControlsHint", "[Tab] Placeholder Inventory  |  [LMB] Interact  |  [F] Flashlight  |  [R] Change Battery  |  [Shift] Walk (quiet)  |  [Ctrl] Sprint (loud)"));
+	ControlsHintText->SetText(NSLOCTEXT("LostWithin", "ControlsHint", "[Tab] Inventory  |  [LMB] Interact  |  [F] Flashlight  |  [R] Change Battery  |  [Shift] Walk (quiet)  |  [Ctrl] Sprint (loud)"));
 	ControlsHintText->SetFont(FCoreStyle::GetDefaultFontStyle("Regular", 10));
 	ControlsHintText->SetColorAndOpacity(FSlateColor(FLinearColor(0.85f, 0.88f, 0.94f, 0.85f)));
 	ControlsHintText->SetVisibility(ESlateVisibility::HitTestInvisible);
@@ -752,7 +840,7 @@ void UInventoryWidget::BuildWidgetTreeIfNeeded()
 		PromptSlot->SetAutoSize(true);
 	}
 
-	// Centered Placeholder Inventory overlay panel ([Tab])
+	// Centered inventory overlay panel ([Tab])
 	InventoryPanelBorder = WidgetTree->ConstructWidget<UBorder>(UBorder::StaticClass(), TEXT("InventoryPanelBorder"));
 	InventoryPanelBorder->SetBrushColor(FLinearColor(0.04f, 0.05f, 0.08f, 0.92f));
 	InventoryPanelBorder->SetPadding(FMargin(24.0f));
@@ -762,7 +850,7 @@ void UInventoryWidget::BuildWidgetTreeIfNeeded()
 	PanelLayout->SetVisibility(ESlateVisibility::SelfHitTestInvisible);
 
 	UTextBlock* HeaderText = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), TEXT("InventoryHeaderText"));
-	HeaderText->SetText(NSLOCTEXT("LostWithin", "InventoryHeader", "Placeholder Inventory   (Press [Tab] to Close)"));
+	HeaderText->SetText(NSLOCTEXT("LostWithin", "InventoryHeader", "Inventory   (Press [Tab] to Close)"));
 	HeaderText->SetFont(FCoreStyle::GetDefaultFontStyle("Bold", 18));
 	HeaderText->SetColorAndOpacity(FSlateColor(FLinearColor(0.98f, 0.85f, 0.48f, 1.0f)));
 	HeaderText->SetVisibility(ESlateVisibility::HitTestInvisible);

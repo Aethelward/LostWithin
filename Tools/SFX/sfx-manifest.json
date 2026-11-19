@@ -65,7 +65,7 @@
       "prompt": "Gaunt humanoid monster breathing in a dark corridor: slow wet raspy inhale and a low guttural throat rattle. Unsettling, close-mic, dry, no music, no background.",
       "duration": 2.5,
       "variations": 3,
-      "folder": "/Game/NPC/Monster/SFX/Voice",
+      "folder": "/Game/NPC/Lunger/SFX/Voice",
       "name": "VO_Lunger_Idle"
     },
     {
@@ -73,7 +73,7 @@
       "prompt": "Gaunt humanoid monster panicking: a sharp high-pitched terrified shriek breaking into frantic raspy gasps. Close-mic, dry, no music.",
       "duration": 2.0,
       "variations": 2,
-      "folder": "/Game/NPC/Monster/SFX/Voice",
+      "folder": "/Game/NPC/Lunger/SFX/Voice",
       "name": "VO_Lunger_Panic"
     },
     {
@@ -81,7 +81,7 @@
       "prompt": "Gaunt humanoid monster thrown hard through the air: a short pained yelp and a winded guttural grunt. Close-mic, dry, no impacts, no music.",
       "duration": 1.5,
       "variations": 2,
-      "folder": "/Game/NPC/Monster/SFX/Voice",
+      "folder": "/Game/NPC/Lunger/SFX/Voice",
       "name": "VO_Lunger_Thrown"
     },
 
@@ -192,7 +192,7 @@
       "variations": 4,
       "trim_silence": true,
       "normalize_peak_db": -3.0,
-      "folder": "/Game/NPC/Monster/SFX/Footsteps",
+      "folder": "/Game/NPC/Lunger/SFX/Footsteps",
       "name": "SFX_Lunger_Step"
     },
     {

@@ -713,6 +713,27 @@ void ALostWithinCharacter::SetupFlashlightAnimationWrapper()
 	}
 }
 
+FVector ALostWithinCharacter::GetHeldFlashlightLensLocation() const
+{
+	// Clearance between the lens and the beam origin, so the spotlight is not buried in the lens geometry.
+	constexpr float HeldFlashlightLensClearanceCm = 4.0f;
+
+	if (!FlashlightThirdPersonMesh)
+	{
+		return GetPawnViewLocation();
+	}
+
+	// The lens is the mesh's +X end (the pickup uses the same axis), measured from its bounds at the current scale.
+	FVector LensLocal = FVector::ZeroVector;
+	if (const UStaticMesh* HeldMesh = FlashlightThirdPersonMesh->GetStaticMesh())
+	{
+		const FBox LocalBounds = HeldMesh->GetBoundingBox();
+		LensLocal = FVector(LocalBounds.Max.X, LocalBounds.GetCenter().Y, LocalBounds.GetCenter().Z);
+	}
+	return FlashlightThirdPersonMesh->GetComponentTransform().TransformPosition(LensLocal)
+		+ FlashlightThirdPersonMesh->GetForwardVector() * HeldFlashlightLensClearanceCm;
+}
+
 void ALostWithinCharacter::InitializeFlashlightSetup()
 {
 	UStaticMesh* FlashlightMesh = LoadObject<UStaticMesh>(nullptr, APickupItemActor::FlashlightMeshAssetPath);
@@ -916,7 +937,7 @@ void ALostWithinCharacter::UpdateFlashlightTransformAndLighting(float DeltaTime)
 	FVector MuzzleOrigin;
 	if (FlashlightThirdPersonMesh)
 	{
-		MuzzleOrigin = FlashlightThirdPersonMesh->GetComponentLocation() + FlashlightThirdPersonMesh->GetForwardVector() * (100.0f * FlashlightHeldScale + 4.0f);
+		MuzzleOrigin = GetHeldFlashlightLensLocation();
 	}
 	else if (GetMesh() && GetMesh()->DoesSocketExist(FlashlightHandSocket))
 	{

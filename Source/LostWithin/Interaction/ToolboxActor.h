@@ -28,8 +28,11 @@ enum class ELostWithinToolboxLockMode : uint8
 
 /**
  *  A toolbox (/Game/Level/Objects/tool_box) that may be padlocked by one specific unique key and holds one item or
- *  nothing. The game mode decides its lock and contents when the run starts; [LMB] unlocks (using up the key), opens
- *  the lid and pops the contents out in front of it. The actor origin is the bottom centre: place it on the floor.
+ *  nothing. The game mode decides its lock and contents when the run starts; [LMB] unlocks (using up the key) and
+ *  opens the lid, revealing the contents resting inside. The actor origin is the bottom centre: place it on the floor.
+ *
+ *  Collision follows the visible box: a floor, four walls up to the rim and a lid cap that swings open with the lid
+ *  bone. The cavity between them is free, so the contents lie really inside and nothing invisible blocks once open.
  */
 UCLASS()
 class LOSTWITHIN_API AToolboxActor : public AActor, public IInteractableInterface
@@ -39,9 +42,29 @@ class LOSTWITHIN_API AToolboxActor : public AActor, public IInteractableInterfac
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components", meta = (AllowPrivateAccess = "true"))
 	TObjectPtr<USceneComponent> Root;
 
-	/** Blocks pawns, items and interaction traces; sized to the scaled mesh */
+	/** Floor of the hollow box (keeps its original name so saved Blueprint and level data still bind) */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components", meta = (AllowPrivateAccess = "true"))
 	TObjectPtr<UBoxComponent> CollisionBox;
+
+	/** Wall on the hinge side (-Y), from the floor to the rim */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components", meta = (AllowPrivateAccess = "true"))
+	TObjectPtr<UBoxComponent> BackWallCollision;
+
+	/** Wall on the latch side (+Y), from the floor to the rim */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components", meta = (AllowPrivateAccess = "true"))
+	TObjectPtr<UBoxComponent> FrontWallCollision;
+
+	/** End wall at -X, from the floor to the rim */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components", meta = (AllowPrivateAccess = "true"))
+	TObjectPtr<UBoxComponent> LeftWallCollision;
+
+	/** End wall at +X, from the floor to the rim */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components", meta = (AllowPrivateAccess = "true"))
+	TObjectPtr<UBoxComponent> RightWallCollision;
+
+	/** Lid cap, attached to the lid bone so it swings open with the lid animation */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components", meta = (AllowPrivateAccess = "true"))
+	TObjectPtr<UBoxComponent> LidCollision;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components", meta = (AllowPrivateAccess = "true"))
 	TObjectPtr<USkeletalMeshComponent> Mesh;
@@ -49,6 +72,9 @@ class LOSTWITHIN_API AToolboxActor : public AActor, public IInteractableInterfac
 public:
 
 	AToolboxActor();
+
+	/** The bone the open animation rotates; LidCollision follows it */
+	static const FName LidBoneName;
 
 	/** Lid animation played once when opened (holds its last frame) */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Toolbox")
@@ -58,7 +84,10 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Toolbox", meta = (ClampMin = "10.0", Units = "cm"))
 	float TargetWidthCm = 60.0f;
 
-	/** Seconds after the lid starts opening before the contents pop out */
+	/**
+	 *  Seconds after the lid starts opening before an empty toolbox says so. Contents are placed inside the closed box
+	 *  as the lid starts to move, so the opening lid reveals them.
+	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Toolbox", meta = (ClampMin = "0.0", Units = "s"))
 	float ContentsDelay = 0.6f;
 
@@ -115,12 +144,21 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Toolbox|Lock")
 	bool TryUnlock(AActor* Interactor);
 
-	/** Opens an unlocked toolbox: lid animation, then the contents after ContentsDelay */
+	/** Opens an unlocked toolbox: lid animation, with the contents placed inside as it starts */
 	UFUNCTION(BlueprintCallable, Category = "Toolbox")
 	bool Open();
 
-	/** Spawns the contents now (normally called by the open timer); returns the spawned pickup, if any */
+	/**
+	 *  Spawns the contents now, resting on the inner floor in the middle of the cavity (normally called by Open);
+	 *  returns the spawned pickup, if any. An empty toolbox tells the last interactor instead.
+	 */
 	APickupItemActor* SpawnContents();
+
+	/** The free space inside the box in actor space: inner floor to rim, between the inner walls */
+	FBox GetCavityBox() const;
+
+	/** The lid cap (follows the lid bone) */
+	UBoxComponent* GetLidCollision() const { return LidCollision; }
 
 	//~ Begin IInteractableInterface
 	virtual void OnInteract_Implementation(AActor* Interactor) override;
@@ -134,8 +172,20 @@ protected:
 
 private:
 
-	/** Scales and centres the mesh on the bottom-centre origin and sizes the collision box */
+	/** Creates one blocking collision box of the hollow toolbox */
+	UBoxComponent* CreateCollisionPart(FName Name, USceneComponent* Parent, FName Socket, bool bAffectsNavigation);
+
+	/** Scales and centres the mesh on the bottom-centre origin and fits the floor, walls and lid cap to it */
 	void FitMeshToTargetWidth();
+
+	/** Sizes the floor and the four walls around the cavity for TargetWidthCm */
+	void FitBaseCollision();
+
+	/** Places the lid cap over the closed box, relative to the lid bone's reference pose so the animation carries it */
+	void FitLidCollision(const FBox& ClosedLidInActor);
+
+	/** Rests Pickup on the inner floor in the middle of the cavity, its longer side along the box (notes lie flat) */
+	void PlaceInsideCavity(APickupItemActor& Pickup) const;
 
 	FText GetRequiredKeyName() const;
 	bool InteractorHasRequiredKey(const AActor* Interactor) const;

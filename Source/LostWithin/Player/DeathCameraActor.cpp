@@ -46,6 +46,11 @@ ADeathCameraActor::ADeathCameraActor()
 	static ConstructorHelpers::FObjectFinder<USoundBase> DeathImpact(
 		TEXT("/Game/Audio/SFX/Player/Death/SFX_DeathImpact_01.SFX_DeathImpact_01"));
 	StingSound = DeathImpact.Object;
+
+	// Generated with ElevenLabs (Tools/SFX/sfx-manifest.json, id death_jumpscare); plays together with the impact.
+	static ConstructorHelpers::FObjectFinder<USoundBase> DeathJumpscare(
+		TEXT("/Game/Audio/SFX/Player/Death/SFX_DeathJumpscare_01.SFX_DeathJumpscare_01"));
+	JumpscareSound = DeathJumpscare.Object;
 }
 
 FVector ADeathCameraActor::FindLookTarget(const AActor* InKiller)
@@ -123,9 +128,14 @@ void ADeathCameraActor::StartSequence(APawn* InVictim, AActor* InKiller, const F
 	bFinished = false;
 	ApplyView(StartLocation, StartRotation.Rotator(), StartFOV);
 
+	// The jumpscare and the impact start together. Both are UI sounds, so the end screen's pause does not cut them off.
+	if (JumpscareSound)
+	{
+		UGameplayStatics::PlaySound2D(this, JumpscareSound, 1.0f, 1.0f, 0.0f, nullptr, nullptr, /*bIsUISound=*/true);
+		UE_LOG(LogLostWithin, Log, TEXT("Death camera: death jumpscare %s"), *JumpscareSound->GetName());
+	}
 	if (StingSound)
 	{
-		// A UI sound, so the end screen's pause does not cut it off.
 		UGameplayStatics::PlaySound2D(this, StingSound, 1.0f, 1.0f, 0.0f, nullptr, nullptr, /*bIsUISound=*/true);
 		UE_LOG(LogLostWithin, Log, TEXT("Death camera: death impact %s"), *StingSound->GetName());
 	}

@@ -12,9 +12,43 @@
 #include "Kismet/GameplayStatics.h"
 #include "LostWithin.h"
 #include "LostWithinCharacter.h"
+#include "ReferenceSkeleton.h"
 #include "Sound/SoundBase.h"
 #include "TimerManager.h"
 #include "UObject/ConstructorHelpers.h"
+
+const FName AToolboxActor::LidBoneName(TEXT("Cover_Box"));
+
+// Names are unique to this file so unity builds cannot clash with other files' constants.
+namespace LostWithinToolboxGeometry
+{
+	/**
+	 *  Measured from /Game/Level/Objects/tool_box/SkeletalMeshes/tool_box fitted to this width, in actor space (cm,
+	 *  origin at the bottom centre, +Y is the latch side). The lid bone hinges along X at Y -14.2, Z 20.4.
+	 */
+	constexpr double ReferenceWidthCm = 60.0;
+	const FBox OuterBase(FVector(-30.0, -14.2, 0.0), FVector(30.0, 14.1, 20.4));
+	const FBox Cavity(FVector(-28.5, -13.1, 0.4), FVector(28.0, 13.0, 20.4));
+	const FBox ClosedLid(FVector(-30.0, -14.2, 20.4), FVector(30.0, 14.1, 24.4));
+
+	/** Gap between a placed item and the inner floor: a note rests on it, a physics item settles onto it */
+	constexpr double NoteFloorClearanceCm = 0.4;
+	constexpr double ItemFloorClearanceCm = 0.5;
+
+	FBox ScaledBox(const FBox& Box, double Scale)
+	{
+		return FBox(Box.Min * Scale, Box.Max * Scale);
+	}
+
+	void FitBoxToActorSpace(UBoxComponent* Box, const FBox& InActor)
+	{
+		if (Box)
+		{
+			Box->SetBoxExtent(InActor.GetExtent(), /*bUpdateOverlaps=*/false);
+			Box->SetRelativeLocationAndRotation(InActor.GetCenter(), FRotator::ZeroRotator);
+		}
+	}
+}
 
 AToolboxActor::AToolboxActor()
 {
@@ -23,18 +57,24 @@ AToolboxActor::AToolboxActor()
 	Root = CreateDefaultSubobject<USceneComponent>(TEXT("Root"));
 	SetRootComponent(Root);
 
-	CollisionBox = CreateDefaultSubobject<UBoxComponent>(TEXT("CollisionBox"));
-	CollisionBox->SetupAttachment(Root);
-	CollisionBox->SetCollisionProfileName(UCollisionProfile::BlockAllDynamic_ProfileName);
-	CollisionBox->SetBoxExtent(FVector(30.0f, 15.0f, 15.0f));
-	CollisionBox->SetRelativeLocation(FVector(0.0f, 0.0f, 15.0f));
-	CollisionBox->SetCanEverAffectNavigation(true);
-
 	Mesh = CreateDefaultSubobject<USkeletalMeshComponent>(TEXT("Mesh"));
 	Mesh->SetupAttachment(Root);
 	Mesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 	Mesh->SetAnimationMode(EAnimationMode::AnimationSingleNode);
 	Mesh->SetCanEverAffectNavigation(false);
+	// The lid cap rides the lid bone; keep it moving even while the box is off screen.
+	Mesh->VisibilityBasedAnimTickOption = EVisibilityBasedAnimTickOption::AlwaysTickPoseAndRefreshBones;
+
+	// A hollow box: the floor keeps the original component name; the cavity above it stays free.
+	CollisionBox = CreateCollisionPart(TEXT("CollisionBox"), Root, NAME_None, /*bAffectsNavigation=*/true);
+	BackWallCollision = CreateCollisionPart(TEXT("BackWallCollision"), Root, NAME_None, true);
+	FrontWallCollision = CreateCollisionPart(TEXT("FrontWallCollision"), Root, NAME_None, true);
+	LeftWallCollision = CreateCollisionPart(TEXT("LeftWallCollision"), Root, NAME_None, true);
+	RightWallCollision = CreateCollisionPart(TEXT("RightWallCollision"), Root, NAME_None, true);
+	LidCollision = CreateCollisionPart(TEXT("LidCollision"), Mesh, LidBoneName, /*bAffectsNavigation=*/false);
+
+	// Defaults until OnConstruction fits them to the mesh (the lid cap needs the mesh's bones).
+	FitBaseCollision();
 
 	static ConstructorHelpers::FObjectFinder<USkeletalMesh> ToolboxMesh(
 		TEXT("/Game/Level/Objects/tool_box/SkeletalMeshes/tool_box.tool_box"));
@@ -65,16 +105,34 @@ AToolboxActor::AToolboxActor()
 #endif
 }
 
+UBoxComponent* AToolboxActor::CreateCollisionPart(FName Name, USceneComponent* Parent, FName Socket, bool bAffectsNavigation)
+{
+	UBoxComponent* Box = CreateDefaultSubobject<UBoxComponent>(Name);
+	Box->SetupAttachment(Parent, Socket);
+	Box->SetCollisionProfileName(UCollisionProfile::BlockAllDynamic_ProfileName);
+	Box->SetCanEverAffectNavigation(bAffectsNavigation);
+	Box->SetGenerateOverlapEvents(false);
+	return Box;
+}
+
 void AToolboxActor::OnConstruction(const FTransform& Transform)
 {
 	Super::OnConstruction(Transform);
 	FitMeshToTargetWidth();
 }
 
+FBox AToolboxActor::GetCavityBox() const
+{
+	return LostWithinToolboxGeometry::ScaledBox(LostWithinToolboxGeometry::Cavity,
+		TargetWidthCm / LostWithinToolboxGeometry::ReferenceWidthCm);
+}
+
 void AToolboxActor::FitMeshToTargetWidth()
 {
+	FitBaseCollision();
+
 	const USkeletalMesh* Asset = Mesh ? Mesh->GetSkeletalMeshAsset() : nullptr;
-	if (!Asset || !CollisionBox)
+	if (!Asset)
 	{
 		return;
 	}
@@ -92,9 +150,58 @@ void AToolboxActor::FitMeshToTargetWidth()
 	Mesh->SetRelativeScale3D(FVector(Scale));
 	Mesh->SetRelativeLocation(FVector(-Center.X * Scale, -Center.Y * Scale, -Bounds.Min.Z * Scale));
 
-	const FVector ScaledSize = Size * Scale;
-	CollisionBox->SetBoxExtent(ScaledSize * 0.5, /*bUpdateOverlaps=*/false);
-	CollisionBox->SetRelativeLocation(FVector(0.0f, 0.0f, ScaledSize.Z * 0.5));
+	FitLidCollision(LostWithinToolboxGeometry::ScaledBox(LostWithinToolboxGeometry::ClosedLid,
+		TargetWidthCm / LostWithinToolboxGeometry::ReferenceWidthCm));
+}
+
+void AToolboxActor::FitBaseCollision()
+{
+	using namespace LostWithinToolboxGeometry;
+	const FBox Outer = ScaledBox(OuterBase, TargetWidthCm / ReferenceWidthCm);
+	const FBox Inside = GetCavityBox();
+
+	// Floor up to the inner floor; walls from the floor to the rim around the cavity.
+	FitBoxToActorSpace(CollisionBox, FBox(Outer.Min, FVector(Outer.Max.X, Outer.Max.Y, Inside.Min.Z)));
+	FitBoxToActorSpace(BackWallCollision, FBox(Outer.Min, FVector(Outer.Max.X, Inside.Min.Y, Outer.Max.Z)));
+	FitBoxToActorSpace(FrontWallCollision, FBox(FVector(Outer.Min.X, Inside.Max.Y, Outer.Min.Z), Outer.Max));
+	FitBoxToActorSpace(LeftWallCollision,
+		FBox(FVector(Outer.Min.X, Inside.Min.Y, Outer.Min.Z), FVector(Inside.Min.X, Inside.Max.Y, Outer.Max.Z)));
+	FitBoxToActorSpace(RightWallCollision,
+		FBox(FVector(Inside.Max.X, Inside.Min.Y, Outer.Min.Z), FVector(Outer.Max.X, Inside.Max.Y, Outer.Max.Z)));
+}
+
+void AToolboxActor::FitLidCollision(const FBox& ClosedLidInActor)
+{
+	if (!LidCollision || !Mesh)
+	{
+		return;
+	}
+
+	LidCollision->SetBoxExtent(ClosedLidInActor.GetExtent(), /*bUpdateOverlaps=*/false);
+	const FTransform LidInActor(ClosedLidInActor.GetCenter());
+
+	const USkeletalMesh* Asset = Mesh->GetSkeletalMeshAsset();
+	const FReferenceSkeleton* RefSkeleton = Asset ? &Asset->GetRefSkeleton() : nullptr;
+	const int32 LidBone = RefSkeleton ? RefSkeleton->FindBoneIndex(LidBoneName) : INDEX_NONE;
+	if (LidBone == INDEX_NONE)
+	{
+		// Without the bone the cap is attached to the mesh itself and stays closed.
+		UE_LOG(LogLostWithin, Warning, TEXT("%s: mesh %s has no bone %s; the lid collision will not open."),
+			*GetName(), *GetNameSafe(Asset), *LidBoneName.ToString());
+		LidCollision->SetRelativeTransform(LidInActor.GetRelativeTransform(Mesh->GetRelativeTransform()));
+		return;
+	}
+
+	// The bone's reference pose (the closed lid) in actor space, independent of whatever pose the mesh shows now.
+	FTransform BoneInMesh = FTransform::Identity;
+	for (int32 Bone = LidBone; Bone != INDEX_NONE; Bone = RefSkeleton->GetParentIndex(Bone))
+	{
+		BoneInMesh = BoneInMesh * RefSkeleton->GetRefBonePose()[Bone];
+	}
+	const FTransform BoneInActor = BoneInMesh * Mesh->GetRelativeTransform();
+
+	// Relative to the bone the cap carries the inverse of the bone's tiny import scale, so it keeps world scale 1.
+	LidCollision->SetRelativeTransform(LidInActor.GetRelativeTransform(BoneInActor));
 }
 
 void AToolboxActor::SetRequiredKey(FName KeyID)
@@ -189,8 +296,9 @@ bool AToolboxActor::Open()
 	}
 	PlaySound(OpenSound);
 
+	// Contents go into the still-closed box now, so the lifting lid reveals them; only "empty" waits for the lid.
 	UWorld* World = GetWorld();
-	if (!World || ContentsDelay <= 0.0f)
+	if (bHasContents || !World || ContentsDelay <= 0.0f)
 	{
 		SpawnContents();
 		return true;
@@ -222,14 +330,10 @@ APickupItemActor* AToolboxActor::SpawnContents()
 	}
 	bHasContents = false;
 
-	const FVector Extent = CollisionBox ? CollisionBox->GetScaledBoxExtent() : FVector(30.0f, 15.0f, 15.0f);
-	const FVector Forward = GetActorForwardVector().GetSafeNormal2D();
-	const FVector Top = GetActorLocation() + FVector(0.0f, 0.0f, Extent.Z * 2.0f + 12.0f);
-	const FVector Front = GetActorLocation() + Forward * (Extent.X + 35.0f) + FVector(0.0f, 0.0f, 20.0f);
-
+	const FTransform SpawnTransform(GetActorQuat(), GetActorTransform().TransformPosition(GetCavityBox().GetCenter()));
 	UClass* SpawnClass = ContentsClass ? ContentsClass.Get() : APickupItemActor::StaticClass();
 	APickupItemActor* Pickup = World->SpawnActorDeferred<APickupItemActor>(
-		SpawnClass, FTransform(Top), this, nullptr, ESpawnActorCollisionHandlingMethod::AlwaysSpawn);
+		SpawnClass, SpawnTransform, this, nullptr, ESpawnActorCollisionHandlingMethod::AlwaysSpawn);
 	if (!Pickup)
 	{
 		UE_LOG(LogLostWithin, Warning, TEXT("%s could not spawn its contents (%s)."), *GetName(), *GetNameSafe(SpawnClass));
@@ -237,17 +341,63 @@ APickupItemActor* AToolboxActor::SpawnContents()
 	}
 
 	Pickup->ApplyItemData(ContentsItem);
-	Pickup->FinishSpawning(FTransform(Top));
-
-	if (Pickup->IsNoteItem())
-	{
-		Pickup->PlaceFlatOnFloor(Front);
-	}
-	else
-	{
-		Pickup->DropWithPhysics(Top, Forward * 160.0f + FVector(0.0f, 0.0f, 220.0f), { this });
-	}
+	Pickup->FinishSpawning(SpawnTransform);
+	PlaceInsideCavity(*Pickup);
 	return Pickup;
+}
+
+void AToolboxActor::PlaceInsideCavity(APickupItemActor& Pickup) const
+{
+	UPrimitiveComponent* Body = Cast<UPrimitiveComponent>(Pickup.GetRootComponent());
+	if (!Body)
+	{
+		return;
+	}
+
+	using namespace LostWithinToolboxGeometry;
+	const FTransform BoxTransform = GetActorTransform();
+	const FBox Inside = GetCavityBox();
+	const bool bIsNote = Pickup.IsNoteItem();
+	const FRotator Resting = bIsNote ? Pickup.NoteFlatRotation : FRotator::ZeroRotator;
+	const FVector BodyScaleInBox = Body->GetComponentScale() / BoxTransform.GetScale3D();
+
+	// The item's bounds in actor space for a yaw relative to the box, with its pivot at the origin.
+	auto BoundsInBox = [Body, &Resting, &BodyScaleInBox](double ExtraYaw, FQuat& OutRotation)
+	{
+		OutRotation = FRotator(Resting.Pitch, Resting.Yaw + ExtraYaw, Resting.Roll).Quaternion();
+		return Body->CalcBounds(FTransform(OutRotation, FVector::ZeroVector, BodyScaleInBox)).GetBox();
+	};
+
+	// Lay the longer side along the box's length.
+	FQuat LocalRotation;
+	FBox Bounds = BoundsInBox(0.0, LocalRotation);
+	if (Bounds.GetSize().Y > Bounds.GetSize().X)
+	{
+		Bounds = BoundsInBox(90.0, LocalRotation);
+	}
+
+	const FVector Size = Bounds.GetSize();
+	const FVector Room = Inside.GetSize();
+	if (Size.X > Room.X || Size.Y > Room.Y || Size.Z > Room.Z)
+	{
+		UE_LOG(LogLostWithin, Warning, TEXT("%s: %s (%.1f x %.1f x %.1f cm) is larger than the cavity (%.1f x %.1f x %.1f cm)."),
+			*GetName(), *Pickup.GetName(), Size.X, Size.Y, Size.Z, Room.X, Room.Y, Room.Z);
+	}
+
+	// Centred over the cavity, resting just above the inner floor.
+	const double Clearance = bIsNote ? NoteFloorClearanceCm : ItemFloorClearanceCm;
+	const FVector PivotInBox(
+		Inside.GetCenter().X - Bounds.GetCenter().X,
+		Inside.GetCenter().Y - Bounds.GetCenter().Y,
+		Inside.Min.Z + Clearance - Bounds.Min.Z);
+
+	Pickup.SetActorLocationAndRotation(BoxTransform.TransformPosition(PivotInBox), BoxTransform.GetRotation() * LocalRotation,
+		/*bSweep=*/false, nullptr, ETeleportType::TeleportPhysics);
+	if (Body->IsSimulatingPhysics())
+	{
+		Body->SetPhysicsLinearVelocity(FVector::ZeroVector);
+		Body->SetPhysicsAngularVelocityInDegrees(FVector::ZeroVector);
+	}
 }
 
 void AToolboxActor::OnInteract_Implementation(AActor* Interactor)

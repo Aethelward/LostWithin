@@ -59,9 +59,13 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Death Camera", meta = (ClampMin = "-90.0", ClampMax = "90.0", Units = "deg"))
 	float CollapseRoll = 28.0f;
 
-	/** Optional sting played when the death camera starts */
+	/** Short death impact played when the death camera starts, together with JumpscareSound (optional) */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Death Camera")
 	TObjectPtr<USoundBase> StingSound;
+
+	/** Death jumpscare played when the death camera starts, together with StingSound (optional) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Death Camera")
+	TObjectPtr<USoundBase> JumpscareSound;
 
 	/** Begins the sequence from StartView (the gameplay camera at the moment of contact) */
 	void StartSequence(APawn* InVictim, AActor* InKiller, const FMinimalViewInfo& StartView);

@@ -3,6 +3,10 @@
 #if WITH_DEV_AUTOMATION_TESTS
 
 #include "AI/MonsterAIComponent.h"
+#include "AI/MonsterHearingComponent.h"
+#include "AI/MonsterLightAverseComponent.h"
+#include "AI/MonsterSightFreezeComponent.h"
+#include "AI/MonsterVibrationComponent.h"
 #include "AIController.h"
 #include "Components/CapsuleComponent.h"
 #include "Editor.h"
@@ -14,13 +18,14 @@
 #include "Kismet/GameplayStatics.h"
 #include "Misc/AutomationTest.h"
 #include "NavigationSystem.h"
+#include "PlayInEditorDataTypes.h"
 #include "Tests/AutomationCommon.h"
 #include "Tests/AutomationEditorCommon.h"
 #include "UObject/Package.h"
 
 namespace
 {
-	constexpr const TCHAR* MonsterClassPath = TEXT("/Game/NPC/Monster/Lunger.Lunger_C");
+	constexpr const TCHAR* MonsterClassPath = TEXT("/Game/NPC/Lunger/Lunger.Lunger_C");
 
 	class FObserveMonsterMovement final : public IAutomationLatentCommand
 	{
@@ -76,6 +81,7 @@ namespace
 					PlacedMonster = *It;
 					PlacedStart = It->GetActorLocation();
 					bHadPlacedMonster = true;
+					IsolateFromSenses(*It);
 					break;
 				}
 				for (int32 Attempt = 0; Attempt < 32 && !SpawnedMonster.IsValid(); ++Attempt)
@@ -91,6 +97,7 @@ namespace
 					const FVector Position = Candidate.Location + FVector(0.0, 0.0, Defaults->GetCapsuleComponent()->GetScaledCapsuleHalfHeight() + 5.0);
 					SpawnedMonster = World->SpawnActor<ACharacter>(Class, Position, FRotator::ZeroRotator, Params);
 				}
+				IsolateFromSenses(SpawnedMonster.Get());
 				if (!SpawnedMonster.IsValid())
 				{
 					Test->AddError(TEXT("Could not spawn Lunger on clear navigation near the player."));
@@ -132,6 +139,26 @@ namespace
 		}
 
 	private:
+		/**
+		 *  This regression measures normal Blueprint roaming. Lunger's vibration sense reacts to the player's spawn
+		 *  landing and to the player being bumped by the roaming monster, and then owns the movement. The senses have
+		 *  their own tests (LostWithin.AI.MonsterVibration.*), so they are switched off on the observed monsters.
+		 */
+		void IsolateFromSenses(ACharacter* Monster) const
+		{
+			UMonsterVibrationComponent* Vibration = Monster ? Monster->FindComponentByClass<UMonsterVibrationComponent>() : nullptr;
+			if (!Vibration)
+			{
+				return;
+			}
+			if (Vibration->IsInvestigating())
+			{
+				Test->AddInfo(FString::Printf(TEXT("%s was already following a tremor; released for the roaming check."), *Monster->GetName()));
+			}
+			Vibration->StopInvestigating();
+			Vibration->Deactivate();
+		}
+
 		bool Observe(ACharacter* Monster, const FVector& Start, bool& bSawVelocity, bool& bMoved)
 		{
 			if (!IsValid(Monster) || !Cast<AAIController>(Monster->GetController()))
@@ -142,7 +169,18 @@ namespace
 			TInlineComponentArray<UMonsterAIComponent*> Components(Monster);
 			if (Components.Num() != 1 || !UMonsterAIComponent::CanRunNormalAI(Monster))
 			{
-				Test->AddError(TEXT("Movement regression requires one reaction component and inactive nearby cats. Stop cat sequences and rerun."));
+				// Name what took the movement over, so a failure says whether it is a cat, a sense or the setup.
+				const UMonsterAIComponent* Reaction = Components.Num() > 0 ? Components[0] : nullptr;
+				Test->AddError(FString::Printf(TEXT("Movement regression requires one reaction component and normal AI on %s: ")
+					TEXT("reaction components %d, cat near %d, fleeing %d, ragdolled %d, hearing %d, vibration %d, sight-frozen %d, ")
+					TEXT("light-repelled %d. Stop cat sequences and rerun."),
+					*Monster->GetName(), Components.Num(),
+					Reaction ? Reaction->bCatIsNear ? 1 : 0 : 0, Reaction ? Reaction->bIsFleeing ? 1 : 0 : 0,
+					Reaction ? Reaction->bIsRagdolled ? 1 : 0 : 0,
+					UMonsterHearingComponent::IsActorInvestigating(Monster) ? 1 : 0,
+					UMonsterVibrationComponent::IsActorInvestigating(Monster) ? 1 : 0,
+					UMonsterSightFreezeComponent::IsActorSightFrozen(Monster) ? 1 : 0,
+					UMonsterLightAverseComponent::IsActorLightRepelled(Monster) ? 1 : 0));
 				return false;
 			}
 			if (!Monster->IsActorTickEnabled() || !Monster->GetCharacterMovement()->IsComponentTickEnabled())
@@ -182,7 +220,9 @@ bool FMonsterMovementPIETest::RunTest(const FString& Parameters)
 		AddError(TEXT("Open Lvl_FirstPerson, finish setup and stop PIE before running this regression."));
 		return false;
 	}
-	ADD_LATENT_AUTOMATION_COMMAND(FStartPIECommand(false));
+	FRequestPlaySessionParams PlayParams;
+	PlayParams.GlobalMapOverride = World->GetPathName();
+	GEditor->RequestPlaySession(PlayParams);
 	FAutomationTestFramework::Get().EnqueueLatentCommand(MakeShared<FObserveMonsterMovement>(this));
 	ADD_LATENT_AUTOMATION_COMMAND(FEndPlayMapCommand());
 	return true;

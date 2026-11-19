@@ -66,7 +66,7 @@ namespace
 	};
 
 	const FReactionTarget ReactionTargets[] = {
-		{ TEXT("Lunger"), TEXT("/Game/NPC/Monster/Lunger.Lunger"), TEXT("/Game/NPC/Monster/PA_MonsterCatRagdoll"),
+		{ TEXT("Lunger"), TEXT("/Game/NPC/Lunger/Lunger.Lunger"), TEXT("/Game/NPC/Lunger/PA_MonsterCatRagdoll"),
 			MakeArrayView(HumanRagdollBones), TEXT("Hips"), 62.6f, true },
 		{ TEXT("BP_BoneDog"), TEXT("/Game/NPC/BoneDog/BP_BoneDog.BP_BoneDog"), TEXT("/Game/NPC/BoneDog/PA_BoneDogCatRagdoll"),
 			MakeArrayView(CanineRagdollBones), TEXT("Hips"), 350.0f, false },

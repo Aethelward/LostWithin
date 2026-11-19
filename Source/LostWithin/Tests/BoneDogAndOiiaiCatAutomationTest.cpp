@@ -119,6 +119,8 @@ namespace BoneDogAndOiiaiCatTestHelpers
 		Cat->bLoopMusic = false;
 		Cat->FloatHeight = 0.0f;
 		Cat->BobAmplitude = 0.0f;
+		// These fixtures exercise the plain pet-count trigger; PetSpinRitual covers the default ritual.
+		Cat->bRequirePetSpinSequence = false;
 		Cat->SpinTriggerInteractionThreshold = 5;
 		Cat->ItemDropInteractionThreshold = 2;
 		Cat->InteractionSoundSearchPaths.Reset();
@@ -272,10 +274,110 @@ bool FLostWithinOiiaiCatKeyDropperTest::RunTest(const FString& Parameters)
 		TestTrue(TEXT("Dropped key simulates physics"), DroppedKeyActor->IsSimulatingItemPhysics());
 	}
 
-	// After key dropped, prompt updates toward Chaos spin threshold
-	FText PostDropPrompt = Cat->GetInteractionPrompt_Implementation();
-	TestTrue(TEXT("Prompt switches to Chaos progress after key drop"), PostDropPrompt.ToString().Contains(TEXT("Chaos: 3/10")));
+	// After the key drops, the prompt is plain: chaos progress is hidden.
+	const FString PostDropPrompt = Cat->GetInteractionPrompt_Implementation().ToString();
+	TestEqual(TEXT("Prompt is plain after the key drop"), PostDropPrompt, FString(TEXT("[LMB] Pet Cat")));
+	TestFalse(TEXT("Prompt shows no chaos count"), PostDropPrompt.Contains(TEXT("Chaos")));
 
+	return true;
+}
+
+// -----------------------------------------------------------------------------
+// Test 2b: Chaos mode by the pet-and-spin ritual (pet, spin, pet, spin, pet, spin)
+// -----------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FLostWithinOiiaiCatPetSpinRitualTest, "LostWithin.Components.OiiaiCat.PetSpinRitual", LOSTWITHIN_TEST_FLAGS)
+
+bool FLostWithinOiiaiCatPetSpinRitualTest::RunTest(const FString& Parameters)
+{
+	using namespace BoneDogAndOiiaiCatTestHelpers;
+
+	FScopedBoneDogTestWorld Env;
+	UWorld* World = Env.World;
+	if (!TestNotNull(TEXT("World"), World))
+	{
+		return false;
+	}
+
+	// Feeds a turn in small steps, as the per-tick view yaw would arrive, from StartYaw.
+	auto Turn = [](UProximityFloatSpinComponent* Cat, const FVector& Where, float StartYaw, float Degrees)
+	{
+		const int32 Steps = FMath::Max(1, FMath::CeilToInt(FMath::Abs(Degrees) / 20.0f));
+		Cat->UpdatePlayerSpin(Where, StartYaw);
+		for (int32 Step = 1; Step <= Steps; ++Step)
+		{
+			Cat->UpdatePlayerSpin(Where, FRotator::NormalizeAxis(StartYaw + Degrees * Step / Steps));
+		}
+	};
+	const FVector Near(150.0f, 0.0f, 0.0f);
+	const FVector Far(2000.0f, 0.0f, 0.0f);
+
+	UProximityFloatSpinComponent* Cat = SpawnOiiaiTestCat(World, FVector::ZeroVector);
+	if (!TestNotNull(TEXT("Cat component"), Cat))
+	{
+		return false;
+	}
+	Cat->bRequirePetSpinSequence = true;
+	Cat->PetSpinRounds = 3;
+	Cat->PlayerSpinDegrees = 360.0f;
+	Cat->PlayerSpinRadius = 500.0f;
+	// High enough that the key is still held when the ritual completes (5 pets happen below).
+	Cat->ItemDropInteractionThreshold = 10;
+	AActor* Petter = Cat->GetOwner();
+
+	// A spin before any pet does nothing.
+	Turn(Cat, Near, 0.0f, 400.0f);
+	TestEqual(TEXT("Spinning before petting completes no round"), Cat->GetCompletedPetSpinRounds(), 0);
+
+	// Round 1: pet, then partial turns and a turn that goes back do not count; a full circle does.
+	IInteractableInterface::Execute_OnInteract(Cat, Petter);
+	TestTrue(TEXT("A pet waits for a spin"), Cat->IsAwaitingPlayerSpin());
+	Turn(Cat, Near, 0.0f, 300.0f);
+	TestEqual(TEXT("300 degrees is not a spin"), Cat->GetCompletedPetSpinRounds(), 0);
+	Turn(Cat, Near, 300.0f, -300.0f);
+	TestEqual(TEXT("Turning back cancels the turn"), Cat->GetCompletedPetSpinRounds(), 0);
+	Turn(Cat, Far, 0.0f, 400.0f);
+	TestEqual(TEXT("Turning far from the cat does not count"), Cat->GetCompletedPetSpinRounds(), 0);
+	Turn(Cat, Near, 0.0f, -365.0f);
+	TestEqual(TEXT("A full circle near the cat completes round 1 (either direction)"), Cat->GetCompletedPetSpinRounds(), 1);
+	TestFalse(TEXT("The round is closed"), Cat->IsAwaitingPlayerSpin());
+
+	// Petting twice in a row restarts the ritual with the second pet as its first.
+	IInteractableInterface::Execute_OnInteract(Cat, Petter);
+	IInteractableInterface::Execute_OnInteract(Cat, Petter);
+	TestEqual(TEXT("A double pet restarts the ritual"), Cat->GetCompletedPetSpinRounds(), 0);
+	TestTrue(TEXT("The restarting pet waits for a spin"), Cat->IsAwaitingPlayerSpin());
+	Turn(Cat, Near, 90.0f, 370.0f);
+	TestEqual(TEXT("Round 1 again"), Cat->GetCompletedPetSpinRounds(), 1);
+
+	IInteractableInterface::Execute_OnInteract(Cat, Petter);
+	Turn(Cat, Near, 0.0f, 360.0f);
+	TestEqual(TEXT("Round 2"), Cat->GetCompletedPetSpinRounds(), 2);
+	TestFalse(TEXT("Not active after two rounds"), Cat->IsFloatSpinActive());
+
+	IInteractableInterface::Execute_OnInteract(Cat, Petter);
+	TestEqual(TEXT("Five pets so far"), Cat->GetInteractionCount(), 5);
+	TestFalse(TEXT("The key is still held before chaos mode"), Cat->HasDroppedKey());
+	TestFalse(TEXT("The prompt shows no chaos count during the ritual"),
+		Cat->GetInteractionPrompt_Implementation().ToString().Contains(TEXT("Chaos")));
+	Turn(Cat, Near, 0.0f, 360.0f);
+	TestTrue(TEXT("The third pet-and-spin round starts chaos mode"), Cat->IsFloatSpinActive());
+	TestTrue(TEXT("Chaos Sanctuary is active"), Cat->IsChaosSanctuaryActive());
+	TestTrue(TEXT("The key still held drops when chaos mode starts"), Cat->HasDroppedKey());
+
+	// Pets alone never start chaos mode while the ritual is on.
+	UProximityFloatSpinComponent* PettedOnly = SpawnOiiaiTestCat(World, FVector(5000.0f, 0.0f, 0.0f));
+	if (TestNotNull(TEXT("Second cat"), PettedOnly))
+	{
+		PettedOnly->bRequirePetSpinSequence = true;
+		PettedOnly->SpinTriggerInteractionThreshold = 20;
+		for (int32 Pet = 0; Pet < 25; ++Pet)
+		{
+			IInteractableInterface::Execute_OnInteract(PettedOnly, PettedOnly->GetOwner());
+		}
+		TestFalse(TEXT("25 pets without spinning do not start chaos mode"), PettedOnly->IsFloatSpinActive());
+		TestTrue(TEXT("The key still drops by petting"), PettedOnly->HasDroppedKey());
+		TestFalse(TEXT("The prompt shows no chaos count"), PettedOnly->GetInteractionPrompt_Implementation().ToString().Contains(TEXT("Chaos")));
+	}
 	return true;
 }
 
@@ -326,7 +428,7 @@ bool FLostWithinOiiaiCatChaosSanctuaryTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Monster inside Chaos Sanctuary is frightened"), Monster.AI->bCatIsNear);
 	TestTrue(TEXT("Monster inside Chaos Sanctuary is fleeing"), Monster.AI->bIsFleeing);
 
-	USkeletalMesh* Mesh = LoadObject<USkeletalMesh>(nullptr, TEXT("/Game/NPC/Monster/base_basic_pbr.base_basic_pbr"));
+	USkeletalMesh* Mesh = LoadObject<USkeletalMesh>(nullptr, TEXT("/Game/NPC/Lunger/base_basic_pbr.base_basic_pbr"));
 	if (!TestNotNull(TEXT("Monster skeletal mesh for the ragdoll probe"), Mesh))
 	{
 		return false;

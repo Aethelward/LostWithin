@@ -923,11 +923,7 @@ void APickupItemActor::RefreshItemSetup(bool bForceApplyCatalogScale)
 	}
 
 	// 3. Fallback shape only when no mesh is assigned
-	UStaticMesh* FallbackMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Game/LevelPrototyping/Meshes/SM_ChamferCube.SM_ChamferCube"));
-	if (!FallbackMesh)
-	{
-		FallbackMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube"));
-	}
+	UStaticMesh* FallbackMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube"));
 	if (FallbackMesh)
 	{
 		MeshComponent->SetStaticMesh(FallbackMesh);

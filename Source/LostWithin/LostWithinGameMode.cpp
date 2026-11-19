@@ -8,6 +8,7 @@
 #include "Interaction/PickupItemActor.h"
 #include "LostWithin.h"
 #include "LostWithinPlayerController.h"
+#include "UI/LostWithinMenu.h"
 
 ALostWithinGameMode::ALostWithinGameMode()
 {
@@ -21,6 +22,7 @@ void ALostWithinGameMode::StartPlay()
 	RunStream.Initialize(RunSeed != 0 ? RunSeed : FMath::Rand());
 	CombinationDigits = LostWithinRunRules::MakeCombination(RunStream);
 	RunState = ELostWithinRunState::Active;
+	ApplyLostWithinAudioOptions(this);
 
 	Super::StartPlay();
 

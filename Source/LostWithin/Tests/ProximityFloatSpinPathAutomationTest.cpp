@@ -91,6 +91,8 @@ namespace
 		SpinComp->bEnableDiscoEnvironmentOnSpinWindow = false;
 		SpinComp->bUseMorphVicinityCheck = false;
 		SpinComp->InteractionSoundSearchPaths.Reset();
+		// These path tests start the sequence by pet count; the pet-and-spin ritual has its own test.
+		SpinComp->bRequirePetSpinSequence = false;
 		ConfigureFn(SpinComp);
 		SpinComp->RegisterComponent();
 

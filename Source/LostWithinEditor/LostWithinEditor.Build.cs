@@ -12,6 +12,7 @@ public class LostWithinEditor : ModuleRules
 			"Core",
 			"CoreUObject",
 			"Engine",
+			"NavigationSystem",
 			"InputCore",
 			"UnrealEd",
 			"LostWithin"
@@ -21,7 +22,6 @@ public class LostWithinEditor : ModuleRules
 			"Slate",
 			"SlateCore",
 			"AIModule",
-			"NavigationSystem",
 			"AssetRegistry",
 			"BlueprintGraph",
 			"KismetCompiler",

@@ -4,11 +4,13 @@
 
 #include "AI/MonsterAIComponent.h"
 #include "AI/MonsterHearingComponent.h"
+#include "Components/BoxComponent.h"
 #include "Components/CapsuleComponent.h"
 #include "Components/ProximityFloatSpinComponent.h"
 #include "Components/SceneComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Engine/Engine.h"
+#include "Engine/StaticMesh.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "GameFramework/Character.h"
@@ -25,7 +27,9 @@
 #include "Interaction/ToolboxActor.h"
 #include "Inventory/InventoryComponent.h"
 #include "Misc/AutomationTest.h"
+#include "Player/DeathCameraActor.h"
 #include "Player/PlayerDeathComponent.h"
+#include "Sound/SoundBase.h"
 #include "UObject/UnrealType.h"
 
 #define LOSTWITHIN_GAMEPLAY_TEST_FLAGS (EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter)
@@ -514,7 +518,7 @@ bool FLostWithinToolboxLockTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("The right key unlocks"), Toolbox->IsLocked());
 	TestFalse(TEXT("The key is used up"), Inventory->HasItem(APickupItemActor::OldKeyItemID));
 	TestTrue(TEXT("Unlocking opens the toolbox"), Toolbox->IsOpen());
-	TestEqual(TEXT("Opening pops out its item"), GatherGameplayPickups(World).Num(), PickupsBefore + 1);
+	TestEqual(TEXT("Opening yields its item"), GatherGameplayPickups(World).Num(), PickupsBefore + 1);
 	TestFalse(TEXT("An open toolbox cannot be used again"), IInteractableInterface::Execute_CanInteract(Toolbox, Player));
 
 	AToolboxActor* Empty = SpawnGameplayToolbox(World, FVector(400.0f, 0.0f, 0.0f), TEXT("Toolbox_Empty"));
@@ -522,6 +526,134 @@ bool FLostWithinToolboxLockTest::RunTest(const FString& Parameters)
 	const int32 PickupsBeforeEmpty = GatherGameplayPickups(World).Num();
 	TestTrue(TEXT("An unlocked toolbox opens"), Empty->Open());
 	TestEqual(TEXT("An empty toolbox yields nothing"), GatherGameplayPickups(World).Num(), PickupsBeforeEmpty);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FLostWithinToolboxHollowContentsTest, "LostWithin.Gameplay.ToolboxHollowContents", LOSTWITHIN_GAMEPLAY_TEST_FLAGS)
+
+bool FLostWithinToolboxHollowContentsTest::RunTest(const FString& Parameters)
+{
+	FScopedGameplayTestWorld TestWorld;
+	UWorld* World = TestWorld.World;
+	if (!TestNotNull(TEXT("Test world"), World))
+	{
+		return false;
+	}
+
+	struct FToolboxCase
+	{
+		const TCHAR* Name;
+		double Yaw;
+		bool bNote;
+	};
+	const FToolboxCase Cases[] = {
+		{ TEXT("Toolbox_Battery"), 0.0, false },
+		{ TEXT("Toolbox_BatteryTurned"), 37.0, false },
+		{ TEXT("Toolbox_Note"), 0.0, true },
+		{ TEXT("Toolbox_NoteTurned"), 127.0, true },
+	};
+
+	double OffsetX = 0.0;
+	for (const FToolboxCase& Case : Cases)
+	{
+		AToolboxActor* Toolbox = SpawnGameplayToolbox(World, FVector(OffsetX, 4000.0, 0.0), Case.Name);
+		OffsetX += 600.0;
+		if (!TestNotNull(Case.Name, Toolbox))
+		{
+			return false;
+		}
+		Toolbox->SetActorRotation(FRotator(0.0, Case.Yaw, 0.0));
+		const FTransform BoxTransform = Toolbox->GetActorTransform();
+		const FBox Cavity = Toolbox->GetCavityBox();
+		const FString Label = Case.Name;
+
+		TestTrue(Label + TEXT(": the cavity is a real space (> 50 x 24 x 18 cm)"),
+			Cavity.GetSize().X > 50.0 && Cavity.GetSize().Y > 24.0 && Cavity.GetSize().Z > 18.0);
+
+		// Nothing blocks inside the cavity.
+		FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(LostWithinToolboxCavityTest), /*bTraceComplex=*/false);
+		const FVector CavityCenter = BoxTransform.TransformPosition(Cavity.GetCenter());
+		TestFalse(Label + TEXT(": no collision fills the cavity"), World->OverlapBlockingTestByChannel(CavityCenter,
+			BoxTransform.GetRotation(), ECC_PhysicsBody, FCollisionShape::MakeBox(Cavity.GetExtent() - FVector(0.25)), QueryParams));
+
+		// From the middle the walls are hit at the inner faces, and the floor at the inner floor.
+		const FVector MidHeight(Cavity.GetCenter().X, Cavity.GetCenter().Y, 10.0);
+		struct FProbe { const TCHAR* What; FVector Direction; double Expected; int32 Axis; };
+		const FProbe Probes[] = {
+			{ TEXT("+X wall"), FVector(1.0, 0.0, 0.0), Cavity.Max.X, 0 },
+			{ TEXT("-X wall"), FVector(-1.0, 0.0, 0.0), Cavity.Min.X, 0 },
+			{ TEXT("+Y wall"), FVector(0.0, 1.0, 0.0), Cavity.Max.Y, 1 },
+			{ TEXT("-Y wall"), FVector(0.0, -1.0, 0.0), Cavity.Min.Y, 1 },
+			{ TEXT("inner floor"), FVector(0.0, 0.0, -1.0), Cavity.Min.Z, 2 },
+		};
+		for (const FProbe& Probe : Probes)
+		{
+			FHitResult Hit;
+			const bool bHit = World->LineTraceSingleByChannel(Hit, BoxTransform.TransformPosition(MidHeight),
+				BoxTransform.TransformPosition(MidHeight + Probe.Direction * 60.0), ECC_Visibility, QueryParams);
+			const FVector HitInBox = BoxTransform.InverseTransformPosition(Hit.ImpactPoint);
+			TestTrue(FString::Printf(TEXT("%s: the %s blocks at its inner face (hit %d at %.2f, expected %.2f)"), *Label,
+				Probe.What, bHit ? 1 : 0, HitInBox[Probe.Axis], Probe.Expected),
+				bHit && Hit.GetActor() == Toolbox && FMath::IsNearlyEqual(HitInBox[Probe.Axis], Probe.Expected, 0.3));
+		}
+
+		// The closed lid caps the box and rides the lid bone.
+		UBoxComponent* Lid = Toolbox->GetLidCollision();
+		if (TestNotNull(Label + TEXT(": lid collision"), Lid))
+		{
+			TestEqual(Label + TEXT(": the lid collision follows the lid bone"), Lid->GetAttachSocketName(), AToolboxActor::LidBoneName);
+			FHitResult LidHit;
+			const bool bLidHit = World->LineTraceSingleByChannel(LidHit, BoxTransform.TransformPosition(FVector(0.0, 0.0, 80.0)),
+				BoxTransform.TransformPosition(FVector(0.0, 0.0, 5.0)), ECC_Visibility, QueryParams);
+			const double LidTopZ = BoxTransform.InverseTransformPosition(LidHit.ImpactPoint).Z;
+			TestTrue(FString::Printf(TEXT("%s: the closed lid is hit on top (%.2f cm)"), *Label, LidTopZ),
+				bLidHit && LidHit.GetComponent() == Lid && LidTopZ > Cavity.Max.Z + 3.0 && LidTopZ < Cavity.Max.Z + 4.5);
+		}
+
+		// The contents are placed inside, resting on the inner floor.
+		if (Case.bNote)
+		{
+			// As the run setup builds a hint note for a toolbox.
+			FInventoryItem Note;
+			Note.ItemID = APickupItemActor::MakeUniqueNoteItemID();
+			Note.Description = FText::FromString(TEXT("The second lock remembers seven."));
+			Note.MaxStackSize = 1;
+			Note.WorldMesh = TSoftObjectPtr<UStaticMesh>(FSoftObjectPath(APickupItemActor::PaperNoteMeshAssetPath));
+			Toolbox->SetContents(APickupItemActor::StaticClass(), Note);
+		}
+		else
+		{
+			Toolbox->SetContents(APickupItemActor::StaticClass(), APickupItemActor::MakeBatteryInventoryItem(80.0f));
+		}
+		const TArray<APickupItemActor*> Before = GatherGameplayPickups(World);
+		TestTrue(Label + TEXT(": opens"), Toolbox->Open());
+		APickupItemActor* Item = nullptr;
+		for (APickupItemActor* Pickup : GatherGameplayPickups(World))
+		{
+			if (!Before.Contains(Pickup))
+			{
+				Item = Pickup;
+			}
+		}
+		if (!TestNotNull(Label + TEXT(": the contents exist as soon as the lid starts opening"), Item))
+		{
+			continue;
+		}
+
+		const UPrimitiveComponent* Body = Cast<UPrimitiveComponent>(Item->GetRootComponent());
+		const FBox ItemInBox = Body->CalcBounds(Body->GetComponentTransform().GetRelativeTransform(BoxTransform)).GetBox();
+		TestTrue(FString::Printf(TEXT("%s: the item lies within the inner walls and below the rim (%s)"), *Label, *ItemInBox.ToString()),
+			Cavity.ExpandBy(0.05).IsInside(ItemInBox));
+		TestTrue(FString::Printf(TEXT("%s: the item rests on the inner floor (gap %.2f cm)"), *Label, ItemInBox.Min.Z - Cavity.Min.Z),
+			ItemInBox.Min.Z >= Cavity.Min.Z - 0.05 && ItemInBox.Min.Z <= Cavity.Min.Z + 1.0);
+		TestEqual(Label + TEXT(": the right item"), Item->IsNoteItem(), Case.bNote);
+		if (Case.bNote)
+		{
+			TestTrue(Label + TEXT(": the note lies flat"), ItemInBox.GetSize().Z < 1.0);
+			TestTrue(Label + TEXT(": the note's long side runs along the box"), ItemInBox.GetSize().X >= ItemInBox.GetSize().Y);
+		}
+		TestFalse(Label + TEXT(": an open toolbox cannot be used again"), IInteractableInterface::Execute_CanInteract(Toolbox, Item));
+	}
 	return true;
 }
 
@@ -631,6 +763,13 @@ bool FLostWithinTouchDeathTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("The killer is remembered"), Death->GetKiller() == Monster.Actor);
 	TestFalse(TEXT("Death happens once"), Death->BeginDeath(Monster.Actor));
 	TestTrue(TEXT("The killer is frozen"), Monster.Actor->GetCharacterMovement()->MovementMode == MOVE_None);
+
+	// The death camera starts the jumpscare and the impact together.
+	const ADeathCameraActor* DeathCameraDefaults = GetDefault<ADeathCameraActor>();
+	TestTrue(TEXT("The death camera has the jumpscare"), DeathCameraDefaults->JumpscareSound
+		&& DeathCameraDefaults->JumpscareSound->GetName() == TEXT("SFX_DeathJumpscare_01"));
+	TestTrue(TEXT("The death camera has the impact"), DeathCameraDefaults->StingSound
+		&& DeathCameraDefaults->StingSound->GetName() == TEXT("SFX_DeathImpact_01"));
 	return true;
 }
 

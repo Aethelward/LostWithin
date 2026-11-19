@@ -120,9 +120,10 @@ higher follows the prompt more literally) and `variations`; any entry can overri
   visibility, requires 0.75 s of hidden time for a returning monster and uses a 10 s cooldown. Play keeps the
   last sound index so the next valid sighting uses a different take.
 - **Death.** Touching a lethal monster stops the live-sighting stinger and exploration playlist. The death
-  camera plays `SFX_DeathImpact_01` (1.47 s). YOU DIED plays the separate `SFX_DeathGameOver_01` (3.76 s) as a
-  UI sound through pause. Try again starts a fresh run and playlist. The Output Log shows `Monster reveal`,
-  `Death camera: death impact` and `Death end screen: game over` for these transitions.
+  camera starts `SFX_DeathJumpscare_01` (`Jumpscare Sound`) and the short `SFX_DeathImpact_01` (1.47 s,
+  `Sting Sound`) together. YOU DIED plays the separate `SFX_DeathGameOver_01` (3.76 s) as a UI sound through
+  pause. Try again starts a fresh run and playlist. The Output Log shows `Monster reveal`, `Death camera: death
+  jumpscare`, `Death camera: death impact` and `Death end screen: game over` for these transitions.
 - **Monster footsteps:** `UMonsterFootstepComponent` (`MonsterFootsteps` on each monster) plays one of four
   normalized `SFX_<Creature>_Step_NN` takes at the feet every `StrideLength` of ground distance: Lunger 75 cm, BoneDog
   45 cm, Doll 40 cm, Ghoul 70 cm. Faster movement (investigating, fleeing) steps faster; airborne, ragdolled or slower

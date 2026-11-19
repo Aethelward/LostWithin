@@ -34,8 +34,9 @@ after reloading the map.
 
 The end-to-end pass fits shared edge coordinates to the surveyed layout. It aligns 167 floor seams,
 166 roof seams, 86 straight wall ends and 145 corners or junctions. At a corner, one run fills the
-junction and the others stop at its face. The floor top is Z −45.772 cm. Wall and frame bases meet it,
-and their tops meet the common roof underside at Z 314.228 cm. The covered rooms and the open-air exit
+junction and the others stop at its face. The maze is centered at X=0 and Y=0. The floor underside
+sits at Z=0, the floor top and wall bases sit at Z=24 cm, and the shared roof underside is Z=384 cm.
+The covered rooms and the open-air exit
 landing keep the same topology. Door apertures remain 120 × 264 cm. The saved geometry audit found no
 intersecting structural volumes and a maximum seam residual below 0.001 cm. One further redundant wall
 instance and its collision partner were removed. The 34 torches mount with their local +Y rear plate
@@ -47,11 +48,12 @@ The 156 original doorway parts included 77 exactly overlapping pairs and one hea
 became 138 instances. The 159 replaced actors and their 158 unique source meshes were removed only after
 replacement validation and a saved map reload. Two coincident wall instances were also removed.
 
-The monster Blueprint is `/Game/NPC/Monster/Lunger`, and its placed actor is labeled `Lunger`. Its actor
+The monster Blueprint is `/Game/NPC/Lunger/Lunger` (its folder moved from `/Game/NPC/Monster/` on 2026-11-19;
+redirectors remain at the old paths), and its placed actor is labeled `Lunger`. Its actor
 identity, placement, roaming, animation, physics and native reaction component are preserved. The animation
-Blueprint and dedicated physics asset keep their existing names. The old `BP_Monster` asset is a compatibility
-redirector; retain it while an older editor DLL still contains the original setup/test path. Current source
-uses `Lunger`. The path-only source changes passed a compile-only Windows build on 2026-11-18; that command
+Blueprint and dedicated physics asset keep their existing names. The old `/Game/NPC/Monster/BP_Monster` asset is a
+compatibility redirector. Since 2026-11-19 it points straight at `/Game/NPC/Lunger/Lunger`, with no redirector
+chain. Current source uses `/Game/NPC/Lunger/` and no longer loads `BP_Monster`. The path-only source changes passed a compile-only Windows build on 2026-11-18; that command
 does not replace the running DLL. Use the normal closed-editor build when loading those source changes.
 
 The earlier wall/floor migration removed 372 actors and 371 source mesh assets. The later frame/roof pass

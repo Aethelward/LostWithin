@@ -7,8 +7,8 @@ texture files are present at the new locations.
 
 `Config/DefaultEngine.ini` now supplies package redirects for the verified
 material, maze mesh, combined mesh, blacksmith object, cat and monster folder
-moves. The monster setup and automation test also use the current
-`/Game/NPC/Monster/` folder directly.
+moves. The old `/Game/Monster/` redirect now targets `/Game/NPC/Lunger/`, where the monster
+folder moved on 2026-11-19. The monster setup and automation tests use `/Game/NPC/Lunger/` directly.
 
 The missing first-person material parent `MI_DefaultColorway` and its dependency
 `M_FlatCol` were restored from verified original local Git LFS objects to

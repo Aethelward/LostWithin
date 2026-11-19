@@ -8,10 +8,14 @@
 
 class UBorder;
 class UButton;
+class UCanvasPanel;
 class UDragDropOperation;
+class UImage;
 class UInventoryComponent;
 class UTextBlock;
+class UTexture2D;
 class UVerticalBox;
+struct FInventoryItem;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnInventoryCloseRequested);
 
@@ -139,6 +143,8 @@ private:
 
 	/** Ensures the dynamic UMG widget hierarchy exists before accessing pointers */
 	void BuildWidgetTreeIfNeeded();
+	void BuildHotbar(UCanvasPanel* RootCanvas);
+	void RefreshHotbar(const TArray<FInventoryItem>& Items);
 
 	/** Creates a styled button inside ContextMenuBorder */
 	UButton* CreateContextMenuButton(UVerticalBox* ParentBox, const FName ButtonName, const FText& DefaultLabel, TObjectPtr<UTextBlock>* OutLabelText = nullptr);
@@ -157,6 +163,21 @@ private:
 
 	UPROPERTY(Transient)
 	TObjectPtr<UTextBlock> CrosshairText = nullptr;
+
+	UPROPERTY()
+	TSubclassOf<UUserWidget> HotbarClass;
+
+	UPROPERTY()
+	TObjectPtr<UTexture2D> EmptyHotbarIcon;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UUserWidget> HotbarView;
+
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UImage>> HotbarImages;
+
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UTextBlock>> HotbarItemNames;
 
 	UPROPERTY(Transient)
 	TObjectPtr<UBorder> InventoryPanelBorder = nullptr;
