@@ -1,0 +1,106 @@
+#include "Domains/Level/McpLevelActions.h"
+#include "Domains/Level/Lifecycle/McpLevelPathSafety.h"
+
+#include "Editor.h"
+#include "Engine/World.h"
+#include "RenderingThread.h"
+
+#include "Safety/McpSafeOperationsLevelSave.h"
+
+using McpSafeOperations::McpSafeLevelSave;
+
+namespace McpLevelHandlers {
+bool HandleSaveLevelAsAction(UEngineWireSubsystem& Subsystem, const FString& RequestId, const TSharedPtr<FJsonObject>& Payload, TSharedPtr<FMcpBridgeWebSocket> RequestingSocket) {
+    // Force cleanup to prevent potential deadlocks with HLODs/WorldPartition
+    // during save
+    FlushRenderingCommands();
+    GEditor->ForceGarbageCollection(true);
+    FlushRenderingCommands();
+
+    FString SavePath = GetJsonStringField(Payload, TEXT("savePath"));
+    if (SavePath.IsEmpty()) {
+      Subsystem.SendAutomationError(RequestingSocket, RequestId,
+                             TEXT("savePath required for save_level_as"),
+                             TEXT("INVALID_ARGUMENT"));
+      return true;
+    }
+
+    const FString LevelPathError = CheckLevelPathIsOpenLevel(Payload);
+    if (!LevelPathError.IsEmpty()) {
+      Subsystem.SendAutomationError(RequestingSocket, RequestId, LevelPathError, TEXT("LEVEL_NOT_LOADED"));
+      return true;
+    }
+
+    const FString SavePathAsGiven = SavePath;
+    SavePath = SanitizeProjectRelativePath(SavePath);
+    if (SavePath.IsEmpty()) {
+      Subsystem.SendAutomationResponse(RequestingSocket, RequestId, false,
+                             McpPathRefusalMessage(TEXT("savePath"), SavePathAsGiven),
+                             nullptr, TEXT("SECURITY_VIOLATION"));
+      return true;
+    }
+    // McpSafeLevelSave never overwrites another package, but its refusal reached only the log and the reply
+    // said "check Output Log for details". Name it here.
+    const FString SavePackage = FPackageName::ObjectPathToPackageName(SavePath);
+    if (FPackageName::DoesPackageExist(SavePackage) && !IsCurrentEditorWorldPackage(SavePackage)) {
+      Subsystem.SendAutomationError(RequestingSocket, RequestId,
+          FString::Printf(TEXT("Something already exists at %s, and save_as never overwrites it: pick another savePath."), *SavePackage),
+          TEXT("ASSET_ALREADY_EXISTS"));
+      return true;
+    }
+
+    // McpSafeLevelSave refuses a map file path past McpMaxMapFilePathLength too, but only into the log: said here.
+    FString AbsoluteFilePath;
+    const int32 MaxLength = McpSafeOperations::McpMaxMapFilePathLength;
+    if (TryGetAbsoluteMapFilename(SavePath, AbsoluteFilePath) && AbsoluteFilePath.Len() > MaxLength)
+    {
+      TSharedPtr<FJsonObject> ErrorDetail = McpHandlerUtils::CreateResultObject();
+      ErrorDetail->SetStringField(TEXT("attemptedPath"), SavePath);
+      ErrorDetail->SetStringField(TEXT("absolutePath"), AbsoluteFilePath);
+      ErrorDetail->SetNumberField(TEXT("pathLength"), AbsoluteFilePath.Len());
+      ErrorDetail->SetNumberField(TEXT("maxLength"), MaxLength);
+      Subsystem.SendAutomationResponse(
+          RequestingSocket, RequestId, false,
+          FString::Printf(TEXT("Path too long (%d chars, max %d): %s"), AbsoluteFilePath.Len(), MaxLength, *SavePath),
+          ErrorDetail, TEXT("PATH_TOO_LONG"));
+      return true;
+    }
+
+    bool bSaved = false;
+    if (UWorld *World = McpHandlerUtils::GetEditorWorld()) {
+      if (McpSafeOperations::McpIsUnsavedWorldPartitionTemplate(World)) {
+        Subsystem.SendAutomationError(RequestingSocket, RequestId,
+                               TEXT("save_level_as cannot save an unsaved World Partition template level; create_level or load a level first"),
+                               TEXT("UNSAVED_TEMPLATE_LEVEL"));
+        return true;
+      }
+      // Use McpSafeLevelSave to prevent Intel GPU driver crashes
+      // Explicitly use 5 retries for Intel GPU resilience (max 7.75s total retry time)
+      bSaved = McpSafeLevelSave(World->PersistentLevel, SavePath);
+    }
+    if (bSaved) {
+      // The registry hears of the saved level at once, so rename and duplicate find it.
+      if (!AbsoluteFilePath.IsEmpty()) {
+        ScanLevelPackagePath(SavePath, AbsoluteFilePath);
+      }
+
+      TSharedPtr<FJsonObject> Resp = McpHandlerUtils::CreateResultObject();
+      // savedAssetPath gives the receipt the new level's handle and change, as save answers it.
+      Resp->SetStringField(TEXT("savedAssetPath"), SavePath);
+      Subsystem.SendAutomationResponse(
+          RequestingSocket, RequestId, true,
+          FString::Printf(TEXT("Level saved as %s"), *SavePath), Resp,
+          FString());
+    } else {
+      // A failed save is answered (it used to send nothing, so the caller hung)
+      TSharedPtr<FJsonObject> ErrorDetail = McpHandlerUtils::CreateResultObject();
+      ErrorDetail->SetStringField(TEXT("attemptedPath"), SavePath);
+      ErrorDetail->SetStringField(TEXT("reason"), TEXT("Save operation failed - check Output Log for details"));
+      Subsystem.SendAutomationResponse(
+          RequestingSocket, RequestId, false,
+          FString::Printf(TEXT("Failed to save level as: %s"), *SavePath),
+          ErrorDetail, TEXT("SAVE_FAILED"));
+    }
+    return true;
+}
+} // namespace McpLevelHandlers

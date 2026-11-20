@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "Engine/EngineTypes.h"
+#include "Engine/TimerHandle.h"
 #include "Subsystems/WorldSubsystem.h"
 #include "LostWithinLightSubsystem.generated.h"
 
@@ -51,10 +52,33 @@ public:
 
 	int32 GetNumTorchLights() const { return TorchLights.Num(); }
 
+	/** World locations of every torch light that is on now (visible, intensity above 0). */
+	void GetLitTorchLocations(TArray<FVector>& OutLocations) const;
+
+	/** The lit torch light nearest Point within Radius (no line check), or null. */
+	UPointLightComponent* FindLitTorchNear(const FVector& Point, float Radius) const;
+
+	/** Switches a torch light off for Seconds, then back on. Only lights switched off here are switched on again.
+	 *  False when Light is null, already off or already snuffed. */
+	bool SnuffTorch(UPointLightComponent* Light, float Seconds);
+
+	/** True while Light is switched off by SnuffTorch. */
+	bool IsTorchSnuffed(const UPointLightComponent* Light) const;
+
+	/** Relights every snuffed torch now (end of play, tests). */
+	void RelightAllSnuffedTorches();
+
+	virtual void Deinitialize() override;
+
 private:
 	void RefreshIfStale() const;
 	bool HasClearLine(const FVector& From, const FVector& To, const AActor* LightOwner, const AActor* IgnoreA, const AActor* IgnoreB) const;
 
+	void RelightTorch(TWeakObjectPtr<UPointLightComponent> Light);
+
 	TArray<TWeakObjectPtr<UPointLightComponent>> TorchLights;
 	double LastRefreshSeconds = -1.0;
+
+	/** Torches switched off by SnuffTorch, with their relight timers. */
+	TMap<TWeakObjectPtr<UPointLightComponent>, FTimerHandle> SnuffedTorches;
 };

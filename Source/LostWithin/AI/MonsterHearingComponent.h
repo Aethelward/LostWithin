@@ -133,6 +133,15 @@ public:
 	/** True when Actor has a hearing component that is investigating. */
 	static bool IsActorInvestigating(const AActor* Actor);
 
+	/** How many player footsteps this monster has heard (a counter; it changes on each new one). */
+	int32 GetHeardPlayerCount() const { return HeardPlayerCount; }
+
+	/** Where the last heard player footstep was made. */
+	FVector GetLastHeardPlayerLocation() const { return LastHeardPlayerLocation; }
+
+	/** True once any player footstep was heard. */
+	bool HasHeardPlayer() const { return HeardPlayerCount > 0; }
+
 protected:
 
 	virtual void BeginPlay() override;
@@ -160,6 +169,9 @@ private:
 	void UpdateMoving(float DeltaTime);
 	void UpdateSearching(float DeltaTime);
 	void Finish(bool bRestoreSpeed);
+
+	int32 HeardPlayerCount = 0;
+	FVector LastHeardPlayerLocation = FVector::ZeroVector;
 
 	EInvestigationState State = EInvestigationState::Idle;
 	ELostWithinNoiseKind CurrentNoiseKind = ELostWithinNoiseKind::Other;

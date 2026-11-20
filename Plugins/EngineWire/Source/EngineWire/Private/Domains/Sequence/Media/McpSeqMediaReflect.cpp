@@ -1,0 +1,240 @@
+#include "Foundation/BridgeHelpers/Assets/McpAssetCreation.h"
+#include "Foundation/HandlerUtils/McpOptionalModule.h"
+#include "Foundation/BridgeHelpers/Security/McpAssetPathCanonical.h"
+#include "Domains/Sequence/Media/McpSeqMedia.h"
+#include "Domains/Sequence/McpSeqPathSecurity.h"
+
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "Foundation/BridgeHelpers/Blueprints/McpBPPaths.h"
+#include "Foundation/HandlerUtils/McpHandlerUtils.h"
+#include "Foundation/BridgeHelpers/Responses/McpJsonNumbers.h"
+#include "EngineWireSubsystem.h"
+#include "Misc/PackageName.h"
+#include "Misc/Paths.h"
+#include "Modules/ModuleManager.h"
+#include "Safety/McpSafeOperations.h"
+#include "UObject/Package.h"
+#include "UObject/UnrealType.h"
+
+namespace McpSequenceMedia {
+namespace {
+
+FString NormalizeLoadPath(const FString &Input) {
+  FString Path = Input.TrimStartAndEnd();
+  Path.ReplaceInline(TEXT("\\"), TEXT("/"));
+  McpAssetPathCanonical::MapContentRootInline(Path);
+  if (Path.StartsWith(TEXT("/Game/")) && !Path.Contains(TEXT("."))) {
+    Path += TEXT(".") + FPaths::GetBaseFilename(Path);
+  }
+  return Path;
+}
+
+}
+
+FString GetStringAny(const TSharedPtr<FJsonObject> &Payload,
+                     std::initializer_list<const TCHAR *> Fields,
+                     const FString &DefaultValue) {
+  const FString Value = McpGetFirstStringField(Payload, Fields).TrimStartAndEnd();
+  return Value.IsEmpty() ? DefaultValue : Value;
+}
+
+bool GetBoolAny(const TSharedPtr<FJsonObject> &Payload,
+                std::initializer_list<const TCHAR *> Fields,
+                bool DefaultValue) {
+  if (!Payload.IsValid()) {
+    return DefaultValue;
+  }
+  for (const TCHAR *Field : Fields) {
+    bool Value = false;
+    if (Payload->TryGetBoolField(Field, Value)) {
+      return Value;
+    }
+  }
+  return DefaultValue;
+}
+
+double GetNumberAny(const TSharedPtr<FJsonObject> &Payload,
+                    std::initializer_list<const TCHAR *> Fields,
+                    double DefaultValue) {
+  double OutValue = DefaultValue;
+  McpGetFirstNumberField(Payload, Fields, OutValue);
+  return OutValue;
+}
+
+void SendMediaError(UEngineWireSubsystem *Subsystem,
+                    TSharedPtr<FMcpBridgeWebSocket> Socket,
+                    const FString &RequestId,
+                    const FString &ErrorCode,
+                    const FString &Message,
+                    const TSharedPtr<FJsonObject> &Details) {
+  TSharedPtr<FJsonObject> Result =
+      Details.IsValid() ? Details : McpHandlerUtils::CreateResultObject();
+  Subsystem->SendAutomationResponse(Socket, RequestId, false, Message, Result,
+                                    ErrorCode);
+}
+
+bool ResolveMediaAssetIdentity(const TSharedPtr<FJsonObject> &Payload,
+                               const FString &DefaultFolder,
+                               const FString &DefaultName,
+                               FString &OutPackageName,
+                               FString &OutAssetName,
+                               FString &OutObjectPath,
+                               FString &OutError) {
+  FString AssetPath =
+      GetStringAny(Payload, {TEXT("assetPath")});
+  FString Folder =
+      GetStringAny(Payload, {TEXT("path")},
+                   DefaultFolder);
+  FString Name =
+      GetStringAny(Payload, {TEXT("name")}, DefaultName);
+  if (!AssetPath.IsEmpty()) {
+    AssetPath.ReplaceInline(TEXT("\\"), TEXT("/"));
+    if (AssetPath.Contains(TEXT("."))) {
+      AssetPath = AssetPath.Left(AssetPath.Find(TEXT(".")));
+    }
+    Name = FPaths::GetBaseFilename(AssetPath);
+    Folder = FPaths::GetPath(AssetPath);
+  }
+  Folder.ReplaceInline(TEXT("\\"), TEXT("/"));
+  McpAssetPathCanonical::MapContentRootInline(Folder);
+  if (Folder.Equals(TEXT("Game")) ||
+      Folder.StartsWith(TEXT("Game/"))) {
+    Folder = TEXT("/") + Folder;
+  } else if (!Folder.StartsWith(TEXT("/"))) {
+    Folder = TEXT("/Game/") + Folder.TrimChar(TEXT('/'));
+  }
+  Name = Name.TrimStartAndEnd();
+  if (Name.IsEmpty() || Name.Contains(TEXT("/")) || Name.Contains(TEXT("."))) {
+    OutError = TEXT("A valid media asset name is required");
+    return false;
+  }
+  OutPackageName = Folder.TrimChar(TEXT('/'));
+  OutPackageName = TEXT("/") + OutPackageName / Name;
+  FString ValidatedPackageName;
+  if (!McpSequencePathSecurity::ValidateWritableAssetPath(
+          OutPackageName, ValidatedPackageName, OutError)) {
+    return false;
+  }
+  OutPackageName = ValidatedPackageName;
+  if (!FPackageName::IsValidLongPackageName(OutPackageName)) {
+    OutError = FString::Printf(TEXT("Invalid media asset path: %s"),
+                               *OutPackageName);
+    return false;
+  }
+  OutAssetName = Name;
+  OutObjectPath = OutPackageName + TEXT(".") + Name;
+  return true;
+}
+
+bool CreateMediaAssetFromPayload(const TSharedPtr<FJsonObject> &Payload,
+                                 const FString &DefaultFolder,
+                                 const FString &ClassName,
+                                 FMediaAssetCreateResult &OutCreated,
+                                 FString &OutError, FString &OutCode) {
+  OutCode = TEXT("MEDIA_ASSET_CREATE_FAILED");
+  FString PackageName;
+  FString AssetName;
+  FString ObjectPath;
+  if (!ResolveMediaAssetIdentity(Payload, DefaultFolder, FString(),
+                                 PackageName, AssetName, ObjectPath, OutError)) {
+    return false;
+  }
+  UClass *AssetClass = ResolveMediaClass(ClassName, OutError);
+  return AssetClass &&
+         CreateMediaAsset(AssetClass, PackageName, AssetName, OutCreated,
+                          OutError, OutCode);
+}
+
+UClass *ResolveMediaClass(const FString &ClassName, FString &OutError) {
+  if (!McpLoadOptionalModule(TEXT("MediaAssets"))) {
+    OutError = TEXT("MediaAssets module is unavailable");
+    return nullptr;
+  }
+  const FString ClassPath =
+      FString::Printf(TEXT("/Script/MediaAssets.%s"), *ClassName);
+  UClass *Class = LoadObject<UClass>(nullptr, *ClassPath);
+  if (!Class) {
+    OutError = FString::Printf(TEXT("Media class is unavailable: %s"),
+                               *ClassPath);
+  }
+  return Class;
+}
+
+UObject *LoadMediaObject(const FString &ObjectPath,
+                         UClass *ExpectedClass,
+                         FString &OutResolvedPath,
+                         FString &OutError) {
+  OutResolvedPath = NormalizeLoadPath(ObjectPath);
+  UObject *Object = LoadObject<UObject>(nullptr, *OutResolvedPath);
+  if (!Object) {
+    OutError =
+        FString::Printf(TEXT("Media object not found: %s"), *ObjectPath);
+    return nullptr;
+  }
+  if (ExpectedClass && !Object->IsA(ExpectedClass)) {
+    OutError = FString::Printf(TEXT("Object is not a %s: %s"),
+                               *ExpectedClass->GetName(), *ObjectPath);
+    return nullptr;
+  }
+  return Object;
+}
+
+bool CreateMediaAsset(UClass *AssetClass,
+                      const FString &PackageName,
+                      const FString &AssetName,
+                      FMediaAssetCreateResult &OutCreated,
+                      FString &OutError, FString &OutCode) {
+  const FString ObjectPath = PackageName + TEXT(".") + AssetName;
+  // McpLoadAsset asks the asset registry first: LoadObject on a free path logged "Failed to find object" on every create.
+  OutCode = TEXT("MEDIA_ASSET_CREATE_FAILED");
+  if (UObject *Existing = McpLoadAsset(ObjectPath)) {
+    const bool bSameClass = Existing->IsA(AssetClass);
+    OutCode = bSameClass ? TEXT("MEDIA_ASSET_ALREADY_EXISTS") : TEXT("MEDIA_ASSET_CREATE_FAILED");
+    OutError = bSameClass ? TEXT("A media asset already exists at this path")
+                          : TEXT("An asset of another class already uses this path");
+    return false;
+  }
+  if (FPackageName::DoesPackageExist(PackageName)) {
+    OutError =
+        FString::Printf(TEXT("Package already exists: %s"), *PackageName);
+    return false;
+  }
+  UPackage *Package = McpCreatePackageOrNull(PackageName);
+  UObject *Object =
+      Package ? NewObject<UObject>(Package, AssetClass, FName(*AssetName),
+                                   RF_Public | RF_Standalone | RF_Transactional)
+              : nullptr;
+  if (!Object) {
+    OutError = TEXT("Failed to create media asset");
+    return false;
+  }
+  FAssetRegistryModule::AssetCreated(Object);
+  OutCreated.Object = Object;
+  OutCreated.PackageName = PackageName;
+  OutCreated.ObjectPath = Object->GetPathName();
+  OutCreated.bCreated = true;
+  return true;
+}
+
+TSharedPtr<FJsonObject> BuildAssetResponse(
+    const FMediaAssetCreateResult &Created,
+    const FString &AssetType) {
+  TSharedPtr<FJsonObject> Result = McpHandlerUtils::CreateResultObject();
+  Result->SetStringField(TEXT("assetType"), AssetType);
+  Result->SetStringField(TEXT("assetPath"), Created.ObjectPath);
+  Result->SetStringField(TEXT("packageName"), Created.PackageName);
+  Result->SetBoolField(TEXT("created"), Created.bCreated);
+  Result->SetBoolField(TEXT("saved"), Created.bSaved);
+  if (Created.Object) {
+    Result->SetStringField(TEXT("classPath"),
+                           Created.Object->GetClass()->GetPathName());
+    McpHandlerUtils::AddVerification(Result, Created.Object);
+  }
+  return Result;
+}
+
+bool SaveMediaAsset(UObject *Object) {
+  return Object && McpSafeOperations::McpSafeAssetSave(Object);
+}
+
+}

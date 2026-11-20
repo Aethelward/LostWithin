@@ -1,0 +1,911 @@
+{
+	"folders": [
+		{
+			"name": "LostWithin",
+			"path": "."
+		},
+		{
+			"name": "UE5",
+			"path": "/home/nekoqrii/UnrealEngine"
+		}
+	],
+	"settings": {
+		"typescript.tsc.autoDetect": "off",
+		"npm.autoDetect": "off",
+		"terminal.integrated.env.linux": {
+			"PATH": "/home/nekoqrii/UnrealEngine/Engine/Binaries/ThirdParty/DotNet/8.0.300/linux-x64:${env:PATH}",
+			"DOTNET_ROOT": "/home/nekoqrii/UnrealEngine/Engine/Binaries/ThirdParty/DotNet/8.0.300/linux-x64",
+			"DOTNET_HOST_PATH": "/home/nekoqrii/UnrealEngine/Engine/Binaries/ThirdParty/DotNet/8.0.300/linux-x64/dotnet",
+			"DOTNET_MULTILEVEL_LOOKUP": "0",
+			"DOTNET_ROLL_FORWARD": "LatestMajor"
+		}
+	},
+	"extensions": {
+		"recommendations": [
+			"ms-vscode.cpptools",
+			"ms-dotnettools.csharp"
+		]
+	},
+	"tasks": {
+		"version": "2.0.0",
+		"tasks": [
+			{
+				"label": "LostWithin Linux Debug Build",
+				"group": "build",
+				"command": "Engine/Build/BatchFiles/Linux/Build.sh",
+				"args": [
+					"LostWithin",
+					"Linux",
+					"Debug",
+					"/home/nekoqrii/UnrealProjects/LostWithin/LostWithin.uproject",
+					"-waitmutex"
+				],
+				"problemMatcher": "$msCompile",
+				"type": "shell",
+				"options": {
+					"cwd": "/home/nekoqrii/UnrealEngine"
+				}
+			},
+			{
+				"label": "LostWithin Linux Debug Rebuild",
+				"group": "build",
+				"command": "Engine/Build/BatchFiles/Linux/Build.sh",
+				"args": [
+					"LostWithin",
+					"Linux",
+					"Debug",
+					"/home/nekoqrii/UnrealProjects/LostWithin/LostWithin.uproject",
+					"-waitmutex"
+				],
+				"problemMatcher": "$msCompile",
+				"dependsOn": [
+					"LostWithin Linux Debug Clean"
+				],
+				"type": "shell",
+				"options": {
+					"cwd": "/home/nekoqrii/UnrealEngine"
+				}
+			},
+			{
+				"label": "LostWithin Linux Debug Clean",
+				"group": "build",
+				"command": "Engine/Build/BatchFiles/Linux/Build.sh",
+				"args": [
+					"LostWithin",
+					"Linux",
+					"Debug",
+					"/home/nekoqrii/UnrealProjects/LostWithin/LostWithin.uproject",
+					"-waitmutex",
+					"-clean"
+				],
+				"problemMatcher": "$msCompile",
+				"type": "shell",
+				"options": {
+					"cwd": "/home/nekoqrii/UnrealEngine"
+				}
+			},
+			{
+				"label": "LostWithin Linux DebugGame Build",
+				"group": "build",
+				"command": "Engine/Build/BatchFiles/Linux/Build.sh",
+				"args": [
+					"LostWithin",
+					"Linux",
+					"DebugGame",
+					"/home/nekoqrii/UnrealProjects/LostWithin/LostWithin.uproject",
+					"-waitmutex"
+				],
+				"problemMatcher": "$msCompile",
+				"type": "shell",
+				"options": {
+					"cwd": "/home/nekoqrii/UnrealEngine"
+				}
+			},
+			{
+				"label": "LostWithin Linux DebugGame Rebuild",
+				"group": "build",
+				"command": "Engine/Build/BatchFiles/Linux/Build.sh",
+				"args": [
+					"LostWithin",
+					"Linux",
+					"DebugGame",
+					"/home/nekoqrii/UnrealProjects/LostWithin/LostWithin.uproject",
+					"-waitmutex"
+				],
+				"problemMatcher": "$msCompile",
+				"dependsOn": [
+					"LostWithin Linux DebugGame Clean"
+				],
+				"type": "shell",
+				"options": {
+					"cwd": "/home/nekoqrii/UnrealEngine"
+				}
+			},
+			{
+				"label": "LostWithin Linux DebugGame Clean",
+				"group": "build",
+				"command": "Engine/Build/BatchFiles/Linux/Build.sh",
+				"args": [
+					"LostWithin",
+					"Linux",
+					"DebugGame",
+					"/home/nekoqrii/UnrealProjects/LostWithin/LostWithin.uproject",
+					"-waitmutex",
+					"-clean"
+				],
+				"problemMatcher": "$msCompile",
+				"type": "shell",
+				"options": {
+					"cwd": "/home/nekoqrii/UnrealEngine"
+				}
+			},
+			{
+				"label": "LostWithin Linux Development Build",
+				"group": "build",
+				"command": "Engine/Build/BatchFiles/Linux/Build.sh",
+				"args": [
+					"LostWithin",
+					"Linux",
+					"Development",
+					"/home/nekoqrii/UnrealProjects/LostWithin/LostWithin.uproject",
+					"-waitmutex"
+				],
+				"problemMatcher": "$msCompile",
+				"type": "shell",
+				"options": {
+					"cwd": "/home/nekoqrii/UnrealEngine"
+				}
+			},
+			{
+				"label": "LostWithin Linux Development Rebuild",
+				"group": "build",
+				"command": "Engine/Build/BatchFiles/Linux/Build.sh",
+				"args": [
+					"LostWithin",
+					"Linux",
+					"Development",
+					"/home/nekoqrii/UnrealProjects/LostWithin/LostWithin.uproject",
+					"-waitmutex"
+				],
+				"problemMatcher": "$msCompile",
+				"dependsOn": [
+					"LostWithin Linux Development Clean"
+				],
+				"type": "shell",
+				"options": {
+					"cwd": "/home/nekoqrii/UnrealEngine"
+				}
+			},
+			{
+				"label": "LostWithin Linux Development Clean",
+				"group": "build",
+				"command": "Engine/Build/BatchFiles/Linux/Build.sh",
+				"args": [
+					"LostWithin",
+					"Linux",
+					"Development",
+					"/home/nekoqrii/UnrealProjects/LostWithin/LostWithin.uproject",
+					"-waitmutex",
+					"-clean"
+				],
+				"problemMatcher": "$msCompile",
+				"type": "shell",
+				"options": {
+					"cwd": "/home/nekoqrii/UnrealEngine"
+				}
+			},
+			{
+				"label": "LostWithin Linux Test Build",
+				"group": "build",
+				"command": "Engine/Build/BatchFiles/Linux/Build.sh",
+				"args": [
+					"LostWithin",
+					"Linux",
+					"Test",
+					"/home/nekoqrii/UnrealProjects/LostWithin/LostWithin.uproject",
+					"-waitmutex"
+				],
+				"problemMatcher": "$msCompile",
+				"type": "shell",
+				"options": {
+					"cwd": "/home/nekoqrii/UnrealEngine"
+				}
+			},
+			{
+				"label": "LostWithin Linux Test Rebuild",
+				"group": "build",
+				"command": "Engine/Build/BatchFiles/Linux/Build.sh",
+				"args": [
+					"LostWithin",
+					"Linux",
+					"Test",
+					"/home/nekoqrii/UnrealProjects/LostWithin/LostWithin.uproject",
+					"-waitmutex"
+				],
+				"problemMatcher": "$msCompile",
+				"dependsOn": [
+					"LostWithin Linux Test Clean"
+				],
+				"type": "shell",
+				"options": {
+					"cwd": "/home/nekoqrii/UnrealEngine"
+				}
+			},
+			{
+				"label": "LostWithin Linux Test Clean",
+				"group": "build",
+				"command": "Engine/Build/BatchFiles/Linux/Build.sh",
+				"args": [
+					"LostWithin",
+					"Linux",
+					"Test",
+					"/home/nekoqrii/UnrealProjects/LostWithin/LostWithin.uproject",
+					"-waitmutex",
+					"-clean"
+				],
+				"problemMatcher": "$msCompile",
+				"type": "shell",
+				"options": {
+					"cwd": "/home/nekoqrii/UnrealEngine"
+				}
+			},
+			{
+				"label": "LostWithin Linux Shipping Build",
+				"group": "build",
+				"command": "Engine/Build/BatchFiles/Linux/Build.sh",
+				"args": [
+					"LostWithin",
+					"Linux",
+					"Shipping",
+					"/home/nekoqrii/UnrealProjects/LostWithin/LostWithin.uproject",
+					"-waitmutex"
+				],
+				"problemMatcher": "$msCompile",
+				"type": "shell",
+				"options": {
+					"cwd": "/home/nekoqrii/UnrealEngine"
+				}
+			},
+			{
+				"label": "LostWithin Linux Shipping Rebuild",
+				"group": "build",
+				"command": "Engine/Build/BatchFiles/Linux/Build.sh",
+				"args": [
+					"LostWithin",
+					"Linux",
+					"Shipping",
+					"/home/nekoqrii/UnrealProjects/LostWithin/LostWithin.uproject",
+					"-waitmutex"
+				],
+				"problemMatcher": "$msCompile",
+				"dependsOn": [
+					"LostWithin Linux Shipping Clean"
+				],
+				"type": "shell",
+				"options": {
+					"cwd": "/home/nekoqrii/UnrealEngine"
+				}
+			},
+			{
+				"label": "LostWithin Linux Shipping Clean",
+				"group": "build",
+				"command": "Engine/Build/BatchFiles/Linux/Build.sh",
+				"args": [
+					"LostWithin",
+					"Linux",
+					"Shipping",
+					"/home/nekoqrii/UnrealProjects/LostWithin/LostWithin.uproject",
+					"-waitmutex",
+					"-clean"
+				],
+				"problemMatcher": "$msCompile",
+				"type": "shell",
+				"options": {
+					"cwd": "/home/nekoqrii/UnrealEngine"
+				}
+			},
+			{
+				"label": "LostWithin LinuxArm64 Debug Build",
+				"group": "build",
+				"command": "Engine/Build/BatchFiles/Linux/Build.sh",
+				"args": [
+					"LostWithin",
+					"LinuxArm64",
+					"Debug",
+					"/home/nekoqrii/UnrealProjects/LostWithin/LostWithin.uproject",
+					"-waitmutex"
+				],
+				"problemMatcher": "$msCompile",
+				"type": "shell",
+				"options": {
+					"cwd": "/home/nekoqrii/UnrealEngine"
+				}
+			},
+			{
+				"label": "LostWithin LinuxArm64 Debug Rebuild",
+				"group": "build",
+				"command": "Engine/Build/BatchFiles/Linux/Build.sh",
+				"args": [
+					"LostWithin",
+					"LinuxArm64",
+					"Debug",
+					"/home/nekoqrii/UnrealProjects/LostWithin/LostWithin.uproject",
+					"-waitmutex"
+				],
+				"problemMatcher": "$msCompile",
+				"dependsOn": [
+					"LostWithin LinuxArm64 Debug Clean"
+				],
+				"type": "shell",
+				"options": {
+					"cwd": "/home/nekoqrii/UnrealEngine"
+				}
+			},
+			{
+				"label": "LostWithin LinuxArm64 Debug Clean",
+				"group": "build",
+				"command": "Engine/Build/BatchFiles/Linux/Build.sh",
+				"args": [
+					"LostWithin",
+					"LinuxArm64",
+					"Debug",
+					"/home/nekoqrii/UnrealProjects/LostWithin/LostWithin.uproject",
+					"-waitmutex",
+					"-clean"
+				],
+				"problemMatcher": "$msCompile",
+				"type": "shell",
+				"options": {
+					"cwd": "/home/nekoqrii/UnrealEngine"
+				}
+			},
+			{
+				"label": "LostWithin LinuxArm64 DebugGame Build",
+				"group": "build",
+				"command": "Engine/Build/BatchFiles/Linux/Build.sh",
+				"args": [
+					"LostWithin",
+					"LinuxArm64",
+					"DebugGame",
+					"/home/nekoqrii/UnrealProjects/LostWithin/LostWithin.uproject",
+					"-waitmutex"
+				],
+				"problemMatcher": "$msCompile",
+				"type": "shell",
+				"options": {
+					"cwd": "/home/nekoqrii/UnrealEngine"
+				}
+			},
+			{
+				"label": "LostWithin LinuxArm64 DebugGame Rebuild",
+				"group": "build",
+				"command": "Engine/Build/BatchFiles/Linux/Build.sh",
+				"args": [
+					"LostWithin",
+					"LinuxArm64",
+					"DebugGame",
+					"/home/nekoqrii/UnrealProjects/LostWithin/LostWithin.uproject",
+					"-waitmutex"
+				],
+				"problemMatcher": "$msCompile",
+				"dependsOn": [
+					"LostWithin LinuxArm64 DebugGame Clean"
+				],
+				"type": "shell",
+				"options": {
+					"cwd": "/home/nekoqrii/UnrealEngine"
+				}
+			},
+			{
+				"label": "LostWithin LinuxArm64 DebugGame Clean",
+				"group": "build",
+				"command": "Engine/Build/BatchFiles/Linux/Build.sh",
+				"args": [
+					"LostWithin",
+					"LinuxArm64",
+					"DebugGame",
+					"/home/nekoqrii/UnrealProjects/LostWithin/LostWithin.uproject",
+					"-waitmutex",
+					"-clean"
+				],
+				"problemMatcher": "$msCompile",
+				"type": "shell",
+				"options": {
+					"cwd": "/home/nekoqrii/UnrealEngine"
+				}
+			},
+			{
+				"label": "LostWithin LinuxArm64 Development Build",
+				"group": "build",
+				"command": "Engine/Build/BatchFiles/Linux/Build.sh",
+				"args": [
+					"LostWithin",
+					"LinuxArm64",
+					"Development",
+					"/home/nekoqrii/UnrealProjects/LostWithin/LostWithin.uproject",
+					"-waitmutex"
+				],
+				"problemMatcher": "$msCompile",
+				"type": "shell",
+				"options": {
+					"cwd": "/home/nekoqrii/UnrealEngine"
+				}
+			},
+			{
+				"label": "LostWithin LinuxArm64 Development Rebuild",
+				"group": "build",
+				"command": "Engine/Build/BatchFiles/Linux/Build.sh",
+				"args": [
+					"LostWithin",
+					"LinuxArm64",
+					"Development",
+					"/home/nekoqrii/UnrealProjects/LostWithin/LostWithin.uproject",
+					"-waitmutex"
+				],
+				"problemMatcher": "$msCompile",
+				"dependsOn": [
+					"LostWithin LinuxArm64 Development Clean"
+				],
+				"type": "shell",
+				"options": {
+					"cwd": "/home/nekoqrii/UnrealEngine"
+				}
+			},
+			{
+				"label": "LostWithin LinuxArm64 Development Clean",
+				"group": "build",
+				"command": "Engine/Build/BatchFiles/Linux/Build.sh",
+				"args": [
+					"LostWithin",
+					"LinuxArm64",
+					"Development",
+					"/home/nekoqrii/UnrealProjects/LostWithin/LostWithin.uproject",
+					"-waitmutex",
+					"-clean"
+				],
+				"problemMatcher": "$msCompile",
+				"type": "shell",
+				"options": {
+					"cwd": "/home/nekoqrii/UnrealEngine"
+				}
+			},
+			{
+				"label": "LostWithin LinuxArm64 Test Build",
+				"group": "build",
+				"command": "Engine/Build/BatchFiles/Linux/Build.sh",
+				"args": [
+					"LostWithin",
+					"LinuxArm64",
+					"Test",
+					"/home/nekoqrii/UnrealProjects/LostWithin/LostWithin.uproject",
+					"-waitmutex"
+				],
+				"problemMatcher": "$msCompile",
+				"type": "shell",
+				"options": {
+					"cwd": "/home/nekoqrii/UnrealEngine"
+				}
+			},
+			{
+				"label": "LostWithin LinuxArm64 Test Rebuild",
+				"group": "build",
+				"command": "Engine/Build/BatchFiles/Linux/Build.sh",
+				"args": [
+					"LostWithin",
+					"LinuxArm64",
+					"Test",
+					"/home/nekoqrii/UnrealProjects/LostWithin/LostWithin.uproject",
+					"-waitmutex"
+				],
+				"problemMatcher": "$msCompile",
+				"dependsOn": [
+					"LostWithin LinuxArm64 Test Clean"
+				],
+				"type": "shell",
+				"options": {
+					"cwd": "/home/nekoqrii/UnrealEngine"
+				}
+			},
+			{
+				"label": "LostWithin LinuxArm64 Test Clean",
+				"group": "build",
+				"command": "Engine/Build/BatchFiles/Linux/Build.sh",
+				"args": [
+					"LostWithin",
+					"LinuxArm64",
+					"Test",
+					"/home/nekoqrii/UnrealProjects/LostWithin/LostWithin.uproject",
+					"-waitmutex",
+					"-clean"
+				],
+				"problemMatcher": "$msCompile",
+				"type": "shell",
+				"options": {
+					"cwd": "/home/nekoqrii/UnrealEngine"
+				}
+			},
+			{
+				"label": "LostWithin LinuxArm64 Shipping Build",
+				"group": "build",
+				"command": "Engine/Build/BatchFiles/Linux/Build.sh",
+				"args": [
+					"LostWithin",
+					"LinuxArm64",
+					"Shipping",
+					"/home/nekoqrii/UnrealProjects/LostWithin/LostWithin.uproject",
+					"-waitmutex"
+				],
+				"problemMatcher": "$msCompile",
+				"type": "shell",
+				"options": {
+					"cwd": "/home/nekoqrii/UnrealEngine"
+				}
+			},
+			{
+				"label": "LostWithin LinuxArm64 Shipping Rebuild",
+				"group": "build",
+				"command": "Engine/Build/BatchFiles/Linux/Build.sh",
+				"args": [
+					"LostWithin",
+					"LinuxArm64",
+					"Shipping",
+					"/home/nekoqrii/UnrealProjects/LostWithin/LostWithin.uproject",
+					"-waitmutex"
+				],
+				"problemMatcher": "$msCompile",
+				"dependsOn": [
+					"LostWithin LinuxArm64 Shipping Clean"
+				],
+				"type": "shell",
+				"options": {
+					"cwd": "/home/nekoqrii/UnrealEngine"
+				}
+			},
+			{
+				"label": "LostWithin LinuxArm64 Shipping Clean",
+				"group": "build",
+				"command": "Engine/Build/BatchFiles/Linux/Build.sh",
+				"args": [
+					"LostWithin",
+					"LinuxArm64",
+					"Shipping",
+					"/home/nekoqrii/UnrealProjects/LostWithin/LostWithin.uproject",
+					"-waitmutex",
+					"-clean"
+				],
+				"problemMatcher": "$msCompile",
+				"type": "shell",
+				"options": {
+					"cwd": "/home/nekoqrii/UnrealEngine"
+				}
+			},
+			{
+				"label": "LostWithinEditor Linux Debug Build",
+				"group": "build",
+				"command": "Engine/Build/BatchFiles/Linux/Build.sh",
+				"args": [
+					"LostWithinEditor",
+					"Linux",
+					"Debug",
+					"/home/nekoqrii/UnrealProjects/LostWithin/LostWithin.uproject",
+					"-waitmutex"
+				],
+				"problemMatcher": "$msCompile",
+				"type": "shell",
+				"options": {
+					"cwd": "/home/nekoqrii/UnrealEngine"
+				}
+			},
+			{
+				"label": "LostWithinEditor Linux Debug Rebuild",
+				"group": "build",
+				"command": "Engine/Build/BatchFiles/Linux/Build.sh",
+				"args": [
+					"LostWithinEditor",
+					"Linux",
+					"Debug",
+					"/home/nekoqrii/UnrealProjects/LostWithin/LostWithin.uproject",
+					"-waitmutex"
+				],
+				"problemMatcher": "$msCompile",
+				"dependsOn": [
+					"LostWithinEditor Linux Debug Clean"
+				],
+				"type": "shell",
+				"options": {
+					"cwd": "/home/nekoqrii/UnrealEngine"
+				}
+			},
+			{
+				"label": "LostWithinEditor Linux Debug Clean",
+				"group": "build",
+				"command": "Engine/Build/BatchFiles/Linux/Build.sh",
+				"args": [
+					"LostWithinEditor",
+					"Linux",
+					"Debug",
+					"/home/nekoqrii/UnrealProjects/LostWithin/LostWithin.uproject",
+					"-waitmutex",
+					"-clean"
+				],
+				"problemMatcher": "$msCompile",
+				"type": "shell",
+				"options": {
+					"cwd": "/home/nekoqrii/UnrealEngine"
+				}
+			},
+			{
+				"label": "LostWithinEditor Linux DebugGame Build",
+				"group": "build",
+				"command": "Engine/Build/BatchFiles/Linux/Build.sh",
+				"args": [
+					"LostWithinEditor",
+					"Linux",
+					"DebugGame",
+					"/home/nekoqrii/UnrealProjects/LostWithin/LostWithin.uproject",
+					"-waitmutex"
+				],
+				"problemMatcher": "$msCompile",
+				"type": "shell",
+				"options": {
+					"cwd": "/home/nekoqrii/UnrealEngine"
+				}
+			},
+			{
+				"label": "LostWithinEditor Linux DebugGame Rebuild",
+				"group": "build",
+				"command": "Engine/Build/BatchFiles/Linux/Build.sh",
+				"args": [
+					"LostWithinEditor",
+					"Linux",
+					"DebugGame",
+					"/home/nekoqrii/UnrealProjects/LostWithin/LostWithin.uproject",
+					"-waitmutex"
+				],
+				"problemMatcher": "$msCompile",
+				"dependsOn": [
+					"LostWithinEditor Linux DebugGame Clean"
+				],
+				"type": "shell",
+				"options": {
+					"cwd": "/home/nekoqrii/UnrealEngine"
+				}
+			},
+			{
+				"label": "LostWithinEditor Linux DebugGame Clean",
+				"group": "build",
+				"command": "Engine/Build/BatchFiles/Linux/Build.sh",
+				"args": [
+					"LostWithinEditor",
+					"Linux",
+					"DebugGame",
+					"/home/nekoqrii/UnrealProjects/LostWithin/LostWithin.uproject",
+					"-waitmutex",
+					"-clean"
+				],
+				"problemMatcher": "$msCompile",
+				"type": "shell",
+				"options": {
+					"cwd": "/home/nekoqrii/UnrealEngine"
+				}
+			},
+			{
+				"label": "LostWithinEditor Linux Development Build",
+				"group": "build",
+				"command": "Engine/Build/BatchFiles/Linux/Build.sh",
+				"args": [
+					"LostWithinEditor",
+					"Linux",
+					"Development",
+					"/home/nekoqrii/UnrealProjects/LostWithin/LostWithin.uproject",
+					"-waitmutex"
+				],
+				"problemMatcher": "$msCompile",
+				"type": "shell",
+				"options": {
+					"cwd": "/home/nekoqrii/UnrealEngine"
+				}
+			},
+			{
+				"label": "LostWithinEditor Linux Development Rebuild",
+				"group": "build",
+				"command": "Engine/Build/BatchFiles/Linux/Build.sh",
+				"args": [
+					"LostWithinEditor",
+					"Linux",
+					"Development",
+					"/home/nekoqrii/UnrealProjects/LostWithin/LostWithin.uproject",
+					"-waitmutex"
+				],
+				"problemMatcher": "$msCompile",
+				"dependsOn": [
+					"LostWithinEditor Linux Development Clean"
+				],
+				"type": "shell",
+				"options": {
+					"cwd": "/home/nekoqrii/UnrealEngine"
+				}
+			},
+			{
+				"label": "LostWithinEditor Linux Development Clean",
+				"group": "build",
+				"command": "Engine/Build/BatchFiles/Linux/Build.sh",
+				"args": [
+					"LostWithinEditor",
+					"Linux",
+					"Development",
+					"/home/nekoqrii/UnrealProjects/LostWithin/LostWithin.uproject",
+					"-waitmutex",
+					"-clean"
+				],
+				"problemMatcher": "$msCompile",
+				"type": "shell",
+				"options": {
+					"cwd": "/home/nekoqrii/UnrealEngine"
+				}
+			}
+		]
+	},
+	"launch": {
+		"version": "0.2.0",
+		"configurations": [
+			{
+				"name": "Launch LostWithin (Debug)",
+				"request": "launch",
+				"program": "/home/nekoqrii/UnrealProjects/LostWithin/Binaries/Linux/UnrealGame-Linux-Debug",
+				"preLaunchTask": "LostWithin Linux Debug Build",
+				"args": [
+				],
+				"cwd": "/home/nekoqrii/UnrealProjects/LostWithin",
+				"type": "cppdbg",
+				"visualizerFile": "/home/nekoqrii/UnrealEngine/Engine/Extras/VisualStudioDebugging/Unreal.natvis",
+				"showDisplayString": true,
+				"sourceFileMap": {
+					"/UEVFS/LostWithin": "/home/nekoqrii/UnrealProjects/LostWithin",
+					"/UEVFS/Root": "/home/nekoqrii/UnrealEngine"
+				}
+			},
+			{
+				"name": "Launch LostWithin (DebugGame)",
+				"request": "launch",
+				"program": "/home/nekoqrii/UnrealProjects/LostWithin/Binaries/Linux/UnrealGame-Linux-DebugGame",
+				"preLaunchTask": "LostWithin Linux DebugGame Build",
+				"args": [
+				],
+				"cwd": "/home/nekoqrii/UnrealProjects/LostWithin",
+				"type": "cppdbg",
+				"visualizerFile": "/home/nekoqrii/UnrealEngine/Engine/Extras/VisualStudioDebugging/Unreal.natvis",
+				"showDisplayString": true,
+				"sourceFileMap": {
+					"/UEVFS/LostWithin": "/home/nekoqrii/UnrealProjects/LostWithin",
+					"/UEVFS/Root": "/home/nekoqrii/UnrealEngine"
+				}
+			},
+			{
+				"name": "Launch LostWithin (Development)",
+				"request": "launch",
+				"program": "/home/nekoqrii/UnrealProjects/LostWithin/Binaries/Linux/UnrealGame",
+				"preLaunchTask": "LostWithin Linux Development Build",
+				"args": [
+				],
+				"cwd": "/home/nekoqrii/UnrealProjects/LostWithin",
+				"type": "cppdbg",
+				"visualizerFile": "/home/nekoqrii/UnrealEngine/Engine/Extras/VisualStudioDebugging/Unreal.natvis",
+				"showDisplayString": true,
+				"sourceFileMap": {
+					"/UEVFS/LostWithin": "/home/nekoqrii/UnrealProjects/LostWithin",
+					"/UEVFS/Root": "/home/nekoqrii/UnrealEngine"
+				}
+			},
+			{
+				"name": "Launch LostWithin (Test)",
+				"request": "launch",
+				"program": "/home/nekoqrii/UnrealProjects/LostWithin/Binaries/Linux/UnrealGame-Linux-Test",
+				"preLaunchTask": "LostWithin Linux Test Build",
+				"args": [
+				],
+				"cwd": "/home/nekoqrii/UnrealProjects/LostWithin",
+				"type": "cppdbg",
+				"visualizerFile": "/home/nekoqrii/UnrealEngine/Engine/Extras/VisualStudioDebugging/Unreal.natvis",
+				"showDisplayString": true,
+				"sourceFileMap": {
+					"/UEVFS/LostWithin": "/home/nekoqrii/UnrealProjects/LostWithin",
+					"/UEVFS/Root": "/home/nekoqrii/UnrealEngine"
+				}
+			},
+			{
+				"name": "Launch LostWithin (Shipping)",
+				"request": "launch",
+				"program": "/home/nekoqrii/UnrealProjects/LostWithin/Binaries/Linux/UnrealGame-Linux-Shipping",
+				"preLaunchTask": "LostWithin Linux Shipping Build",
+				"args": [
+				],
+				"cwd": "/home/nekoqrii/UnrealProjects/LostWithin",
+				"type": "cppdbg",
+				"visualizerFile": "/home/nekoqrii/UnrealEngine/Engine/Extras/VisualStudioDebugging/Unreal.natvis",
+				"showDisplayString": true,
+				"sourceFileMap": {
+					"/UEVFS/LostWithin": "/home/nekoqrii/UnrealProjects/LostWithin",
+					"/UEVFS/Root": "/home/nekoqrii/UnrealEngine"
+				}
+			},
+			{
+				"name": "Launch LostWithinEditor (Debug)",
+				"request": "launch",
+				"program": "/home/nekoqrii/UnrealEngine/Engine/Binaries/Linux/UnrealEditor-Linux-Debug",
+				"preLaunchTask": "LostWithinEditor Linux Debug Build",
+				"args": [
+					"/home/nekoqrii/UnrealProjects/LostWithin/LostWithin.uproject"
+				],
+				"cwd": "/home/nekoqrii/UnrealProjects/LostWithin",
+				"type": "cppdbg",
+				"visualizerFile": "/home/nekoqrii/UnrealEngine/Engine/Extras/VisualStudioDebugging/Unreal.natvis",
+				"showDisplayString": true,
+				"sourceFileMap": {
+					"/UEVFS/LostWithin": "/home/nekoqrii/UnrealProjects/LostWithin",
+					"/UEVFS/Root": "/home/nekoqrii/UnrealEngine"
+				}
+			},
+			{
+				"name": "Launch LostWithinEditor (DebugGame)",
+				"request": "launch",
+				"program": "/home/nekoqrii/UnrealEngine/Engine/Binaries/Linux/UnrealEditor-Linux-DebugGame",
+				"preLaunchTask": "LostWithinEditor Linux DebugGame Build",
+				"args": [
+					"/home/nekoqrii/UnrealProjects/LostWithin/LostWithin.uproject"
+				],
+				"cwd": "/home/nekoqrii/UnrealProjects/LostWithin",
+				"type": "cppdbg",
+				"visualizerFile": "/home/nekoqrii/UnrealEngine/Engine/Extras/VisualStudioDebugging/Unreal.natvis",
+				"showDisplayString": true,
+				"sourceFileMap": {
+					"/UEVFS/LostWithin": "/home/nekoqrii/UnrealProjects/LostWithin",
+					"/UEVFS/Root": "/home/nekoqrii/UnrealEngine"
+				}
+			},
+			{
+				"name": "Launch LostWithinEditor (Development)",
+				"request": "launch",
+				"program": "/home/nekoqrii/UnrealEngine/Engine/Binaries/Linux/UnrealEditor",
+				"preLaunchTask": "LostWithinEditor Linux Development Build",
+				"args": [
+					"/home/nekoqrii/UnrealProjects/LostWithin/LostWithin.uproject"
+				],
+				"cwd": "/home/nekoqrii/UnrealProjects/LostWithin",
+				"type": "cppdbg",
+				"visualizerFile": "/home/nekoqrii/UnrealEngine/Engine/Extras/VisualStudioDebugging/Unreal.natvis",
+				"showDisplayString": true,
+				"sourceFileMap": {
+					"/UEVFS/LostWithin": "/home/nekoqrii/UnrealProjects/LostWithin",
+					"/UEVFS/Root": "/home/nekoqrii/UnrealEngine"
+				}
+			},
+			{
+				"name": "Generate Project Files",
+				"type": "coreclr",
+				"request": "launch",
+				"preLaunchTask": "UnrealBuildTool Linux Development Build",
+				"program": "/home/nekoqrii/UnrealEngine/Engine/Build/BatchFiles/RunUBT.bat",
+				"args": [
+					"-projectfiles",
+					"-vscode",
+					"-project=/home/nekoqrii/UnrealProjects/LostWithin/LostWithin.uproject",
+					"-game",
+					"-engine",
+					"-dotnet"
+				],
+				"env": {
+					"PATH": "/home/nekoqrii/UnrealEngine/Engine/Binaries/ThirdParty/DotNet/8.0.300/linux-x64:${env:PATH}",
+					"DOTNET_ROOT": "/home/nekoqrii/UnrealEngine/Engine/Binaries/ThirdParty/DotNet/8.0.300/linux-x64",
+					"DOTNET_HOST_PATH": "/home/nekoqrii/UnrealEngine/Engine/Binaries/ThirdParty/DotNet/8.0.300/linux-x64/dotnet",
+					"DOTNET_MULTILEVEL_LOOKUP": "0",
+					"DOTNET_ROLL_FORWARD": "LatestMajor"
+				},
+				"console": "internalConsole",
+				"internalConsoleOptions": "openOnSessionStart",
+				"stopAtEntry": false,
+				"cwd": "/home/nekoqrii/UnrealEngine"
+			}
+		]
+	}
+}

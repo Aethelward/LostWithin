@@ -1,0 +1,133 @@
+#include "Domains/MaterialAuthoring/McpMatPrivate.h"
+
+namespace McpMaterialAuthoringHandlers
+{
+bool HandleGetNodeChain(UEngineWireSubsystem* Bridge, const FString& RequestId, const FString& SubAction, const TSharedPtr<FJsonObject>& Payload, TSharedPtr<FMcpBridgeWebSocket> Socket)
+{
+  if (SubAction == TEXT("get_node_chain")) {
+    LOAD_MATERIAL_OR_FUNCTION_OR_RETURN();
+
+    // The published schema spells the start node `nodeId` (startNodeId is the
+    // documented alias) and makes every end selector optional: with no end
+    // given the chain is walked downstream until it reaches any material
+    // output pin (or a FunctionOutput in a material function).
+    const FString StartNodeId = McpGetFirstStringField(Payload, {TEXT("startNodeId"), TEXT("nodeId")});
+    FString EndPin;
+    Payload->TryGetStringField(TEXT("endPin"), EndPin);
+
+    if (StartNodeId.IsEmpty()) {
+      Bridge->SendAutomationError(Socket, RequestId, TEXT("Missing 'nodeId' (or 'startNodeId')."), TEXT("INVALID_ARGUMENT"));
+      return true;
+    }
+    const bool bAnyMainPin = EndPin.IsEmpty();
+    // endPin by the names connect_nodes takes, compared by input: a name that is no main pin, or a spelling connect
+    // takes, answered pathFound false as a success.
+    const FExpressionInput *EndInput = nullptr;
+    if (!bAnyMainPin && Material) {
+      EndPin = NormalizeMaterialInputName(EndPin);
+      EndInput = GetMainMaterialInput(Material, EndPin);
+      if (!EndInput) {
+        Bridge->SendAutomationError(Socket, RequestId,
+            FString::Printf(TEXT("Unknown input on main node: %s. Main inputs: %s."), *EndPin, *ListMainMaterialInputs(Material)),
+            TEXT("INVALID_PIN"));
+        return true;
+      }
+    }
+
+    UMaterialExpression *StartExpr = FIND_EXPR_IN_HOST(StartNodeId);
+    if (!StartExpr) {
+      Bridge->SendAutomationError(Socket, RequestId, TEXT("Start node not found."), TEXT("NODE_NOT_FOUND"));
+      return true;
+    }
+
+    auto& AllExpr = Material
+        ? MCP_GET_MATERIAL_EXPRESSIONS(Material)
+        : MCP_GET_FUNCTION_EXPRESSIONS(Function);
+
+    // Build downstream adjacency: Source → list of Targets
+    TMultiMap<UMaterialExpression*, UMaterialExpression*> Downstream;
+    for (UMaterialExpression *Expr : AllExpr) {
+      ForEachExpressionInput(Expr, [&](FExpressionInput &Input, const FString &) {
+        if (Input.Expression) Downstream.Add(Input.Expression, Expr);
+      });
+      // A named reroute usage reads its declaration, so the chain runs on through it.
+      if (UMaterialExpression *Declaration = McpNamedRerouteSource(Expr)) Downstream.Add(Declaration, Expr);
+    }
+
+    TMap<UMaterialExpression*, UMaterialExpression*> Parent;
+    TArray<UMaterialExpression*> BFSQueue;
+    BFSQueue.Add(StartExpr);
+    Parent.Add(StartExpr, nullptr);
+    bool bPathFound = false;
+    UMaterialExpression *PathEnd = nullptr;
+
+    int32 Idx = 0;
+    while (Idx < BFSQueue.Num()) {
+      UMaterialExpression *Cur = BFSQueue[Idx++];
+
+      if (bAnyMainPin && Function && Cast<UMaterialExpressionFunctionOutput>(Cur)) {
+        bPathFound = true; PathEnd = Cur; break;
+      }
+      if (Material) {
+        bool bHit = EndInput && EndInput->Expression == Cur;
+        if (bAnyMainPin) {
+          ForEachMainMaterialInput(Material, [&](const TCHAR *, const FExpressionInput &Input) {
+            bHit = bHit || Input.Expression == Cur;
+          });
+        }
+        if (bHit) {
+          bPathFound = true; PathEnd = Cur; break;
+        }
+      }
+
+      TArray<UMaterialExpression*> Neighbors;
+      Downstream.MultiFind(Cur, Neighbors);
+      for (UMaterialExpression *N : Neighbors) {
+        if (!Parent.Contains(N)) {
+          Parent.Add(N, Cur);
+          BFSQueue.Add(N);
+        }
+      }
+    }
+
+    TSharedPtr<FJsonObject> Result = McpHandlerUtils::CreateResultObject();
+    if (bPathFound && PathEnd) {
+      TArray<UMaterialExpression*> Path;
+      UMaterialExpression *Walk = PathEnd;
+      while (Walk) {
+        Path.Insert(Walk, 0);
+        UMaterialExpression **P = Parent.Find(Walk);
+        Walk = (P && *P) ? *P : nullptr;
+      }
+      TArray<TSharedPtr<FJsonValue>> ChainArr;
+      for (int32 i = 0; i < Path.Num(); ++i) {
+        TSharedPtr<FJsonObject> N = MakeShared<FJsonObject>();
+        N->SetStringField(TEXT("nodeId"), MCP_NODE_ID(Path[i]));
+        N->SetStringField(TEXT("type"), Path[i]->GetClass()->GetName());
+        N->SetStringField(TEXT("desc"), Path[i]->GetDescription());
+        N->SetNumberField(TEXT("step"), i);
+        ChainArr.Add(MakeShared<FJsonValueObject>(N));
+      }
+      // The walk ends at the material output (or a function output): the chain closes on Main.
+      TSharedPtr<FJsonObject> MainNode = MakeShared<FJsonObject>();
+      MainNode->SetStringField(TEXT("nodeId"), TEXT("Main"));
+      MainNode->SetStringField(TEXT("type"), TEXT("MaterialOutput"));
+      MainNode->SetStringField(TEXT("desc"), EndPin.IsEmpty() ? TEXT("Main") : EndPin);
+      MainNode->SetNumberField(TEXT("step"), Path.Num());
+      ChainArr.Add(MakeShared<FJsonValueObject>(MainNode));
+      Result->SetBoolField(TEXT("pathFound"), true);
+      Result->SetNumberField(TEXT("length"), ChainArr.Num());
+      Result->SetArrayField(TEXT("chain"), ChainArr);
+    } else {
+      Result->SetBoolField(TEXT("pathFound"), false);
+      Result->SetStringField(TEXT("message"), TEXT("No path found between the specified nodes."));
+    }
+    Bridge->SendAutomationResponse(Socket, RequestId, true,
+                           bPathFound ? TEXT("Signal path found.") : TEXT("No path found."),
+                           Result);
+    return true;
+  }
+
+  return false;
+}
+}

@@ -438,7 +438,7 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Interaction")
 	TArray<TObjectPtr<USoundBase>> InteractionSounds;
 
-	/** Content paths searched at BeginPlay to gather cat SFX assets (e.g. MetaSound/Cat/*) */
+	/** Content paths searched at BeginPlay to gather cat SFX assets (e.g. MetaSound/Cat/) */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Float & Spin|Interaction")
 	TArray<FName> InteractionSoundSearchPaths;
 

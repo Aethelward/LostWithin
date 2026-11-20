@@ -1,0 +1,168 @@
+#include "Core/Compatibility/McpVersionCompatibility.h"
+
+#include "Domains/Effect/McpEffectPrivate.h"
+
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "Editor.h"
+#include "Modules/ModuleManager.h"
+#include "NiagaraSystem.h"
+#include "Particles/Emitter.h"
+#include "Particles/ParticleSystem.h"
+#include "Particles/ParticleSystemComponent.h"
+
+namespace McpEffectHandlers
+{
+namespace
+{
+// Finds a UNiagaraSystem whose asset name contains the preset (an exact or NS_-prefixed
+// name wins over a substring hit) under the engine, plugin and project content roots.
+FString FindNiagaraSystemForPreset(const FString& Preset, TArray<FString>& OutCandidates)
+{
+    FAssetRegistryModule& Registry =
+        FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
+    FARFilter Filter;
+    MCP_AR_FILTER_ADD_CLASS(Filter, UNiagaraSystem::StaticClass());
+    Filter.bRecursivePaths = true;
+    Filter.PackagePaths.Add(TEXT("/Niagara"));
+    Filter.PackagePaths.Add(TEXT("/Engine"));
+    Filter.PackagePaths.Add(TEXT("/Game"));
+    TArray<FAssetData> Assets;
+    Registry.Get().GetAssets(Filter, Assets);
+
+    FString Exact;
+    FString Partial;
+    for (const FAssetData& Asset : Assets)
+    {
+        const FString AssetName = Asset.AssetName.ToString();
+        if (!AssetName.Contains(Preset, ESearchCase::IgnoreCase))
+        {
+            continue;
+        }
+        const FString ObjectPath = MCP_ASSET_DATA_GET_SOFT_PATH(Asset);
+        OutCandidates.Add(ObjectPath);
+        const bool bExact = AssetName.Equals(Preset, ESearchCase::IgnoreCase) ||
+            AssetName.Equals(TEXT("NS_") + Preset, ESearchCase::IgnoreCase);
+        if (bExact && Exact.IsEmpty())
+        {
+            Exact = ObjectPath;
+        }
+        else if (!bExact && Partial.IsEmpty())
+        {
+            Partial = ObjectPath;
+        }
+    }
+    if (OutCandidates.IsEmpty())
+    {
+        // Nothing matched the preset name: still name a few shipped systems the caller can pass as systemPath.
+        for (const FAssetData& Asset : Assets)
+        {
+            if (OutCandidates.Num() >= 8) { break; }
+            OutCandidates.Add(MCP_ASSET_DATA_GET_SOFT_PATH(Asset));
+        }
+    }
+    return Exact.IsEmpty() ? Partial : Exact;
+}
+
+bool SpawnCascadeEmitter(const FEffectActionContext& Context, UParticleSystem* Template, const FString& TemplatePath)
+{
+    const TUniquePtr<FMcpScopedEditorTransaction> SpawnStep = McpBeginSpawnTransaction(Context.RequestId);
+    AEmitter* Emitter = Cast<AEmitter>(SpawnActorInActiveWorld<AActor>(
+        AEmitter::StaticClass(),
+        ExtractVectorField(Context.Payload, TEXT("location"), FVector::ZeroVector),
+        ExtractRotatorField(Context.Payload, TEXT("rotation"), FRotator::ZeroRotator)));
+    if (!Emitter)
+    {
+        Context.SendError(TEXT("Failed to spawn Emitter actor"), TEXT("SPAWN_FAILED"));
+        return true;
+    }
+    Emitter->SetTemplate(Template);
+    if (UParticleSystemComponent* Component = Emitter->FindComponentByClass<UParticleSystemComponent>())
+    {
+        Component->Activate(true);
+    }
+    FString Name;
+    Context.Payload->TryGetStringField(TEXT("name"), Name);
+    Emitter->SetActorLabel(
+        !Name.IsEmpty() ? Name : FString::Printf(TEXT("Particle_%lld"), FDateTime::Now().ToUnixTimestamp()));
+
+    TSharedPtr<FJsonObject> Response = McpHandlerUtils::CreateResultObject();
+    Response->SetStringField(TEXT("effectType"), TEXT("particle"));
+    Response->SetStringField(TEXT("backend"), TEXT("cascade"));
+    Response->SetStringField(TEXT("systemPath"), TemplatePath);
+    Response->SetStringField(TEXT("actorName"), McpActorRef(Emitter));
+    McpHandlerUtils::AddVerification(Response, Emitter);
+    Context.Bridge.SendAutomationResponse(
+        Context.Socket, Context.RequestId, true, TEXT("Particle effect created"), Response);
+    return true;
+}
+}
+
+bool HandleParticleEffect(const FEffectActionContext& Context)
+{
+    FString Preset;
+    Context.Payload->TryGetStringField(TEXT("preset"), Preset);
+    FString SystemPath = ReadNiagaraSystemPathField(Context.Payload);
+    if (SystemPath.IsEmpty() && Preset.StartsWith(TEXT("/")))
+    {
+        // A preset that is a path names the system itself.
+        SystemPath = Preset;
+    }
+    if (SystemPath.IsEmpty() && Preset.IsEmpty())
+    {
+        Context.SendError(TEXT("preset or systemPath is required for particle"), TEXT("INVALID_ARGUMENT"));
+        return true;
+    }
+    TSharedPtr<FJsonObject> Details = McpHandlerUtils::CreateResultObject();
+    if (!Preset.IsEmpty())
+    {
+        Details->SetStringField(TEXT("preset"), Preset);
+    }
+    if (SystemPath.IsEmpty())
+    {
+        // A bare preset name has no built-in template of its own: resolve it against the
+        // Niagara systems the engine and project actually ship.
+        TArray<FString> Candidates;
+        SystemPath = FindNiagaraSystemForPreset(Preset, Candidates);
+        if (SystemPath.IsEmpty())
+        {
+            Details->SetBoolField(TEXT("success"), false);
+            Context.Bridge.SendAutomationResponse(
+                Context.Socket, Context.RequestId, false,
+                FString::Printf(TEXT("preset '%s' has no built-in Niagara template; pass systemPath or one of the shipped systems: %s"), *Preset,
+                                Candidates.Num() > 0 ? *FString::Join(TArray<FString>(Candidates.GetData(), FMath::Min(Candidates.Num(), 8)), TEXT(", ")) : TEXT("(none found)")),
+                Details, TEXT("NOT_SUPPORTED"));
+            return true;
+        }
+        Details->SetStringField(TEXT("resolvedSystemPath"), SystemPath);
+        Details->SetStringField(TEXT("presetResolvedBy"), TEXT("asset-registry-name-match"));
+        Details->SetArrayField(TEXT("presetCandidates"), McpHandlerUtils::ToJsonStringArray(
+            TArray<FString>(Candidates.GetData(), FMath::Min(Candidates.Num(), 10))));
+    }
+
+    UObject* Asset = LoadEffectAsset(SystemPath);
+    if (!Asset)
+    {
+        Context.Bridge.SendAutomationResponse(
+            Context.Socket, Context.RequestId, false,
+            FString::Printf(TEXT("Particle system asset not found: %s"), *SystemPath),
+            Details, TEXT("SYSTEM_NOT_FOUND"));
+        return true;
+    }
+    if (UParticleSystem* Cascade = Cast<UParticleSystem>(Asset))
+    {
+        return SpawnCascadeEmitter(Context, Cascade, SystemPath);
+    }
+    if (!Asset->IsA<UNiagaraSystem>())
+    {
+        Context.Bridge.SendAutomationResponse(
+            Context.Socket, Context.RequestId, false,
+            FString::Printf(TEXT("%s is a %s, not a Niagara or Cascade particle system"),
+                *SystemPath, *Asset->GetClass()->GetName()),
+            Details, TEXT("ASSET_TYPE_MISMATCH"));
+        return true;
+    }
+    Details->SetStringField(TEXT("backend"), TEXT("niagara"));
+    return CreateNiagaraEffectFromPayload(Context, TEXT("particle"), SystemPath, Details,
+                                          ExtractRotatorField(Context.Payload, TEXT("rotation"), FRotator::ZeroRotator));
+}
+}

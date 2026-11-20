@@ -1,0 +1,25 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Launch LostWithinEditor (CodeLLDB)",
+            "type": "lldb",
+            "request": "launch",
+            "program": "${env:HOME}/UnrealEngine/Engine/Binaries/Linux/UnrealEditor",
+            "args": [
+                "${workspaceFolder}/LostWithin.uproject"
+            ],
+            "cwd": "${env:HOME}/UnrealEngine/Engine/Binaries/Linux",
+            "visualizerFile": "${env:HOME}/UnrealEngine/Engine/Extras/VisualStudioDebugging/UE5.natvis",
+            "preLaunchTask": "Build LostWithinEditor (close Unreal first)",
+            "terminal": "console"
+        },
+        {
+            "name": "Attach to Running UnrealEditor (CodeLLDB)",
+            "type": "lldb",
+            "request": "attach",
+            "program": "${env:HOME}/UnrealEngine/Engine/Binaries/Linux/UnrealEditor",
+            "visualizerFile": "${env:HOME}/UnrealEngine/Engine/Extras/VisualStudioDebugging/UE5.natvis"
+        }
+    ]
+}

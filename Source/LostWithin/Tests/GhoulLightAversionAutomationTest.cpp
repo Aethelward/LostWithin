@@ -81,6 +81,10 @@ namespace
 
 		Result.LightAverse = NewObject<UMonsterLightAverseComponent>(Result.Actor, TEXT("LightAverse"));
 		Result.LightAverse->bRequireLineOfSight = false; // Disable raycasts in synthetic test environment
+		// These tests pin the older distance-based dark chase; the hearing-driven chase has its own tests.
+		Result.LightAverse->bDarkStalkRequiresHearing = false;
+		Result.LightAverse->bOrbitTorchEdge = false;
+		Result.LightAverse->TorchSnuffHoldTime = 0.0f;
 		Result.LightAverse->RegisterComponent();
 
 		Result.Actor->FinishSpawning(Transform);
@@ -241,6 +245,9 @@ bool FBoneDogLightAttractionAutomationTest::RunTest(const FString& Parameters)
 	AI->PanicGaitSpeed = 420.0f;
 	AI->RegisterComponent();
 	UMonsterLightAttractionComponent* Attraction = NewObject<UMonsterLightAttractionComponent>(Dog, TEXT("LightAttraction"));
+	// This test pins the older flashlight lure; near-sight has its own test (LostWithin.AI.Senses.BoneDogNearSight).
+	Attraction->bRequireFlashlight = true;
+	Attraction->AttractionRadius = 1500.0f;
 	Attraction->RegisterComponent();
 	Dog->FinishSpawning(DogTransform);
 	UCharacterMovementComponent* Move = Dog->GetCharacterMovement();

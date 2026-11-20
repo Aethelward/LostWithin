@@ -1,0 +1,168 @@
+#include "Core/Compatibility/McpVersionCompatibility.h"
+#include "Domains/Spline/McpSplinePrivate.h"
+
+#include "Foundation/BridgeHelpers/McpHelpers.h"
+#include "EngineWireSubsystem.h"
+#include "Foundation/HandlerUtils/McpHandlerUtils.h"
+#include "Foundation/McpScopedEditorTransaction.h"
+
+#include "Components/StaticMeshComponent.h"
+#include "Editor.h"
+#include "Engine/StaticMesh.h"
+#include "Engine/World.h"
+#include "GameFramework/Actor.h"
+
+bool HandleScatterMeshesAlongSpline(
+    UEngineWireSubsystem* Self,
+    const FString& RequestId,
+    const TSharedPtr<FJsonObject>& Payload,
+    TSharedPtr<FMcpBridgeWebSocket> Socket)
+{
+    FString ActorName = GetJsonStringField(Payload, TEXT("actorName"));
+    FString MeshPath = GetJsonStringField(Payload, TEXT("meshPath"));
+    bool bAlignToSpline = GetJsonBoolField(Payload, TEXT("alignToSpline"), true);
+
+    const FString SafeMeshPath = RequireSplineProjectPath(Self, RequestId, Socket, TEXT("meshPath"), MeshPath);
+    if (SafeMeshPath.IsEmpty())
+    {
+        return true;
+    }
+
+    AActor* Actor = nullptr;
+    USplineComponent* SplineComp = ResolveSplineTarget(Self, RequestId, Socket, ActorName, Actor);
+    if (!SplineComp)
+    {
+        return true;
+    }
+    UWorld* World = Actor->GetWorld();
+
+    const bool bHasSpacing = Payload->HasField(TEXT("spacing"));
+    const bool bHasUseRandomOffset = Payload->HasField(TEXT("useRandomOffset"));
+    const bool bHasRandomOffsetRange = Payload->HasField(TEXT("randomOffsetRange"));
+    const bool bHasRandomizeScale = Payload->HasField(TEXT("randomizeScale"));
+    const bool bHasMinScale = Payload->HasField(TEXT("minScale"));
+    const bool bHasMaxScale = Payload->HasField(TEXT("maxScale"));
+    const bool bHasRandomizeRotation = Payload->HasField(TEXT("randomizeRotation"));
+    const bool bHasRotationRange = Payload->HasField(TEXT("rotationRange"));
+
+    double Spacing = bHasSpacing
+        ? GetJsonNumberField(Payload, TEXT("spacing"), 100.0)
+        : GetConfiguredSplineNumber(Actor, World, TEXT("meshSpacing"), 100.0);
+    const bool bUseRandomOffset = bHasUseRandomOffset
+        ? GetJsonBoolField(Payload, TEXT("useRandomOffset"), false)
+        : GetConfiguredSplineBool(Actor, World, TEXT("useRandomOffset"), false);
+    const double RandomOffsetRange = bHasRandomOffsetRange
+        ? GetJsonNumberField(Payload, TEXT("randomOffsetRange"), 0.0)
+        : GetConfiguredSplineNumber(Actor, World, TEXT("randomOffsetRange"), 0.0);
+    const bool bRandomizeScale = bHasRandomizeScale
+        ? GetJsonBoolField(Payload, TEXT("randomizeScale"), false)
+        : GetConfiguredSplineBool(Actor, World, TEXT("randomizeScale"), false);
+    const double MinScale = bHasMinScale
+        ? GetJsonNumberField(Payload, TEXT("minScale"), 0.8)
+        : GetConfiguredSplineNumber(Actor, World, TEXT("minScale"), 0.8);
+    const double MaxScale = bHasMaxScale
+        ? GetJsonNumberField(Payload, TEXT("maxScale"), 1.2)
+        : GetConfiguredSplineNumber(Actor, World, TEXT("maxScale"), 1.2);
+    const bool bRandomizeRotation = bHasRandomizeRotation
+        ? GetJsonBoolField(Payload, TEXT("randomizeRotation"), false)
+        : GetConfiguredSplineBool(Actor, World, TEXT("randomizeRotation"), false);
+    const double RotationRange = bHasRotationRange
+        ? GetJsonNumberField(Payload, TEXT("rotationRange"), 360.0)
+        : GetConfiguredSplineNumber(Actor, World, TEXT("rotationRange"), 360.0);
+
+    UStaticMesh* Mesh = LoadObject<UStaticMesh>(nullptr, *SafeMeshPath);
+    if (!Mesh)
+    {
+        Self->SendAutomationError(Socket, RequestId,
+            FString::Printf(TEXT("Mesh not found: %s"), *SafeMeshPath), TEXT("MESH_NOT_FOUND"));
+        return true;
+    }
+
+    if (Spacing <= 0.0)
+    {
+        Self->SendAutomationError(Socket, RequestId,
+            TEXT("spacing must be greater than 0"), TEXT("INVALID_ARGUMENT"));
+        return true;
+    }
+
+    if (RandomOffsetRange < 0.0 || MinScale <= 0.0 || MaxScale <= 0.0 || MinScale > MaxScale || RotationRange < 0.0)
+    {
+        Self->SendAutomationError(Socket, RequestId,
+            TEXT("Invalid spline mesh randomization configuration"), TEXT("INVALID_ARGUMENT"));
+        return true;
+    }
+
+    // One static mesh component per step, created and registered on the game thread in one transaction. spacing was
+    // only held above 0: 0.01 along a 10 m spline is 100001 components, and a quotient past an int32 is undefined.
+    constexpr int32 MaxScatteredMeshes = 1000;
+    float SplineLength = SplineComp->GetSplineLength();
+    const double Steps = FMath::FloorToDouble(static_cast<double>(SplineLength) / Spacing);
+    if (Steps + 1.0 > MaxScatteredMeshes)
+    {
+        Self->SendAutomationError(Socket, RequestId,
+            FString::Printf(TEXT("spacing %g along this spline of %.0f cm would scatter %.0f meshes; one call adds at most %d. Use a larger "
+                "spacing. Nothing was added."), Spacing, SplineLength, Steps + 1.0, MaxScatteredMeshes), TEXT("INVALID_ARGUMENT"));
+        return true;
+    }
+    int32 MeshCount = static_cast<int32>(Steps);
+    TArray<FString> CreatedMeshes;
+    // The scattered parts were added outside any transaction: undo left them in the level, and the reply's placement
+    // checks, which watch what a call modifies, never saw them.
+    FMcpScopedEditorTransaction Transaction(FText::FromString(TEXT("Scatter Meshes Along Spline")),
+                                            EMcpMutationDurability::EditorStateOnly, {Actor});
+
+    for (int32 i = 0; i <= MeshCount; i++)
+    {
+        float Distance = static_cast<float>(i * Spacing);
+        if (bUseRandomOffset && RandomOffsetRange > 0.0)
+        {
+            Distance += FMath::FRandRange(static_cast<float>(-RandomOffsetRange), static_cast<float>(RandomOffsetRange));
+            Distance = FMath::Clamp(Distance, 0.0f, SplineLength);
+        }
+        FVector Location = SplineComp->GetLocationAtDistanceAlongSpline(Distance, ESplineCoordinateSpace::World);
+        FRotator Rotation = bAlignToSpline
+            ? SplineComp->GetRotationAtDistanceAlongSpline(Distance, ESplineCoordinateSpace::World)
+            : FRotator::ZeroRotator;
+
+        if (bRandomizeRotation && RotationRange > 0.0)
+        {
+            Rotation.Yaw += FMath::FRandRange(static_cast<float>(-RotationRange), static_cast<float>(RotationRange));
+        }
+
+        UStaticMeshComponent* MeshComp = NewObject<UStaticMeshComponent>(Actor, NAME_None, RF_Transactional);
+        if (MeshComp)
+        {
+            MeshComp->SetStaticMesh(Mesh);
+            MeshComp->SetWorldLocationAndRotation(Location, Rotation);
+            if (bRandomizeScale)
+            {
+                const float UniformScale = FMath::FRandRange(static_cast<float>(MinScale), static_cast<float>(MaxScale));
+                MeshComp->SetWorldScale3D(FVector(UniformScale));
+            }
+            MeshComp->RegisterComponent();
+            Actor->AddInstanceComponent(MeshComp);
+            MeshComp->AttachToComponent(SplineComp, FAttachmentTransformRules::KeepWorldTransform);
+            CreatedMeshes.Add(MeshComp->GetName());
+        }
+    }
+
+    Actor->MarkPackageDirty();
+
+    TSharedPtr<FJsonObject> Result = McpHandlerUtils::CreateResultObject();
+    Transaction.DescribeInto(Result);
+    Result->SetNumberField(TEXT("meshesCreated"), CreatedMeshes.Num());
+    Result->SetNumberField(TEXT("splineLength"), SplineLength);
+    Result->SetNumberField(TEXT("spacing"), Spacing);
+    Result->SetBoolField(TEXT("useRandomOffset"), bUseRandomOffset);
+    Result->SetNumberField(TEXT("randomOffsetRange"), RandomOffsetRange);
+    Result->SetBoolField(TEXT("randomizeScale"), bRandomizeScale);
+    Result->SetNumberField(TEXT("minScale"), MinScale);
+    Result->SetNumberField(TEXT("maxScale"), MaxScale);
+    Result->SetBoolField(TEXT("randomizeRotation"), bRandomizeRotation);
+    Result->SetNumberField(TEXT("rotationRange"), RotationRange);
+    McpHandlerUtils::AddVerification(Result, Actor);
+
+    Self->SendAutomationResponse(Socket, RequestId, true,
+        FString::Printf(TEXT("Scattered %d meshes along spline"), CreatedMeshes.Num()), Result);
+    return true;
+}

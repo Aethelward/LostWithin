@@ -1,0 +1,138 @@
+#include "Domains/Skeleton/Assets/McpSkeletonAssetLoading.h"
+#include "Domains/Skeleton/Assets/McpSkeletonPayload.h"
+
+#include "Animation/MorphTarget.h"
+#include "Components/SkeletalMeshComponent.h"
+#include "Engine/SkeletalMesh.h"
+#include "Foundation/HandlerUtils/McpHandlerUtilsActionsPaths.h"
+#include "GameFramework/Actor.h"
+#include "Safety/McpSafeOperations.h"
+#include "EngineWireSubsystem.h"
+#include "Foundation/HandlerUtils/McpHandlerUtils.h"
+
+using namespace McpSkeletonHandlers;
+bool UEngineWireSubsystem::HandleSetMorphTargetValue(
+    const FString& RequestId,
+    const TSharedPtr<FJsonObject>& Payload,
+    TSharedPtr<FMcpBridgeWebSocket> RequestingSocket)
+{
+    FString ActorName = GetJsonStringField(Payload, TEXT("actorName"));
+    FString MorphTargetName = GetJsonStringField(Payload, TEXT("morphTargetName"));
+    double Value = GetJsonNumberField(Payload, TEXT("value"), 0.0);
+
+    if (ActorName.IsEmpty() || MorphTargetName.IsEmpty())
+    {
+        SendAutomationError(RequestingSocket, RequestId,
+            TEXT("actorName and morphTargetName are required"), TEXT("MISSING_PARAMETER"));
+        return true;
+    }
+
+    Value = FMath::Clamp(Value, 0.0, 1.0);
+
+    // A path-restricted caller finds only actors in a level inside its prefixes.
+    AActor* FoundActor = FindActorByNameInWorldForMcp(McpHandlerUtils::GetEditorWorld(), ActorName, true);
+
+    if (!FoundActor)
+    {
+        SendAutomationError(RequestingSocket, RequestId,
+            FString::Printf(TEXT("Actor not found: %s"), *ActorName), TEXT("ACTOR_NOT_FOUND"));
+        return true;
+    }
+
+    USkeletalMeshComponent* SkelMeshComp = FoundActor->FindComponentByClass<USkeletalMeshComponent>();
+    if (!SkelMeshComp)
+    {
+        SendAutomationError(RequestingSocket, RequestId,
+            TEXT("Actor does not have a SkeletalMeshComponent"), TEXT("NO_SKEL_MESH_COMP"));
+        return true;
+    }
+
+    USkeletalMesh* SkelMesh = MCP_SKELETAL_MESH_ASSET(SkelMeshComp);
+    // A weight for a morph the mesh lacks shows nothing; addMissing set one anyway and answered that it was set.
+    if (!SkelMesh || !SkelMesh->FindMorphTarget(FName(*MorphTargetName)))
+    {
+        SendAutomationError(RequestingSocket, RequestId,
+            SkelMesh ? FString::Printf(TEXT("Morph target '%s' not found on %s"), *MorphTargetName, *SkelMesh->GetName())
+                     : FString::Printf(TEXT("%s has no skeletal mesh"), *ActorName),
+            TEXT("MORPH_TARGET_NOT_FOUND"));
+        return true;
+    }
+
+    SkelMeshComp->SetMorphTarget(FName(*MorphTargetName), static_cast<float>(Value));
+
+    // The weight the component holds; a weight of 0 removes the morph's entry.
+    const float* Held = SkelMeshComp->GetMorphTargetCurves().Find(FName(*MorphTargetName));
+    TSharedPtr<FJsonObject> Result = McpHandlerUtils::CreateResultObject();
+    Result->SetStringField(TEXT("actorName"), ActorName);
+    Result->SetStringField(TEXT("morphTargetName"), MorphTargetName);
+    Result->SetNumberField(TEXT("value"), Held ? *Held : 0.0f);
+
+    TArray<TSharedPtr<FJsonValue>> ActiveMorphs;
+    const TMap<FName, float>& MorphCurves = SkelMeshComp->GetMorphTargetCurves();
+    for (const auto& Pair : MorphCurves)
+    {
+        if (Pair.Value > 0.0f)
+        {
+            TSharedPtr<FJsonObject> MorphObj = McpHandlerUtils::CreateResultObject();
+            MorphObj->SetStringField(TEXT("name"), Pair.Key.ToString());
+            MorphObj->SetNumberField(TEXT("weight"), Pair.Value);
+            ActiveMorphs.Add(MakeShared<FJsonValueObject>(MorphObj));
+        }
+    }
+    Result->SetArrayField(TEXT("activeMorphTargets"), ActiveMorphs);
+
+    SendAutomationResponse(RequestingSocket, RequestId, true, Held
+        ? FString::Printf(TEXT("Morph target '%s' set to %.3f on the placed component (not saved with the level)"), *MorphTargetName, *Held)
+        : FString::Printf(TEXT("Morph target '%s' cleared"), *MorphTargetName), Result);
+    return true;
+}
+
+bool UEngineWireSubsystem::HandleListMorphTargets(
+    const FString& RequestId,
+    const TSharedPtr<FJsonObject>& Payload,
+    TSharedPtr<FMcpBridgeWebSocket> RequestingSocket)
+{
+    FString SkeletalMeshPath = GetJsonStringField(Payload, TEXT("skeletalMeshPath"));
+    if (SkeletalMeshPath.IsEmpty())
+    {
+        SkeletalMeshPath = GetJsonStringField(Payload, TEXT("meshPath"));
+    }
+
+    if (SkeletalMeshPath.IsEmpty())
+    {
+        SendAutomationError(RequestingSocket, RequestId, TEXT("skeletalMeshPath is required"), TEXT("MISSING_PARAMETER"));
+        return true;
+    }
+
+    FString Error;
+    USkeletalMesh* Mesh = LoadSkeletalMeshFromPathSkel(SkeletalMeshPath, Error);
+    if (!Mesh)
+    {
+        SendAutomationError(RequestingSocket, RequestId, Error, TEXT("MESH_NOT_FOUND"));
+        return true;
+    }
+
+    TArray<TSharedPtr<FJsonValue>> MorphTargetArray;
+    for (const UMorphTarget* MT : Mesh->GetMorphTargets())
+    {
+        if (MT)
+        {
+            TSharedPtr<FJsonObject> MTObj = McpHandlerUtils::CreateResultObject();
+            MTObj->SetStringField(TEXT("name"), MT->GetName());
+            MTObj->SetNumberField(TEXT("numDeltas"), MT->GetMorphLODModels().Num() > 0 ?
+                MT->GetMorphLODModels()[0].Vertices.Num() : 0);
+            MorphTargetArray.Add(MakeShared<FJsonValueObject>(MTObj));
+        }
+    }
+
+    TSharedPtr<FJsonObject> Result = McpHandlerUtils::CreateResultObject();
+    Result->SetStringField(TEXT("skeletalMeshPath"), SkeletalMeshPath);
+    Result->SetArrayField(TEXT("morphTargets"), MorphTargetArray);
+    Result->SetNumberField(TEXT("count"), MorphTargetArray.Num());
+
+    SendAutomationResponse(RequestingSocket, RequestId, true,
+        FString::Printf(TEXT("Found %d morph targets"), MorphTargetArray.Num()), Result);
+    return true;
+}
+
+

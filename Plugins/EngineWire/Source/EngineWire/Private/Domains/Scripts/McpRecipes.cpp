@@ -1,0 +1,279 @@
+// system_control save_recipe / run_recipe / list_recipes (see McpRecipes.h).
+#include "Domains/Scripts/McpRecipes.h"
+
+#include "Domains/Scripts/McpScript.h"
+#include "EngineWireSubsystem.h"
+#include "Foundation/HandlerUtils/McpHandlerUtils.h"
+#include "HAL/FileManager.h"
+#include "Misc/DateTime.h"
+#include "Misc/EngineVersion.h"
+#include "Misc/FileHelper.h"
+#include "Misc/Paths.h"
+#include "Serialization/JsonReader.h"
+#include "Serialization/JsonSerializer.h"
+#include "Serialization/JsonWriter.h"
+
+namespace McpRecipes
+{
+FString Dir()
+{
+    return FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("EngineWire"), TEXT("Recipes"));
+}
+
+namespace RecipeParts
+{
+constexpr int32 Schema = 1;
+constexpr int32 MaxParams = 16;
+
+// A recipe's name is its file name: letters, digits and underscores only, so it can never leave the folder.
+bool ValidName(const FString& Name)
+{
+    if (Name.IsEmpty() || Name.Len() > 64)
+    {
+        return false;
+    }
+    for (const TCHAR Char : Name)
+    {
+        if (!FChar::IsAlnum(Char) && Char != TEXT('_'))
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+FString PathOf(const FString& Name)
+{
+    return FPaths::Combine(Dir(), Name + TEXT(".json"));
+}
+
+bool Store(const FString& Name, const TSharedPtr<FJsonObject>& Recipe)
+{
+    FString Text;
+    FJsonSerializer::Serialize(Recipe.ToSharedRef(), TJsonWriterFactory<>::Create(&Text));
+    IFileManager::Get().MakeDirectory(*Dir(), true);
+    return FFileHelper::SaveStringToFile(Text, *PathOf(Name));
+}
+
+FString Quoted(const FString& Text)
+{
+    return TEXT("\"") + Text.Replace(TEXT("\\"), TEXT("\\\\")).Replace(TEXT("\""), TEXT("\\\"")) + TEXT("\"");
+}
+
+// A JSON value as the script language writes it: numbers and true/false as they are, text quoted, arrays as (list ...),
+// objects as (obj :"key" value ...). A key is quoted too: written bare, one holding a space and a paren became a call.
+FString ToScript(const TSharedPtr<FJsonValue>& Value)
+{
+    switch (Value.IsValid() ? Value->Type : EJson::Null)
+    {
+    case EJson::Number:
+        // Every digit the double holds: SanitizeFloat's six decimals bound 0.0000004 as 0.
+        return FString::Printf(TEXT("%.17g"), Value->AsNumber());
+    case EJson::Boolean:
+        return Value->AsBool() ? TEXT("true") : TEXT("false");
+    case EJson::String:
+        return Quoted(Value->AsString());
+    case EJson::Array:
+    {
+        FString Out = TEXT("(list");
+        for (const TSharedPtr<FJsonValue>& Item : Value->AsArray())
+        {
+            Out += TEXT(" ") + ToScript(Item);
+        }
+        return Out + TEXT(")");
+    }
+    case EJson::Object:
+    {
+        FString Out = TEXT("(obj");
+        for (const TPair<FString, TSharedPtr<FJsonValue>>& Field : Value->AsObject()->Values)
+        {
+            Out += FString::Printf(TEXT(" :%s %s"), *Quoted(FString(Field.Key)), *ToScript(Field.Value));
+        }
+        return Out + TEXT(")");
+    }
+    default:
+        return TEXT("0");
+    }
+}
+
+// (let name value) for each parameter, all on one line placed before the script's first line, so its line numbers hold,
+// unless an argument's text holds a line break (the language has no escape for one): each moves the lines after it down.
+FString Bound(const TArray<FString>& Params, const TSharedPtr<FJsonObject>& Args)
+{
+    FString Out;
+    for (const FString& Param : Params)
+    {
+        const TSharedPtr<FJsonValue> Value = Args.IsValid() ? Args->TryGetField(Param) : nullptr;
+        Out += FString::Printf(TEXT("(let %s %s) "), *Param, Value.IsValid() ? *ToScript(Value) : TEXT("0"));
+    }
+    return Out;
+}
+} // namespace RecipeParts
+
+using namespace RecipeParts;
+
+TSharedPtr<FJsonObject> Load(const FString& Name)
+{
+    FString Text;
+    TSharedPtr<FJsonObject> Recipe;
+    if (ValidName(Name) && FFileHelper::LoadFileToString(Text, *PathOf(Name)))
+    {
+        FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Text), Recipe);
+    }
+    return Recipe;
+}
+
+bool HandleSave(UEngineWireSubsystem& Bridge, const FString& RequestId, const TSharedPtr<FJsonObject>& Payload,
+                const TSharedPtr<FMcpBridgeWebSocket>& Socket)
+{
+    auto Refuse = [&](const TCHAR* Code, const FString& Message)
+    {
+        Bridge.SendAutomationError(Socket, RequestId, Message, Code);
+        return true;
+    };
+    const FString Name = GetJsonStringField(Payload, TEXT("name"));
+    const FString Script = GetJsonStringField(Payload, TEXT("script"));
+    const TArray<FString> Params = McpHandlerUtils::GetStringArrayField(Payload, TEXT("paramNames"));
+    if (!ValidName(Name) || Params.Num() > MaxParams || Params.ContainsByPredicate([](const FString& P) { return !ValidName(P); }))
+    {
+        return Refuse(TEXT("INVALID_ARGUMENT"), TEXT("name and each of paramNames are 1-64 letters, digits or underscores (at most 16 of them)."));
+    }
+    if (GetJsonBoolField(Payload, TEXT("remove"), false))
+    {
+        if (!IFileManager::Get().Delete(*PathOf(Name), true, false, true)) // RequireExists: a missing file read as deleted
+        {
+            return Refuse(TEXT("RECIPE_NOT_FOUND"), FString::Printf(TEXT("No recipe is named %s."), *Name));
+        }
+        TSharedPtr<FJsonObject> Removed = McpHandlerUtils::CreateResultObject();
+        Removed->SetStringField(TEXT("name"), Name);
+        Removed->SetBoolField(TEXT("removed"), true);
+        Bridge.SendAutomationResponse(Socket, RequestId, true, FString::Printf(TEXT("Recipe %s removed."), *Name), Removed);
+        return true;
+    }
+    if (Script.TrimStartAndEnd().IsEmpty())
+    {
+        return Refuse(TEXT("INVALID_ARGUMENT"), TEXT("script is the recipe to save (only remove goes without one)."));
+    }
+    if (FPaths::FileExists(PathOf(Name)) && !GetJsonBoolField(Payload, TEXT("overwrite"), false))
+    {
+        return Refuse(TEXT("RECIPE_EXISTS"), FString::Printf(TEXT("A recipe named %s exists: pass overwrite true to replace it."), *Name));
+    }
+    // The same check run_script makes, the parameters bound (their values do not matter to it).
+    TArray<McpGraphCode::FSExpr> Forms;
+    FString Error;
+    FString Code;
+    TSet<FString> Allowed;
+    if (!McpScript::ReadAllowed(Payload, Allowed, Error))
+    {
+        return Refuse(TEXT("SCRIPT_INVALID"), Error);
+    }
+    if (!McpGraphCode::ParseSExpr(Bound(Params, nullptr) + Script, Forms, Error) || Forms.Num() == 0)
+    {
+        return Refuse(TEXT("SCRIPT_PARSE_ERROR"), Error.IsEmpty() ? FString(TEXT("The script holds no statement.")) : Error);
+    }
+    if (!McpScript::Check(Forms, Allowed, Error, Code))
+    {
+        return Refuse(*Code, Error);
+    }
+    TSharedPtr<FJsonObject> Recipe = MakeShared<FJsonObject>();
+    Recipe->SetNumberField(TEXT("schema"), Schema);
+    Recipe->SetStringField(TEXT("name"), Name);
+    Recipe->SetStringField(TEXT("summary"), GetJsonStringField(Payload, TEXT("summary")));
+    Recipe->SetArrayField(TEXT("paramNames"), McpHandlerUtils::ToJsonStringArray(Params));
+    Recipe->SetArrayField(TEXT("destructive"), McpHandlerUtils::ToJsonStringArray(Allowed.Array()));
+    Recipe->SetStringField(TEXT("script"), Script);
+    if (!Store(Name, Recipe))
+    {
+        return Refuse(TEXT("RECIPE_WRITE_FAILED"), FString::Printf(TEXT("The recipe could not be written to %s."), *PathOf(Name)));
+    }
+    TSharedPtr<FJsonObject> Result = McpHandlerUtils::CreateResultObject();
+    Result->SetStringField(TEXT("name"), Name);
+    Result->SetStringField(TEXT("path"), FPaths::ConvertRelativePathToFull(PathOf(Name)));
+    Bridge.SendAutomationResponse(Socket, RequestId, true, FString::Printf(TEXT("Recipe %s saved; run_recipe runs it."), *Name), Result);
+    return true;
+}
+
+bool HandleRun(UEngineWireSubsystem& Bridge, const FString& RequestId, const TSharedPtr<FJsonObject>& Payload,
+               const TSharedPtr<FMcpBridgeWebSocket>& Socket)
+{
+    const FString Name = GetJsonStringField(Payload, TEXT("name"));
+    const TSharedPtr<FJsonObject> Recipe = Load(Name);
+    if (!Recipe.IsValid())
+    {
+        Bridge.SendAutomationError(Socket, RequestId, FString::Printf(TEXT("No recipe is named %s: list_recipes lists them."), *Name),
+                                   TEXT("RECIPE_NOT_FOUND"));
+        return true;
+    }
+    const TArray<FString> Params = McpHandlerUtils::GetStringArrayField(Recipe, TEXT("paramNames"));
+    const TSharedPtr<FJsonObject>* Args = nullptr;
+    Payload->TryGetObjectField(TEXT("args"), Args);
+    TArray<FString> Missing;
+    for (const FString& Param : Params)
+    {
+        if (!Args || !(*Args)->HasField(Param))
+        {
+            Missing.Add(Param);
+        }
+    }
+    if (Missing.Num() > 0)
+    {
+        Bridge.SendAutomationError(Socket, RequestId, FString::Printf(TEXT("args lacks %s."), *FString::Join(Missing, TEXT(", "))),
+                                   TEXT("RECIPE_ARGS"));
+        return true;
+    }
+    // Run exactly as run_script runs a script: the same parse, check, per-step gate, consent list and rollback.
+    TSharedPtr<FJsonObject> Run = MakeShared<FJsonObject>();
+    Run->SetStringField(TEXT("subAction"), TEXT("run_recipe")); // what the change journal names the call
+    // A recipe without parameters runs without args: Args is then null.
+    Run->SetStringField(TEXT("script"), Bound(Params, Args ? *Args : nullptr) + GetJsonStringField(Recipe, TEXT("script")));
+    Run->SetArrayField(TEXT("destructive"), McpHandlerUtils::ToJsonStringArray(McpHandlerUtils::GetStringArrayField(Recipe, TEXT("destructive"))));
+    for (const TCHAR* Limit : {TEXT("maxSteps"), TEXT("deadlineMs")})
+    {
+        double Value = 0.0;
+        if (Payload->TryGetNumberField(Limit, Value))
+        {
+            Run->SetNumberField(Limit, Value);
+        }
+    }
+    // Marked verified when the run ends with every step holding: now, or on a later tick after a step that answers later.
+    // Loaded again then: a save over the recipe or its removal in between was undone by storing the object loaded
+    // before the run, the older text under a verified stamp or a removed recipe back.
+    McpScript::HandleRunScript(Bridge, RequestId, Run, Socket, [Name, RanScript = GetJsonStringField(Recipe, TEXT("script"))](const bool bRan)
+    {
+        const TSharedPtr<FJsonObject> Current = bRan ? Load(Name) : nullptr;
+        if (Current.IsValid() && GetJsonStringField(Current, TEXT("script")).Equals(RanScript, ESearchCase::CaseSensitive))
+        {
+            TSharedPtr<FJsonObject> Verified = MakeShared<FJsonObject>();
+            Verified->SetStringField(TEXT("engine"), FEngineVersion::Current().ToString(EVersionComponent::Patch));
+            Verified->SetStringField(TEXT("at"), FDateTime::UtcNow().ToIso8601());
+            Current->SetObjectField(TEXT("verified"), Verified);
+            Store(Name, Current);
+        }
+    });
+    return true;
+}
+
+bool HandleList(UEngineWireSubsystem& Bridge, const FString& RequestId, const TSharedPtr<FJsonObject>& Payload,
+                const TSharedPtr<FMcpBridgeWebSocket>& Socket)
+{
+    TArray<FString> Files;
+    IFileManager::Get().FindFiles(Files, *FPaths::Combine(Dir(), TEXT("*.json")), true, false);
+    TArray<FString> Words;
+    GetJsonStringField(Payload, TEXT("query")).ToLower().ParseIntoArrayWS(Words);
+    TArray<TSharedPtr<FJsonValue>> Rows;
+    for (const FString& File : Files)
+    {
+        const TSharedPtr<FJsonObject> Recipe = Load(FPaths::GetBaseFilename(File));
+        const FString Text = Recipe.IsValid() ? (GetJsonStringField(Recipe, TEXT("name")) + TEXT(" ") + GetJsonStringField(Recipe, TEXT("summary"))).ToLower() : FString();
+        if (Recipe.IsValid() && !Words.ContainsByPredicate([&Text](const FString& Word) { return !Text.Contains(Word); }))
+        {
+            Recipe->RemoveField(TEXT("script"));
+            Rows.Add(MakeShared<FJsonValueObject>(Recipe));
+        }
+    }
+    TSharedPtr<FJsonObject> Result = McpHandlerUtils::CreateResultObject();
+    Result->SetArrayField(TEXT("recipes"), Rows);
+    Bridge.SendAutomationResponse(Socket, RequestId, true, FString::Printf(TEXT("%d recipe(s)."), Rows.Num()), Result);
+    return true;
+}
+} // namespace McpRecipes

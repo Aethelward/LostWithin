@@ -1,0 +1,92 @@
+#pragma once
+
+#include "CoreMinimal.h"
+#include "Dom/JsonObject.h"
+#include "EngineUtils.h"
+#include "Foundation/BridgeHelpers/McpHelpers.h"
+#include "EngineWireSubsystem.h"
+#include "Foundation/HandlerUtils/McpHandlerUtils.h"
+
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "AudioDevice.h"
+#include "Components/AudioComponent.h"
+#include "Components/SceneComponent.h"
+#include "Factories/SoundAttenuationFactory.h"
+#include "Kismet/GameplayStatics.h"
+#include "Sound/AmbientSound.h"
+#include "Sound/AudioVolume.h"
+#include "Sound/ReverbEffect.h"
+#include "Sound/SoundAttenuation.h"
+#include "Sound/SoundClass.h"
+#include "Sound/SoundConcurrency.h"
+#include "Sound/SoundCue.h"
+#include "Sound/SoundMix.h"
+#include "Sound/SoundWave.h"
+#include "UObject/UObjectHash.h"
+
+DECLARE_LOG_CATEGORY_EXTERN(LogMcpAudioHandlers, Log, All);
+
+namespace McpAudioHandlers
+{
+bool BuildSanitizedAssetPath(
+    const FString& InDirectory,
+    const FString& AssetName,
+    FString& OutDirectory,
+    FString& OutFullPath,
+    FString& OutError);
+AActor* FindAudioActorByName(const FString& ActorName, UWorld* World);
+USceneComponent* EnsureAudioAttachRoot(AActor* Actor);
+UAudioComponent* CreateRegisteredAudioComponent(
+    AActor* Owner,
+    USoundBase* Sound,
+    const FVector& Location,
+    const FRotator& Rotation);
+UAudioComponent* CreateAudioComponentAtEditorLocation(
+    UWorld* World,
+    USoundBase* Sound,
+    const FVector& Location,
+    const FRotator& Rotation,
+    const FString& ActorName);
+// componentName (a rename when free), volume and pitch, each only when sent.
+void ApplyAudioComponentOptions(UAudioComponent* AudioComp, const TSharedPtr<FJsonObject>& Payload);
+// attenuationPath and concurrencyPath, each optional; false with OutError when one is sent and does not load.
+bool LoadOptionalAudioSettings(const TSharedPtr<FJsonObject>& Payload, USoundAttenuation*& OutAttenuation, USoundConcurrency*& OutConcurrency, FString& OutError);
+// The 2D sounds play_sound started; stop_sound, pause_sound and resume_sound act on them.
+TArray<TWeakObjectPtr<UAudioComponent>>& McpPreviewSounds();
+// A sound, mix or class by path (any content mount) or by bare asset name under /Game; null when none is found.
+USoundBase* ResolveSoundAsset(const FString& SoundPath);
+USoundMix* ResolveSoundMix(const FString& MixPath);
+USoundClass* ResolveSoundClass(const FString& ClassPath);
+// The payload's soundPath through ResolveSoundAsset; null after the reply (INVALID_ARGUMENT when it is missing,
+// ASSET_NOT_FOUND when nothing resolves).
+USoundBase* LoadSoundOrReply(UEngineWireSubsystem* Self, TSharedPtr<FMcpBridgeWebSocket> RequestingSocket,
+                             const FString& RequestId, const TSharedPtr<FJsonObject>& Payload);
+// The editor world a handler spawns into; null after the reply (NO_EDITOR without an editor, NO_WORLD without a world).
+UWorld* McpAudioEditorWorldOrReply(UEngineWireSubsystem* Self, TSharedPtr<FMcpBridgeWebSocket> RequestingSocket,
+                                   const FString& RequestId);
+// The world whose sound is heard: a running game's while one plays (its audio device is the active one and the
+// editor world's is muted), else the editor's.
+inline UWorld* McpAudibleWorld()
+{
+    return McpHandlerUtils::GetPlayOrEditorWorld();
+}
+
+using FAudioActionHandler = bool (*)(
+    UEngineWireSubsystem* Self,
+    const FString& RequestId,
+    const FString& Lower,
+    const TSharedPtr<FJsonObject>& Payload,
+    TSharedPtr<FMcpBridgeWebSocket> RequestingSocket);
+
+bool HandlePlaybackActions(UEngineWireSubsystem* Self, const FString& RequestId, const FString& Lower, const TSharedPtr<FJsonObject>& Payload, TSharedPtr<FMcpBridgeWebSocket> RequestingSocket);
+// play_sound_measure: plays a sound and answers, once it ends, with the level the mixer metered for it.
+bool HandleMeasureActions(UEngineWireSubsystem* Self, const FString& RequestId, const FString& Lower, const TSharedPtr<FJsonObject>& Payload, TSharedPtr<FMcpBridgeWebSocket> RequestingSocket);
+bool HandlePauseActions(UEngineWireSubsystem* Self, const FString& RequestId, const FString& Lower, const TSharedPtr<FJsonObject>& Payload, TSharedPtr<FMcpBridgeWebSocket> RequestingSocket);
+bool HandleAmbientActions(UEngineWireSubsystem* Self, const FString& RequestId, const FString& Lower, const TSharedPtr<FJsonObject>& Payload, TSharedPtr<FMcpBridgeWebSocket> RequestingSocket);
+bool HandleMixActions(UEngineWireSubsystem* Self, const FString& RequestId, const FString& Lower, const TSharedPtr<FJsonObject>& Payload, TSharedPtr<FMcpBridgeWebSocket> RequestingSocket);
+bool HandleComponentActions(UEngineWireSubsystem* Self, const FString& RequestId, const FString& Lower, const TSharedPtr<FJsonObject>& Payload, TSharedPtr<FMcpBridgeWebSocket> RequestingSocket);
+bool HandleSpatialActions(UEngineWireSubsystem* Self, const FString& RequestId, const FString& Lower, const TSharedPtr<FJsonObject>& Payload, TSharedPtr<FMcpBridgeWebSocket> RequestingSocket);
+bool HandleFadeAndReverbActions(UEngineWireSubsystem* Self, const FString& RequestId, const FString& Lower, const TSharedPtr<FJsonObject>& Payload, TSharedPtr<FMcpBridgeWebSocket> RequestingSocket);
+// analyze_acoustics: a room's size and reverberation time from rays cast where a listener stands (McpAcoustics).
+bool HandleAcousticsActions(UEngineWireSubsystem* Self, const FString& RequestId, const FString& Lower, const TSharedPtr<FJsonObject>& Payload, TSharedPtr<FMcpBridgeWebSocket> RequestingSocket);
+}

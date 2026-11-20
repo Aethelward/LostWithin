@@ -2,7 +2,7 @@
 
 #include "LostWithinGameMode.h"
 
-#include "AI/MonsterLightAttractionComponent.h"
+#include "AI/MonsterSenseProfile.h"
 #include "Engine/World.h"
 #include "GameFramework/PlayerController.h"
 #include "Gameplay/RunSetupRules.h"
@@ -31,7 +31,8 @@ void ALostWithinGameMode::StartPlay()
 	// Every placed spawn point and toolbox has begun play now.
 	RunSummary = LostWithinRunSetup::SetupWorld(GetWorld(), MakeRunConfig(), CombinationDigits, RunStream);
 	UBodyContactComponent::SetupMonstersForWorld(GetWorld());
-	UMonsterLightAttractionComponent::SetupForWorld(GetWorld());
+	// One specialty sense per monster (also adds the BoneDog's near-sight and nose).
+	UMonsterSenseProfile::ApplyForWorld(this);
 }
 
 FLostWithinRunConfig ALostWithinGameMode::MakeRunConfig() const

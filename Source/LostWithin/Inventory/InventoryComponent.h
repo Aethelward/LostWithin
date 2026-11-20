@@ -217,6 +217,13 @@ private:
 	FInventoryItem* FindFirstItemSlotByID(FName ItemID);
 	const FInventoryItem* FindFirstItemSlotByID(FName ItemID) const;
 	int32 FindFirstItemIndexByID(FName ItemID) const;
-	void SpawnWorldPickupForItem(const FInventoryItem& DroppedItem) const;
+	/** Spawns the dropped pickup; bCarriesScent gives it the player's scent for the BoneDog. */
+	void SpawnWorldPickupForItem(const FInventoryItem& DroppedItem, bool bCarriesScent = false) const;
+
+	/** Seconds the player has held ItemID since it was first picked up in this run (0 when never held). */
+	float GetSecondsHeld(FName ItemID) const;
+
+	/** World time when each item id was first added (kept after it is dropped). */
+	TMap<FName, double> FirstHeldTime;
 };
 

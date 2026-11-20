@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Engine/TimerHandle.h"
 #include "GameFramework/Character.h"
 #include "Logging/LogMacros.h"
 #include "LostWithinCharacter.generated.h"
@@ -429,6 +430,18 @@ public:
 	UFUNCTION(BlueprintPure, Category="Noise")
 	float GetCurrentGaitNoiseRadius() const;
 
+	/** Current gait for monster senses: 0 walk (or standing), 1 run, 2 sprint */
+	UFUNCTION(BlueprintPure, Category="Noise")
+	int32 GetMovementGait() const { return ResolveFootstepGait(); }
+
+	/** Darkens a lit flashlight for Seconds (the Doll's gaze interference), then restores it if it is still on */
+	UFUNCTION(BlueprintCallable, Category="Flashlight")
+	void BlackoutFlashlight(float Seconds);
+
+	/** True while BlackoutFlashlight holds the beam dark */
+	UFUNCTION(BlueprintPure, Category="Flashlight")
+	bool IsFlashlightBlackedOut() const { return bFlashlightBlackedOut; }
+
 	/** Shows a paper note's text on screen until [E] or [Esc] */
 	UFUNCTION(BlueprintCallable, Category="UI")
 	void ShowNote(const FText& Title, const FText& Body, FName StoryID = NAME_None);
@@ -558,6 +571,8 @@ private:
 	bool bIsSprintingHeld = false;
 	bool bHasFlashlight = false;
 	bool bIsFlashlightOn = false;
+	bool bFlashlightBlackedOut = false;
+	FTimerHandle FlashlightBlackoutTimer;
 	bool bFlashlightAimInitialized = false;
 	bool bBGMPausedForCatSpin = false;
 	bool bSuppressBGMFinishedAdvance = false;

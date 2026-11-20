@@ -1,0 +1,114 @@
+// Copyright (c) 2025 EngineWire Contributors
+
+#include "EngineWireSubsystem.h"
+#include "Domains/AssetWorkflow/Operations/McpAssetContentSourceRoots.h"
+#include "Foundation/HandlerUtils/McpHandlerUtils.h"
+#include "Domains/AssetWorkflow/Fab/McpFabImportJson.h"
+#include "McpFabProvider.h"
+
+#include "Async/Async.h"
+#include "Dom/JsonObject.h"
+#include "HAL/FileManager.h"
+
+
+/**
+ * Downloads a Fab asset through the Fab plugin's own downloader.
+ *
+ * The transfer runs on Fab's HTTP/BuildPatchServices path — the same one the Fab
+ * tab uses — rather than a parallel implementation that would miss its retry and
+ * BuildPatch handling. That call lives in the adapter module so this one never
+ * imports Fab.dll; see McpFabProvider.h.
+ *
+ * The signed `downloadUrl` is NOT minted here. Fab issues it from the
+ * authenticated web session, and no C++ entry point initiates that; supply the
+ * URL from the Fab tab's own flow or from an account-scoped API call. Once the
+ * pack lands, asset.migrate_assets places it into /Game.
+ */
+bool UEngineWireSubsystem::HandleDownloadFabAsset(
+    const FString &RequestId, const TSharedPtr<FJsonObject> &Payload,
+    TSharedPtr<FMcpBridgeWebSocket> Socket) {
+  IMcpFabProvider *Provider = McpFabProviderOrReply(this, RequestId, Socket, TEXT("Fab downloads are unavailable"));
+  if (!Provider) {
+    return true;
+  }
+
+  FString AssetId, DownloadUrl;
+  if (!Payload->TryGetStringField(TEXT("assetId"), AssetId) || AssetId.IsEmpty()) {
+    SendAutomationError(Socket, RequestId, TEXT("'assetId' is required."),
+                        TEXT("INVALID_ARGUMENT"));
+    return true;
+  }
+  if (!Payload->TryGetStringField(TEXT("downloadUrl"), DownloadUrl) ||
+      !DownloadUrl.StartsWith(TEXT("https://"))) {
+    SendAutomationError(
+        Socket, RequestId,
+        TEXT("'downloadUrl' is required and must be https. Fab mints this from its authenticated session; it cannot be produced here."),
+        TEXT("INVALID_ARGUMENT"));
+    return true;
+  }
+
+  // Fab's downloader names the file after the URL's last segment, taken raw: on Windows a backslash there is a path
+  // separator, and the file would land outside the library folder.
+  if (DownloadUrl.Contains(TEXT("\\"))) {
+    SendAutomationError(Socket, RequestId,
+                        TEXT("'downloadUrl' must not contain a backslash: the downloader names the file after the URL's last segment."),
+                        TEXT("INVALID_ARGUMENT"));
+    return true;
+  }
+
+  // A pack always lands in the Fab library folder, which migrate_assets reads (fabLibrary): a folder the caller chose
+  // let one call write a file of the caller's name and content anywhere the editor can write.
+  const FString Destination = McpContentSources::FabLibraryDir();
+  if (Destination.IsEmpty()) {
+    SendAutomationError(Socket, RequestId,
+                        TEXT("Could not resolve a destination directory."),
+                        TEXT("INVALID_ARGUMENT"));
+    return true;
+  }
+  IFileManager::Get().MakeDirectory(*Destination, true);
+
+  // BuildPatchServices is what Marketplace-era packs ship through; plain HTTP
+  // covers the rest. Default to HTTP and let the caller opt in, because a
+  // BuildPatch request against a plain URL stalls rather than failing.
+  FString DownloadType = TEXT("http");
+  Payload->TryGetStringField(TEXT("downloadType"), DownloadType);
+  const bool bUseBuildPatch =
+      DownloadType.Equals(TEXT("buildpatch"), ESearchCase::IgnoreCase);
+
+  TWeakObjectPtr<UEngineWireSubsystem> WeakThis(this);
+  const bool bQueued = Provider->EnqueueDownload(
+      AssetId, DownloadUrl, Destination, bUseBuildPatch,
+      [WeakThis, RequestId, Socket, Destination](const FMcpFabDownloadResult &Stats) {
+        // The queue completes off the game thread; every response this bridge
+        // sends is built there, so hop before touching the subsystem.
+        AsyncTask(ENamedThreads::GameThread, [WeakThis, RequestId, Socket, Destination, Stats]() {
+          UEngineWireSubsystem *Self = WeakThis.Get();
+          if (Self == nullptr) {
+            return;
+          }
+          TSharedPtr<FJsonObject> Result = McpHandlerUtils::CreateResultObject();
+          Result->SetBoolField(TEXT("downloadSucceeded"), Stats.bSuccess);
+          Result->SetBoolField(TEXT("servedFromCache"), Stats.bServedFromCache);
+          Result->SetNumberField(TEXT("completedBytes"), static_cast<double>(Stats.CompletedBytes));
+          Result->SetNumberField(TEXT("totalBytes"), static_cast<double>(Stats.TotalBytes));
+          Result->SetStringField(TEXT("destinationDirectory"), Destination);
+          Result->SetArrayField(TEXT("downloadedFiles"), McpHandlerUtils::ToJsonStringArray(Stats.DownloadedFiles));
+          Result->SetStringField(
+              TEXT("note"),
+              TEXT("Use asset.migrate_assets with sourceRoot 'fabLibrary' to place the pack into /Game."));
+          Self->SendAutomationResponse(
+              Socket, RequestId, Stats.bSuccess,
+              Stats.bSuccess
+                  ? FString::Printf(TEXT("Downloaded %llu byte(s)."), Stats.CompletedBytes)
+                  : TEXT("Fab download failed; the signed URL may have expired."),
+              Result, Stats.bSuccess ? TEXT("") : TEXT("DOWNLOAD_FAILED"));
+        });
+      });
+
+  if (!bQueued) {
+    SendAutomationError(Socket, RequestId,
+                        TEXT("Fab refused the download request."),
+                        TEXT("DOWNLOAD_FAILED"));
+  }
+  return true;
+}

@@ -29,23 +29,6 @@
 			"Enabled": true
 		},
 		{
-			"Name": "EngineWire",
-			"Enabled": true,
-			"SupportedTargetPlatforms": [
-				"Win64",
-				"Mac",
-				"Linux"
-			]
-		},
-		{
-			"Name": "VisualStudioTools",
-			"Enabled": true,
-			"SupportedTargetPlatforms": [
-				"Win64"
-			],
-			"MarketplaceURL": "com.epicgames.launcher://ue/marketplace/product/362651520df94e4fa65492dbcba44ae2"
-		},
-		{
 			"Name": "LiveLink",
 			"Enabled": true
 		},
@@ -67,6 +50,15 @@
 		{
 			"Name": "IKRig",
 			"Enabled": true
+		},
+		{
+			"Name": "EngineWire",
+			"Enabled": true,
+			"SupportedTargetPlatforms": [
+				"Win64",
+				"Mac",
+				"Linux"
+			]
 		}
 	]
 }

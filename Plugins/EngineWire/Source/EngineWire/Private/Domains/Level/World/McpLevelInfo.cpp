@@ -1,0 +1,121 @@
+#include "Domains/Level/McpLevelActions.h"
+#include "Domains/Level/Lifecycle/McpLevelDirtyPackageLoad.h"
+#include "Domains/Level/World/McpLevelWorldAccess.h"
+#include "Foundation/BridgeHelpers/Responses/McpResponseVerify.h"
+
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "Editor.h"
+#include "Engine/Level.h"
+#include "Engine/World.h"
+#include "Modules/ModuleManager.h"
+
+namespace McpLevelHandlers {
+namespace {
+// The registry entry for a package or object path. A bare package path tries the map asset
+// "<path>.<ShortName>" first: for a loaded level the bare path finds the in-memory UPackage,
+// whose entry reads class Package with no tags.
+FAssetData FindLevelAssetData(const FString& Path) {
+  IAssetRegistry& AssetRegistry = FAssetRegistryModule::GetRegistry();
+  const FString ShortName = FPackageName::GetShortName(Path);
+  if (!ShortName.IsEmpty() && !Path.Contains(TEXT("."))) {
+    const FAssetData MapData = AssetRegistry.GetAssetByObjectPath(MCP_ASSET_REGISTRY_OBJECT_PATH(McpToObjectPath(Path)));
+    if (MapData.IsValid()) {
+      return MapData;
+    }
+  }
+  return AssetRegistry.GetAssetByObjectPath(MCP_ASSET_REGISTRY_OBJECT_PATH(Path));
+}
+
+} // namespace
+
+bool HandleGetLevelInfoAction(UEngineWireSubsystem& Subsystem, const FString& RequestId, const TSharedPtr<FJsonObject>& Payload, TSharedPtr<FMcpBridgeWebSocket> RequestingSocket) {
+    FString LevelPath;
+    Payload->TryGetStringField(TEXT("levelPath"), LevelPath);
+
+    UWorld* World = McpHandlerUtils::GetEditorWorld();
+    if (!World) {
+      Subsystem.SendAutomationError(RequestingSocket, RequestId,
+                             TEXT("No editor world available"), TEXT("NO_WORLD"));
+      return true;
+    }
+
+    ULevel* TargetLevel = nullptr;
+    if (!LevelPath.IsEmpty()) {
+      const FString LevelPathAsGiven = LevelPath;
+      LevelPath = SanitizeProjectRelativePath(LevelPath);
+      if (LevelPath.IsEmpty()) {
+        Subsystem.SendAutomationResponse(RequestingSocket, RequestId, false,
+                               McpPathRefusalMessage(TEXT("levelPath"), LevelPathAsGiven), nullptr,
+                               TEXT("SECURITY_VIOLATION"));
+        return true;
+      }
+
+      TArray<ULevel*> Levels = GetAllLevelsFromWorld(World);
+      for (ULevel* Level : Levels) {
+        if (Level->GetOutermost()->GetName() == LevelPath) {
+          TargetLevel = Level;
+          break;
+        }
+      }
+    } else {
+      TargetLevel = World->GetCurrentLevel();
+    }
+
+    if (TargetLevel) {
+      // Loaded path: preserve existing JSON shape, only ADD `loaded: true`.
+      TSharedPtr<FJsonObject> Result = McpHandlerUtils::CreateResultObject();
+      const FString PackageName = TargetLevel->GetOutermost()->GetName();
+      const FString AssetName = FPackageName::GetShortName(PackageName);
+      Result->SetStringField(TEXT("levelPath"), PackageName);
+      Result->SetStringField(TEXT("levelName"), AssetName);
+      // Valid actors only: Actors.Num() also counted the empty slots a Blueprint recompile leaves behind.
+      Result->SetNumberField(TEXT("actorCount"), McpHandlerUtils::CountValidActors(TargetLevel));
+      Result->SetBoolField(TEXT("loaded"), true);
+      AddUnsavedState(Result, TargetLevel);
+
+      // A loaded level must be identifiable as a map asset without a
+      // follow-up list_levels call. The record already declares these fields;
+      // the unloaded branch emits them, so mirror that identity here.
+      Result->SetStringField(TEXT("packageName"), PackageName);
+      Result->SetStringField(TEXT("assetName"), AssetName);
+      Result->SetStringField(TEXT("objectPath"), McpToObjectPath(PackageName));
+      const FAssetData LevelAssetData = FindLevelAssetData(PackageName);
+      if (LevelAssetData.IsValid()) {
+        Result->SetStringField(TEXT("assetClass"),
+                               MCP_ASSET_DATA_GET_CLASS_PATH(LevelAssetData));
+        Result->SetObjectField(TEXT("tagsAndValues"), McpAssetRegistryTagsToJson(LevelAssetData));
+      }
+
+      Subsystem.SendAutomationResponse(RequestingSocket, RequestId, true, TEXT("Level info retrieved"), Result);
+      return true;
+    }
+
+    // Not loaded as a UWorld — fall back to AssetRegistry lookup so callers can
+    // query metadata for any map asset without forcing a load. We do NOT auto-load.
+    if (!LevelPath.IsEmpty()) {
+      // Accept either a package path ("/Game/Maps/Foo") or a full object path ("/Game/Maps/Foo.Foo").
+      const FAssetData AssetData = FindLevelAssetData(LevelPath);
+      if (AssetData.IsValid()) {
+        TSharedPtr<FJsonObject> Result = McpHandlerUtils::CreateResultObject();
+        Result->SetBoolField(TEXT("loaded"), false);
+        Result->SetStringField(TEXT("levelPath"), AssetData.PackageName.ToString());
+        Result->SetStringField(TEXT("levelName"), AssetData.AssetName.ToString());
+        Result->SetStringField(TEXT("packageName"), AssetData.PackageName.ToString());
+        Result->SetStringField(TEXT("assetName"), AssetData.AssetName.ToString());
+        Result->SetStringField(TEXT("objectPath"), MCP_ASSET_DATA_GET_OBJECT_PATH(AssetData));
+        Result->SetStringField(TEXT("assetClass"), MCP_ASSET_DATA_GET_CLASS_PATH(AssetData));
+
+        Result->SetObjectField(TEXT("tagsAndValues"), McpAssetRegistryTagsToJson(AssetData));
+
+        Subsystem.SendAutomationResponse(RequestingSocket, RequestId, true,
+                               TEXT("Level info retrieved (asset registry, not loaded)"), Result);
+        return true;
+      }
+    }
+
+    Subsystem.SendAutomationError(RequestingSocket, RequestId,
+                           FString::Printf(TEXT("Level not found: %s"), *LevelPath),
+                           TEXT("LEVEL_NOT_FOUND"));
+    return true;
+}
+} // namespace McpLevelHandlers

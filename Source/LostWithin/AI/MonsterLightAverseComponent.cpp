@@ -8,6 +8,7 @@
 #include "Gameplay/LostWithinLightSubsystem.h"
 #include "Components/CapsuleComponent.h"
 #include "Components/SkeletalMeshComponent.h"
+#include "Components/PointLightComponent.h"
 #include "Components/SpotLightComponent.h"
 #include "Engine/World.h"
 #include "GameFramework/Character.h"
@@ -387,6 +388,8 @@ void UMonsterLightAverseComponent::UpdateExposureAndRepulsion(float DeltaTime)
 		return;
 	}
 
+	UpdateHearingMemory(DeltaTime);
+
 	ALostWithinCharacter* PlayerChar = FindPlayerCharacter();
 	float Intensity = 0.0f;
 	FVector BeamDirection = FVector::ZeroVector;
@@ -530,17 +533,48 @@ void UMonsterLightAverseComponent::UpdateRetreatMovement(float DeltaTime)
 	}
 }
 
+void UMonsterLightAverseComponent::UpdateHearingMemory(float DeltaTime)
+{
+	SecondsSinceHeard = FMath::Min(SecondsSinceHeard + DeltaTime, 1.0e6f);
+	const UMonsterHearingComponent* Hearing = GetOwner() ? GetOwner()->FindComponentByClass<UMonsterHearingComponent>() : nullptr;
+	if (!Hearing || Hearing->GetHeardPlayerCount() == LastHeardCount)
+	{
+		return;
+	}
+	LastHeardCount = Hearing->GetHeardPlayerCount();
+	if (SecondsSinceHeard > DarkStalkHearingMemory)
+	{
+		// A fresh hunt (not a footstep in an ongoing one): the head snaps toward the sound.
+		PlaySoundAt(HeardYouSound, GetOwner()->GetActorLocation());
+	}
+	SecondsSinceHeard = 0.0f;
+	HeardTarget = Hearing->GetLastHeardPlayerLocation();
+	bHasHeardTarget = true;
+}
+
 void UMonsterLightAverseComponent::UpdateDarkStalking(float DeltaTime, ALostWithinCharacter* PlayerChar)
 {
 	ACharacter* Character = Cast<ACharacter>(GetOwner());
 	const bool bInvestigating = UMonsterHearingComponent::IsActorInvestigating(GetOwner());
-	const bool bShouldChase = bEnableAggressiveDarkStalking && !bInvestigating && Character && IsValid(PlayerChar)
-		&& !PlayerChar->IsDead()
-		&& FVector::Dist(Character->GetActorLocation(), PlayerChar->GetActorLocation()) <= DarkStalkDetectionRadius;
+	bool bShouldChase = bEnableAggressiveDarkStalking && !bInvestigating && Character && IsValid(PlayerChar)
+		&& !PlayerChar->IsDead();
+	if (bDarkStalkRequiresHearing)
+	{
+		// Blind: only a recently heard footstep gives it somewhere to go; a silent player is never found.
+		bShouldChase = bShouldChase && bHasHeardTarget && SecondsSinceHeard <= DarkStalkHearingMemory;
+	}
+	else
+	{
+		bShouldChase = bShouldChase
+			&& FVector::Dist(Character->GetActorLocation(), PlayerChar->GetActorLocation()) <= DarkStalkDetectionRadius;
+	}
 
 	if (!bShouldChase)
 	{
 		bIsHoldingAtTorchEdge = false;
+		EdgeHoldSeconds = 0.0f;
+		EdgeTorch.Reset();
+		HeardChaseSeconds = 0.0f;
 		if (bChasingPlayer)
 		{
 			bChasingPlayer = false;
@@ -560,22 +594,37 @@ void UMonsterLightAverseComponent::UpdateDarkStalking(float DeltaTime, ALostWith
 	{
 		bChasingPlayer = true;
 		RepathTimer = 0.0f;
+		HeardChaseSeconds = 0.0f;
 	}
+	HeardChaseSeconds += DeltaTime;
 	ApplyDarkStalkSpeed();
 
+	const FVector ChaseTarget = bDarkStalkRequiresHearing ? HeardTarget : PlayerChar->GetActorLocation();
 	if (AAIController* AI = Cast<AAIController>(Character->GetController()))
 	{
 		RepathTimer -= DeltaTime;
-		if (RepathTimer <= 0.0f)
+		const bool bNewHeardTarget = bDarkStalkRequiresHearing
+			&& FVector::DistSquared(ChaseTarget, LastRequestedTarget) > FMath::Square(25.0f);
+		if (RepathTimer <= 0.0f || bNewHeardTarget)
 		{
 			RepathTimer = 0.35f;
-			// Keep closing in all the way, so the Ghoul's body really touches the player.
-			AI->MoveToActor(PlayerChar, 5.0f, /*bStopOnOverlap=*/false);
+			LastRequestedTarget = ChaseTarget;
+			// Keep closing in all the way, so the Ghoul's body really touches a player standing there.
+			if (bDarkStalkRequiresHearing)
+			{
+				AI->MoveToLocation(ChaseTarget, 5.0f, /*bStopOnOverlap=*/false, /*bUsePathfinding=*/true,
+					/*bProjectDestinationToNavigation=*/true, /*bCanStrafe=*/false, /*FilterClass=*/nullptr,
+					/*bAllowPartialPath=*/true);
+			}
+			else
+			{
+				AI->MoveToActor(PlayerChar, 5.0f, /*bStopOnOverlap=*/false);
+			}
 		}
 		// This tick runs before movement: if the path's next stretch enters torch light, stop before taking that step.
 		const UPathFollowingComponent* PathFollowing = AI->GetPathFollowingComponent();
 		const FVector NextTarget = PathFollowing && PathFollowing->GetStatus() == EPathFollowingStatus::Moving
-			? PathFollowing->GetCurrentTargetLocation() : PlayerChar->GetActorLocation();
+			? PathFollowing->GetCurrentTargetLocation() : ChaseTarget;
 		bIsHoldingAtTorchEdge = WouldStepIntoTorchLight(NextTarget);
 		if (bIsHoldingAtTorchEdge)
 		{
@@ -584,13 +633,115 @@ void UMonsterLightAverseComponent::UpdateDarkStalking(float DeltaTime, ALostWith
 	}
 	else
 	{
-		const FVector Target = PlayerChar->GetActorLocation();
-		bIsHoldingAtTorchEdge = WouldStepIntoTorchLight(Target);
-		if (!bIsHoldingAtTorchEdge)
+		bIsHoldingAtTorchEdge = WouldStepIntoTorchLight(ChaseTarget);
+		if (!bIsHoldingAtTorchEdge && FVector::Dist2D(ChaseTarget, Character->GetActorLocation()) > 5.0f)
 		{
-			Character->AddMovementInput((Target - Character->GetActorLocation()).GetSafeNormal2D(), 1.0f);
+			Character->AddMovementInput((ChaseTarget - Character->GetActorLocation()).GetSafeNormal2D(), 1.0f);
 		}
 	}
+	UpdateTorchEdgeHold(DeltaTime, ChaseTarget);
+}
+
+void UMonsterLightAverseComponent::UpdateTorchEdgeHold(float DeltaTime, const FVector& ChaseTarget)
+{
+	ACharacter* Character = Cast<ACharacter>(GetOwner());
+	ULostWithinLightSubsystem* Light = ULostWithinLightSubsystem::Get(this);
+	if (!bIsHoldingAtTorchEdge || !Character || !Light)
+	{
+		EdgeHoldSeconds = 0.0f;
+		EdgeTorch.Reset();
+		bPreSnuffPlayed = false;
+		return;
+	}
+
+	const FVector Origin = Character->GetActorLocation();
+	const FVector Toward = (ChaseTarget - Origin).GetSafeNormal2D();
+	const FVector Ahead = Origin + Toward * TorchEdgeLookAhead + FVector(0.0f, 0.0f, DetectionTraceOffsetZ);
+	UPointLightComponent* Torch = Light->FindLitTorchNear(Ahead, Light->TorchLitRadius);
+	if (Torch != EdgeTorch.Get())
+	{
+		EdgeTorch = Torch;
+		EdgeHoldSeconds = 0.0f;
+		bPreSnuffPlayed = false;
+	}
+	if (!Torch)
+	{
+		return;
+	}
+
+	EdgeHoldSeconds += DeltaTime;
+	if (TorchSnuffHoldTime > 0.0f)
+	{
+		if (!bPreSnuffPlayed && EdgeHoldSeconds >= TorchSnuffHoldTime - PreSnuffLeadTime)
+		{
+			bPreSnuffPlayed = true;
+			PlaySoundAt(PreSnuffSound, Torch->GetComponentLocation());
+		}
+		if (EdgeHoldSeconds >= TorchSnuffHoldTime)
+		{
+			const FVector TorchLocation = Torch->GetComponentLocation();
+			if (Light->SnuffTorch(Torch, TorchSnuffDuration))
+			{
+				PlaySoundAt(SnuffSound, TorchLocation);
+				OnTorchSnuffed.Broadcast(TorchLocation);
+			}
+			EdgeHoldSeconds = 0.0f;
+			EdgeTorch.Reset();
+			bPreSnuffPlayed = false;
+			// The light is gone: walk on from the next move request.
+			bIsHoldingAtTorchEdge = false;
+			RepathTimer = 0.0f;
+			return;
+		}
+	}
+
+	if (bOrbitTorchEdge)
+	{
+		// Circle the dark rim: step along the tangent that brings it closer to its target, if that stays dark.
+		const FVector Radial = (Origin - Torch->GetComponentLocation()).GetSafeNormal2D();
+		FVector Tangent = FVector::CrossProduct(FVector::UpVector, Radial).GetSafeNormal2D();
+		if (FVector::DotProduct(Tangent, ChaseTarget - Origin) < 0.0f)
+		{
+			Tangent = -Tangent;
+		}
+		const FVector Candidates[] = { Tangent, -Tangent };
+		for (const FVector& Candidate : Candidates)
+		{
+			if (!Candidate.IsNearlyZero() && !WouldStepIntoTorchLight(Origin + Candidate * 1000.0f))
+			{
+				Character->AddMovementInput(Candidate, 1.0f);
+				break;
+			}
+		}
+	}
+}
+
+void UMonsterLightAverseComponent::PlaySoundAt(USoundBase* Sound, const FVector& Location) const
+{
+	const UWorld* World = GetWorld();
+	if (Sound && World && World->IsGameWorld())
+	{
+		UGameplayStatics::PlaySoundAtLocation(this, Sound, Location, 1.0f, 1.0f, 0.0f, SoundAttenuation);
+	}
+}
+
+float UMonsterLightAverseComponent::GetCurrentDarkStalkSpeed() const
+{
+	if (bDarkStalkRequiresHearing && DarkStalkSpeedSteps.Num() > 0)
+	{
+		const int32 Step = FMath::Clamp(FMath::FloorToInt(HeardChaseSeconds / FMath::Max(0.1f, DarkStalkSpeedStepInterval)),
+			0, DarkStalkSpeedSteps.Num() - 1);
+		return DarkStalkSpeedSteps[Step];
+	}
+	return DarkStalkApproachSpeed > 0.0f ? DarkStalkApproachSpeed : SavedMaxWalkSpeed * DarkStalkSpeedMultiplier;
+}
+
+bool UMonsterLightAverseComponent::IsActorHuntingByEar(const AActor* Actor)
+{
+	const UMonsterLightAverseComponent* LightAverse = IsValid(Actor) ? Actor->FindComponentByClass<UMonsterLightAverseComponent>() : nullptr;
+	// Registered, not IsActive(): the component never auto-activates (it ticks regardless), so IsActive() is false in play.
+	return LightAverse && LightAverse->IsRegistered() && LightAverse->bDarkStalkRequiresHearing
+		&& LightAverse->bEnableAggressiveDarkStalking;
 }
 
 void UMonsterLightAverseComponent::ApplyRetreatSpeed()
@@ -625,8 +776,7 @@ void UMonsterLightAverseComponent::ApplyDarkStalkSpeed()
 				SavedMaxWalkSpeed = Move->MaxWalkSpeed;
 				bSpeedApplied = true;
 			}
-			const float TargetSpeed = (DarkStalkApproachSpeed > 0.0f) ? DarkStalkApproachSpeed : (SavedMaxWalkSpeed * DarkStalkSpeedMultiplier);
-			Move->MaxWalkSpeed = TargetSpeed;
+			Move->MaxWalkSpeed = GetCurrentDarkStalkSpeed();
 		}
 	}
 }

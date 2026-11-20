@@ -1,0 +1,119 @@
+#include "Domains/Blueprint/McpBPActionContext.h"
+#include "Foundation/Blueprint/McpBlueprintUtils.h"
+#include "Foundation/BridgeHelpers/Responses/McpJsonFields.h"
+#include "Foundation/HandlerUtils/McpHandlerUtils.h"
+
+#include "EdGraph/EdGraph.h"
+#include "EdGraphSchema_K2.h"
+#include "Engine/Blueprint.h"
+#include "K2Node_FunctionEntry.h"
+#include "K2Node_FunctionResult.h"
+#include "Kismet2/BlueprintEditorUtils.h"
+
+namespace McpBlueprintHandlers {
+namespace {
+// The user pins of a function's entry node (its inputs) or return node (its outputs), in order, as "name: type".
+FString ExistingFunctionPins(const UEdGraph *Graph, bool bInputs) {
+  TArray<FString> Names;
+  const UK2Node_EditablePinBase *Terminator =
+      bInputs ? static_cast<const UK2Node_EditablePinBase *>(McpBlueprintUtils::FirstNodeOfClass<UK2Node_FunctionEntry>(Graph))
+              : McpBlueprintUtils::FirstNodeOfClass<UK2Node_FunctionResult>(Graph);
+  if (Terminator) {
+    for (const TSharedPtr<FUserPinInfo> &Pin : Terminator->UserDefinedPins) {
+      Names.Add(Pin.IsValid() ? Pin->PinName.ToString() + TEXT(": ") + McpBlueprintUtils::DescribePinType(Pin->PinType) : FString());
+    }
+  }
+  return FString::Join(Names, TEXT(", "));
+}
+
+FString RequestedFunctionPins(const TSharedPtr<FJsonObject> &Payload, const TCHAR *Field) {
+  TArray<FString> Names;
+  const TArray<TSharedPtr<FJsonValue>> *Pins = nullptr;
+  Payload->TryGetArrayField(Field, Pins);
+  for (int32 Index = 0; Pins && Index < Pins->Num(); ++Index) {
+    const TSharedPtr<FJsonObject> *Pin = nullptr;
+    if ((*Pins)[Index].IsValid() && (*Pins)[Index]->TryGetObject(Pin)) {
+      Names.Add(GetJsonStringField(*Pin, TEXT("name")) + TEXT(": ") +
+                McpBlueprintUtils::DescribePinType(McpBlueprintUtils::MakePinType(GetJsonStringField(*Pin, TEXT("type")))));
+    }
+  }
+  return FString::Join(Names, TEXT(", "));
+}
+} // namespace
+
+FString FunctionTerminatorGuid(const UEdGraph *Graph, bool bEntry) {
+  const UEdGraphNode *Node =
+      bEntry ? static_cast<const UEdGraphNode *>(McpBlueprintUtils::FirstNodeOfClass<UK2Node_FunctionEntry>(Graph))
+             : McpBlueprintUtils::FirstNodeOfClass<UK2Node_FunctionResult>(Graph);
+  return Node ? Node->NodeGuid.ToString() : FString();
+}
+
+FString DescribeFunctionSignatureMismatch(const UEdGraph *Graph, const TSharedPtr<FJsonObject> &Payload) {
+  const UK2Node_FunctionEntry *Entry = McpBlueprintUtils::FirstNodeOfClass<UK2Node_FunctionEntry>(Graph);
+  bool bPure = false;
+  if (Entry && Payload->TryGetBoolField(TEXT("pure"), bPure) &&
+      bPure != ((Entry->GetExtraFlags() & FUNC_BlueprintPure) != 0)) {
+    return bPure ? TEXT("it is not pure") : TEXT("it is pure");
+  }
+  for (const bool bInputs : {true, false}) {
+    const TCHAR *Field = bInputs ? TEXT("inputs") : TEXT("outputs");
+    // Names alone: a pin of another type answered "Function already exists" as if it matched.
+    const FString Have = ExistingFunctionPins(Graph, bInputs);
+    const FString Want = RequestedFunctionPins(Payload, Field);
+    if (Payload->HasField(Field) && !Have.Equals(Want, ESearchCase::IgnoreCase)) {
+      return FString::Printf(TEXT("its %s are [%s], not [%s]"), Field, *Have, *Want);
+    }
+  }
+  return FString();
+}
+
+UClass *ResolveFunctionOverride(UBlueprint *Blueprint, const FString &FuncName,
+                                const TSharedPtr<FJsonObject> &Payload, FString &OutRefusal) {
+  UFunction *Parent = nullptr;
+  UClass *const Owner = FBlueprintEditorUtils::GetOverrideFunctionClass(Blueprint, FName(*FuncName), &Parent);
+  // The Blueprint's own members (a custom event of that name) are not a parent's to override.
+  if (!Owner || !Parent || Owner == Blueprint->GeneratedClass || !UEdGraphSchema_K2::CanKismetOverrideFunction(Parent)) {
+    return nullptr;
+  }
+  const FString Name = Owner->GetName() + TEXT("::") + Parent->GetName();
+  if (UEdGraphSchema_K2::FunctionCanBePlacedAsEvent(Parent)) {
+    OutRefusal = FString::Printf(TEXT("%s is overridden as an event, not a function graph: edit_graph create_node "
+                                      "nodeType Event with eventName %s."), *Name, *FuncName);
+  } else if (Payload->HasField(TEXT("inputs")) || Payload->HasField(TEXT("outputs")) ||
+             Payload->HasField(TEXT("pure")) || Payload->HasField(TEXT("isPublic"))) {
+    OutRefusal = FString::Printf(TEXT("%s is overridden with its own signature: leave out inputs, outputs, pure and isPublic."), *Name);
+  }
+  return Owner;
+}
+
+void SendBlueprintAddFunctionResult(
+    UEngineWireSubsystem &Bridge, const FString &RequestId,
+    TSharedPtr<FMcpBridgeWebSocket> RequestingSocket, UBlueprint *Blueprint,
+    const FString &RegistryKey, const FString &FuncName, bool bIsPublic,
+    const TArray<TSharedPtr<FJsonValue>> &Inputs,
+    const TArray<TSharedPtr<FJsonValue>> &Outputs, bool bSaved,
+    const FString &EntryNodeGuid, const FString &ResultNodeGuid, const UClass *OverrideClass) {
+  TSharedPtr<FJsonObject> Resp = McpHandlerUtils::CreateResultObject();
+  Resp->SetStringField(TEXT("blueprintPath"), RegistryKey);
+  Resp->SetStringField(TEXT("functionName"), FuncName);
+  if (OverrideClass) {
+    Resp->SetStringField(TEXT("overrides"), OverrideClass->GetName() + TEXT("::") + FuncName);
+  }
+  Resp->SetBoolField(TEXT("public"), bIsPublic);
+  Resp->SetBoolField(TEXT("saved"), bSaved);
+  Resp->SetStringField(TEXT("nodeGuid"), EntryNodeGuid);
+  if (!ResultNodeGuid.IsEmpty()) {
+    Resp->SetStringField(TEXT("resultNodeGuid"), ResultNodeGuid);
+  }
+  if (Inputs.Num() > 0) {
+    Resp->SetArrayField(TEXT("inputs"), Inputs);
+  }
+  if (Outputs.Num() > 0) {
+    Resp->SetArrayField(TEXT("outputs"), Outputs);
+  }
+  McpHandlerUtils::AddVerification(Resp, Blueprint);
+  Bridge.SendAutomationResponse(RequestingSocket, RequestId, true,
+                                TEXT("Function added"), Resp, FString());
+
+}
+}

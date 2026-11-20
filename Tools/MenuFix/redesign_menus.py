@@ -21,6 +21,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -179,10 +180,27 @@ class McpSession:
         if res.get("isError") or sc.get("success") is False:
             msg = sc.get("message") or sc.get("error") or json.dumps(res)[:400]
             raise McpError(f"{tool}.{action} failed: {msg}")
+        images = [c.get("data") for c in res.get("content", []) if c.get("type") == "image" and c.get("data")]
+        if images and isinstance(sc.get("data"), dict):
+            cur_b64 = sc["data"].get("imageBase64", "")
+            if not cur_b64 or str(cur_b64).startswith("<"):
+                sc["data"]["imageBase64"] = images[0]
         return sc
 
     def execute(self, tool: str, action: str, capability: str, params: dict[str, Any]) -> dict[str, Any]:
         return self.unreal("execute", tool, action, capability=capability, params=params)
+
+    def execute_consented(self, tool: str, action: str, capability: str, params: dict[str, Any]) -> dict[str, Any]:
+        desc = self.unreal("describe", tool, action)
+        grant = desc.get("consentGrant")
+        return self.unreal(
+            "execute",
+            tool,
+            action,
+            capability=capability,
+            params=params,
+            consent=grant,
+        )
 
     def execute_python(self, code: str) -> dict[str, Any]:
         desc = self.unreal("describe", "system_control", "execute_python")
@@ -326,21 +344,103 @@ def reparent_widget(
         by_name[slot_name]["parentName"] = new_parent
 
 
+def remove_widgets_if_exist(
+    mcp: McpSession,
+    widget_path: str,
+    by_name: dict[str, dict[str, Any]],
+    slot_names: list[str],
+) -> None:
+    """Detach widgets and move them to TransientPackage via Python.
+
+    Avoids EngineWire's `blueprint.remove_widget` (`McpWidgetManipulation.cpp:63`),
+    which calls `Widget->MarkAsGarbage()` and crashes with `Assertion failed: !IsRooted()`
+    when a saved WidgetTree widget is rooted in UE5.6 Linux.
+    """
+    targets = [name for name in slot_names if name in by_name]
+    if not targets:
+        return
+    bp_name = widget_path.rsplit("/", 1)[-1]
+    asset_prefix = f"{widget_path}.{bp_name}:WidgetTree."
+    code = f"""
+import json, uuid, unreal
+asset_prefix = {json.dumps(asset_prefix)}
+widget_path = {json.dumps(widget_path)}
+targets = {json.dumps(targets)}
+
+wbp = unreal.EditorAssetLibrary.load_asset(widget_path)
+by_name = {{}}
+for w in unreal.ObjectIterator(unreal.Widget):
+    p = w.get_path_name()
+    if p == asset_prefix + w.get_name():
+        by_name[w.get_name()] = w
+
+transient_pkg = unreal.find_object(None, "/Engine/Transient") or unreal.ScrollBox().get_outer()
+removed = []
+
+def collect_subtree(node, acc):
+    acc.append(node)
+    if isinstance(node, unreal.PanelWidget):
+        for child in list(node.get_all_children()):
+            if child is not None:
+                collect_subtree(child, acc)
+
+for name in targets:
+    root_w = by_name.get(name)
+    if root_w is None:
+        continue
+    subtree = []
+    collect_subtree(root_w, subtree)
+    root_w.remove_from_parent()
+    for node in subtree:
+        new_name = f"_Removed_{{node.get_name()}}_{{uuid.uuid4().hex[:8]}}"
+        if not node.rename(name=new_name, outer=transient_pkg):
+            raise RuntimeError(f"Failed to rename/move widget {{node.get_path_name()}} to Transient")
+    removed.append(name)
+
+if removed and wbp is not None:
+    wbp.modify()
+print(json.dumps({{"removed": removed}}))
+"""
+    res = mcp.execute_python(code)
+    out = json.loads(res.get("output") or "{}")
+    if out.get("removed"):
+        # Flush WidgetBlueprint's WidgetVariableNameToGuidMap via a compile+save.
+        # The first compile after detaching widgets logs a one-time handled ensure
+        # ("Variable [...] was deleted but still has a GUID") as it purges the stale
+        # entries via It.RemoveCurrent(); re-compile once more to confirm 0 errors.
+        need_recheck = False
+        try:
+            comp = mcp.execute(
+                "manage_blueprint",
+                "compile",
+                "blueprint.compile",
+                {"blueprintPath": widget_path, "saveAfterCompile": True},
+            )
+            details = comp.get("data", {}).get("details", {})
+            need_recheck = bool(details.get("engineErrorsObserved"))
+        except McpError as exc:
+            err = str(exc)
+            if "was deleted but still has a GUID" not in err and "Handled ensure" not in err:
+                raise
+            need_recheck = True
+        if need_recheck:
+            mcp.execute(
+                "manage_blueprint",
+                "compile",
+                "blueprint.compile",
+                {"blueprintPath": widget_path, "saveAfterCompile": True},
+            )
+    for name in targets:
+        by_name.pop(name, None)
+
+
 def remove_widget_if_exists(
     mcp: McpSession,
     widget_path: str,
     by_name: dict[str, dict[str, Any]],
     slot_name: str,
 ) -> None:
-    if slot_name not in by_name:
-        return
-    mcp.execute(
-        "manage_blueprint",
-        "remove_widget",
-        "blueprint.remove_widget",
-        {"widgetPath": widget_path, "slotName": slot_name},
-    )
-    by_name.pop(slot_name, None)
+    remove_widgets_if_exist(mcp, widget_path, by_name, [slot_name])
 
 
 def clear_event_graph(mcp: McpSession, blueprint_path: str) -> dict[str, int]:
@@ -363,7 +463,7 @@ def clear_event_graph(mcp: McpSession, blueprint_path: str) -> dict[str, int]:
         if not batch_ids:
             continue
         try:
-            mcp.execute(
+            mcp.execute_consented(
                 "manage_blueprint",
                 "delete_node",
                 "blueprint.delete_node",
@@ -373,7 +473,7 @@ def clear_event_graph(mcp: McpSession, blueprint_path: str) -> dict[str, int]:
         except McpError:
             for nid in batch_ids:
                 try:
-                    mcp.execute(
+                    mcp.execute_consented(
                         "manage_blueprint",
                         "delete_node",
                         "blueprint.delete_node",
@@ -518,6 +618,16 @@ def set_overlay_slot(widget, h_align, v_align, pad=(0, 0, 0, 0)):
     sl.set_vertical_alignment(v_align)
     sl.set_padding(make_margin(*pad))
 
+def set_box_slot(widget, h_align, v_align, pad=(0, 0, 0, 0)):
+    """Configure alignment and explicitly reset stale padding on SizeBox/Border/ScaleBox/ScrollBox slots."""
+    sl = widget.slot
+    if hasattr(sl, "set_horizontal_alignment"):
+        sl.set_horizontal_alignment(h_align)
+    if hasattr(sl, "set_vertical_alignment"):
+        sl.set_vertical_alignment(v_align)
+    if hasattr(sl, "set_padding"):
+        sl.set_padding(make_margin(*pad))
+
 def set_button_label(button, label_widget, text, font_asset, size, color_hex, style):
     button.set_style(style)
     button.set_background_color(unreal.LinearColor(1.0, 1.0, 1.0, 1.0))
@@ -547,7 +657,7 @@ def collect_widgets(asset_prefix):
     found = {}
     for w in unreal.ObjectIterator(unreal.Widget):
         p = w.get_path_name()
-        if asset_prefix in p:
+        if p.startswith(asset_prefix):
             found[w.get_name()] = w
     return found
 '''
@@ -586,8 +696,7 @@ img = w["Image_403"]
 img.set_brush_from_texture(tex_bg, match_size=True)
 img.set_color_and_opacity(unreal.LinearColor(1.0, 1.0, 1.0, 1.0))
 img.set_visibility(unreal.SlateVisibility.VISIBLE)
-img.slot.set_horizontal_alignment(unreal.HorizontalAlignment.H_ALIGN_FILL)
-img.slot.set_vertical_alignment(unreal.VerticalAlignment.V_ALIGN_FILL)
+set_box_slot(img, unreal.HorizontalAlignment.H_ALIGN_FILL, unreal.VerticalAlignment.V_ALIGN_FILL)
 
 # Left scrim anchor [0,0..0.42,1.0]
 scrim = w["LeftScrim"]
@@ -600,8 +709,7 @@ scrim.set_visibility(unreal.SlateVisibility.VISIBLE)
 set_canvas_slot(scrim, 0.0, 0.0, 0.42, 1.0, z=1)
 
 # LeftColumn structure: TitleBox (top), LeftSpacer (fill 1.0), VerticalBox_0 (bottom-middle), LeftBottomSpacer (fill 0.22)
-w["LeftColumn"].slot.set_horizontal_alignment(unreal.HorizontalAlignment.H_ALIGN_FILL)
-w["LeftColumn"].slot.set_vertical_alignment(unreal.VerticalAlignment.V_ALIGN_FILL)
+set_box_slot(w["LeftColumn"], unreal.HorizontalAlignment.H_ALIGN_FILL, unreal.VerticalAlignment.V_ALIGN_FILL)
 set_vbox_slot(w["TitleBox"], unreal.HorizontalAlignment.H_ALIGN_LEFT, unreal.VerticalAlignment.V_ALIGN_TOP)
 configure_text(
     w["TextBlock_0"], "LOST WITHIN", font_bold, 62, "#F0E9D8",
@@ -621,8 +729,7 @@ tr_box.set_height_override(2.0)
 set_vbox_slot(tr_box, unreal.HorizontalAlignment.H_ALIGN_LEFT, unreal.VerticalAlignment.V_ALIGN_TOP, pad=(0, 12, 0, 12))
 w["TitleRule"].set_brush(make_box_brush("#8F1916CC"))
 w["TitleRule"].set_brush_color(unreal.LinearColor(1.0, 1.0, 1.0, 1.0))
-w["TitleRule"].slot.set_horizontal_alignment(unreal.HorizontalAlignment.H_ALIGN_FILL)
-w["TitleRule"].slot.set_vertical_alignment(unreal.VerticalAlignment.V_ALIGN_FILL)
+set_box_slot(w["TitleRule"], unreal.HorizontalAlignment.H_ALIGN_FILL, unreal.VerticalAlignment.V_ALIGN_FILL)
 
 w["LeftSpacer"].set_size(unreal.Vector2D(1.0, 1.0))
 set_vbox_slot(w["LeftSpacer"], unreal.HorizontalAlignment.H_ALIGN_FILL, unreal.VerticalAlignment.V_ALIGN_FILL, fill=1.0)
@@ -641,6 +748,7 @@ btn_style = make_button_style(
     outline_width=1.0,
     radius=4.0,
     click_sound=click_sfx,
+    pad=(16, 4, 16, 4),
 )
 
 buttons = [
@@ -653,9 +761,7 @@ for box_name, btn_name, txt_name, label, pad_bottom in buttons:
     sb.set_width_override(320.0)
     sb.set_height_override(56.0)
     set_vbox_slot(sb, unreal.HorizontalAlignment.H_ALIGN_LEFT, unreal.VerticalAlignment.V_ALIGN_CENTER, pad=(0, 0, 0, pad_bottom))
-    sz_slot = w[btn_name].slot
-    sz_slot.set_horizontal_alignment(unreal.HorizontalAlignment.H_ALIGN_FILL)
-    sz_slot.set_vertical_alignment(unreal.VerticalAlignment.V_ALIGN_FILL)
+    set_box_slot(w[btn_name], unreal.HorizontalAlignment.H_ALIGN_FILL, unreal.VerticalAlignment.V_ALIGN_FILL)
     set_button_label(w[btn_name], w[txt_name], label, font_bold, 22, "#EFE8D8", btn_style)
 
 wbp = unreal.EditorAssetLibrary.load_asset("/Game/UI/Menu/MainMenu")
@@ -702,8 +808,7 @@ img = w["Image_81"]
 img.set_brush_from_texture(tex_bg, match_size=True)
 img.set_color_and_opacity(unreal.LinearColor(1.0, 1.0, 1.0, 1.0))
 img.set_visibility(unreal.SlateVisibility.VISIBLE)
-img.slot.set_horizontal_alignment(unreal.HorizontalAlignment.H_ALIGN_FILL)
-img.slot.set_vertical_alignment(unreal.VerticalAlignment.V_ALIGN_FILL)
+set_box_slot(img, unreal.HorizontalAlignment.H_ALIGN_FILL, unreal.VerticalAlignment.V_ALIGN_FILL)
 
 # Dark veil
 veil = w["OptionsVeil"]
@@ -721,16 +826,14 @@ panel.set_horizontal_alignment(unreal.HorizontalAlignment.H_ALIGN_FILL)
 panel.set_vertical_alignment(unreal.VerticalAlignment.V_ALIGN_FILL)
 panel.set_visibility(unreal.SlateVisibility.VISIBLE)
 set_canvas_slot(panel, 0.08, 0.07, 0.92, 0.93, z=2)
-w["OptionsMainLayout"].slot.set_horizontal_alignment(unreal.HorizontalAlignment.H_ALIGN_FILL)
-w["OptionsMainLayout"].slot.set_vertical_alignment(unreal.VerticalAlignment.V_ALIGN_FILL)
+set_box_slot(w["OptionsMainLayout"], unreal.HorizontalAlignment.H_ALIGN_FILL, unreal.VerticalAlignment.V_ALIGN_FILL)
 
 # Top bar (58 px height, 16 px gaps, Cinzel-Bold 19)
 top_box = w["TopBarBox"]
 top_box.set_height_override(58.0)
 top_box.clear_width_override()
 set_vbox_slot(top_box, unreal.HorizontalAlignment.H_ALIGN_FILL, unreal.VerticalAlignment.V_ALIGN_TOP, pad=(0, 0, 0, 14))
-w["HorizontalBox_0"].slot.set_horizontal_alignment(unreal.HorizontalAlignment.H_ALIGN_FILL)
-w["HorizontalBox_0"].slot.set_vertical_alignment(unreal.VerticalAlignment.V_ALIGN_FILL)
+set_box_slot(w["HorizontalBox_0"], unreal.HorizontalAlignment.H_ALIGN_FILL, unreal.VerticalAlignment.V_ALIGN_FILL)
 
 tab_inactive = make_button_style(
     normal_hex="#15171EE0", hovered_hex="#571311EB", pressed_hex="#3B0B0AF5",
@@ -760,8 +863,7 @@ hr_box.clear_width_override()
 set_vbox_slot(hr_box, unreal.HorizontalAlignment.H_ALIGN_FILL, unreal.VerticalAlignment.V_ALIGN_TOP, pad=(0, 0, 0, 24))
 w["HeaderRule"].set_brush(make_box_brush("#3E1C1AA0"))
 w["HeaderRule"].set_brush_color(unreal.LinearColor(1.0, 1.0, 1.0, 1.0))
-w["HeaderRule"].slot.set_horizontal_alignment(unreal.HorizontalAlignment.H_ALIGN_FILL)
-w["HeaderRule"].slot.set_vertical_alignment(unreal.VerticalAlignment.V_ALIGN_FILL)
+set_box_slot(w["HeaderRule"], unreal.HorizontalAlignment.H_ALIGN_FILL, unreal.VerticalAlignment.V_ALIGN_FILL)
 
 # Body overlay holding the 3 tab VBs
 set_vbox_slot(w["OptionsBodyOverlay"], unreal.HorizontalAlignment.H_ALIGN_FILL, unreal.VerticalAlignment.V_ALIGN_FILL, fill=1.0)
@@ -795,8 +897,7 @@ gsb.set_wheel_scroll_multiplier(1.0)
 gsb.set_scrollbar_thickness(unreal.Vector2D(6.0, 6.0))
 gsb.set_scrollbar_padding(make_margin(8, 0, 0, 0))
 gsb.set_editor_property("widget_bar_style", sb_style)
-gsb.slot.set_horizontal_alignment(unreal.HorizontalAlignment.H_ALIGN_FILL)
-gsb.slot.set_vertical_alignment(unreal.VerticalAlignment.V_ALIGN_FILL)
+set_box_slot(gsb, unreal.HorizontalAlignment.H_ALIGN_FILL, unreal.VerticalAlignment.V_ALIGN_FILL)
 
 guide = w["MultiLineEditableTextBox_2"]
 guide.set_is_read_only(True)
@@ -806,14 +907,37 @@ guide.set_editor_property("wrap_text_at", 0.0)
 guide.set_editor_property("wrapping_policy", unreal.TextWrappingPolicy.DEFAULT_WRAPPING)
 guide.set_editor_property("justification", unreal.TextJustify.LEFT)
 guide.set_foreground_color(srgb_hex_to_linear("#E8E0CEFF"))
-guide.slot.set_horizontal_alignment(unreal.HorizontalAlignment.H_ALIGN_FILL)
-guide.slot.set_vertical_alignment(unreal.VerticalAlignment.V_ALIGN_FILL)
+set_box_slot(guide, unreal.HorizontalAlignment.H_ALIGN_FILL, unreal.VerticalAlignment.V_ALIGN_FILL)
+guide.set_text(
+    "SUBJECT 09 - SURVIVAL GUIDE\n\n"
+    "W A S D - Move\n"
+    "Mouse - Look\n"
+    "Space - Jump\n"
+    "Left Ctrl - Sprint\n"
+    "Left Shift - Walk\n"
+    "E - Interact, read, search, collect and try the exit padlock\n"
+    "F - Flashlight\n"
+    "R - Replace a flashlight battery\n"
+    "Tab - Inventory (read, use, drop or drag items)\n"
+    "Esc - Close a note or pause\n\n"
+    "Recover the three exit digits from randomized notes. Search toolboxes and side rooms; some toolboxes require a matching key. Read collected notes again from your inventory. Set the skull padlock's dials to the digits, in order, at the southeastern exit.\n\n"
+    "THE FOUR CREATURES\n"
+    "BoneDog follows sounds but can't pinpoint them, and misses by more in the dark; dropped items can distract it.\n"
+    "Flashlight draws BoneDog from afar when lit; turn it off or break line of sight.\n"
+    "Doll freezes only while you watch it in light - your flashlight or a torch. In the dark it keeps coming.\n"
+    "Ghoul recoils from the flashlight and never enters a torch's light.\n"
+    "Lunger is blind and deaf, but senses floor vibrations and close movement. Stand completely still near it.\n"
+    "The cat's active chaos sanctuary can protect you.\n\n"
+    "There are no weapons or hiding cabinets. A monster must physically touch your body to kill you. Reading, inventory and the padlock view do not stop danger. The flashlight needs two batteries; conserve its charge."
+)
 
 guide_fi = make_font(font_reg, 18)
 guide_ts = unreal.TextBlockStyle()
 guide_ts.set_editor_property("font", guide_fi)
 guide_ts.set_editor_property("color_and_opacity", make_slate_color("#E8E0CEFF"))
-guide_ts.set_editor_property("shadow_offset", unreal.Vector2D(1.0, 1.0))
+guide_so = guide_ts.get_editor_property("shadow_offset")
+guide_so.import_text("(X=1.0,Y=1.0)")
+guide_ts.set_editor_property("shadow_offset", guide_so)
 guide_ts.set_editor_property("shadow_color_and_opacity", srgb_hex_to_linear("#000000A0"))
 
 etb_style = guide.get_editor_property("widget_style")
@@ -874,18 +998,15 @@ for (rbox_n, rbrd_n, hbox_n, lbl_box_n, lbl_n, lbl_txt,
     rbrd.set_padding(make_margin(24, 8, 24, 8))
     rbrd.set_horizontal_alignment(unreal.HorizontalAlignment.H_ALIGN_FILL)
     rbrd.set_vertical_alignment(unreal.VerticalAlignment.V_ALIGN_CENTER)
-    rbrd.slot.set_horizontal_alignment(unreal.HorizontalAlignment.H_ALIGN_FILL)
-    rbrd.slot.set_vertical_alignment(unreal.VerticalAlignment.V_ALIGN_FILL)
+    set_box_slot(rbrd, unreal.HorizontalAlignment.H_ALIGN_FILL, unreal.VerticalAlignment.V_ALIGN_FILL)
 
-    w[hbox_n].slot.set_horizontal_alignment(unreal.HorizontalAlignment.H_ALIGN_FILL)
-    w[hbox_n].slot.set_vertical_alignment(unreal.VerticalAlignment.V_ALIGN_CENTER)
+    set_box_slot(w[hbox_n], unreal.HorizontalAlignment.H_ALIGN_FILL, unreal.VerticalAlignment.V_ALIGN_CENTER)
 
     lbox = w[lbl_box_n]
     lbox.set_width_override(260.0)
     lbox.clear_height_override()
     set_hbox_slot(lbox, unreal.HorizontalAlignment.H_ALIGN_LEFT, unreal.VerticalAlignment.V_ALIGN_CENTER)
-    w[lbl_n].slot.set_horizontal_alignment(unreal.HorizontalAlignment.H_ALIGN_LEFT)
-    w[lbl_n].slot.set_vertical_alignment(unreal.VerticalAlignment.V_ALIGN_CENTER)
+    set_box_slot(w[lbl_n], unreal.HorizontalAlignment.H_ALIGN_LEFT, unreal.VerticalAlignment.V_ALIGN_CENTER)
     configure_text(w[lbl_n], lbl_txt, font_reg, 20, "#EAE2D0", just=unreal.TextJustify.LEFT)
 
     w[spc_n].set_size(unreal.Vector2D(1.0, 1.0))
@@ -895,32 +1016,28 @@ for (rbox_n, rbrd_n, hbox_n, lbl_box_n, lbl_n, lbl_txt,
     mbox.set_width_override(46.0)
     mbox.set_height_override(42.0)
     set_hbox_slot(mbox, unreal.HorizontalAlignment.H_ALIGN_CENTER, unreal.VerticalAlignment.V_ALIGN_CENTER)
-    w[mbtn_n].slot.set_horizontal_alignment(unreal.HorizontalAlignment.H_ALIGN_FILL)
-    w[mbtn_n].slot.set_vertical_alignment(unreal.VerticalAlignment.V_ALIGN_FILL)
+    set_box_slot(w[mbtn_n], unreal.HorizontalAlignment.H_ALIGN_FILL, unreal.VerticalAlignment.V_ALIGN_FILL)
     set_button_label(w[mbtn_n], w[mtxt_n], "<", font_bold, 20, "#EFE8D8", step_btn_style)
 
     vbox = w[vbox_n]
     vbox.set_width_override(280.0)
     vbox.clear_height_override()
     set_hbox_slot(vbox, unreal.HorizontalAlignment.H_ALIGN_CENTER, unreal.VerticalAlignment.V_ALIGN_CENTER, pad=(8, 0, 8, 0))
-    w[vtxt_n].slot.set_horizontal_alignment(unreal.HorizontalAlignment.H_ALIGN_CENTER)
-    w[vtxt_n].slot.set_vertical_alignment(unreal.VerticalAlignment.V_ALIGN_CENTER)
+    set_box_slot(w[vtxt_n], unreal.HorizontalAlignment.H_ALIGN_CENTER, unreal.VerticalAlignment.V_ALIGN_CENTER)
     configure_text(w[vtxt_n], None, font_bold, 20, "#F2ECE0", just=unreal.TextJustify.CENTER)
 
     pbox = w[pbox_n]
     pbox.set_width_override(46.0)
     pbox.set_height_override(42.0)
     set_hbox_slot(pbox, unreal.HorizontalAlignment.H_ALIGN_CENTER, unreal.VerticalAlignment.V_ALIGN_CENTER)
-    w[pbtn_n].slot.set_horizontal_alignment(unreal.HorizontalAlignment.H_ALIGN_FILL)
-    w[pbtn_n].slot.set_vertical_alignment(unreal.VerticalAlignment.V_ALIGN_FILL)
+    set_box_slot(w[pbtn_n], unreal.HorizontalAlignment.H_ALIGN_FILL, unreal.VerticalAlignment.V_ALIGN_FILL)
     set_button_label(w[pbtn_n], w[ptxt_n], ">", font_bold, 20, "#EFE8D8", step_btn_style)
 
 ap_box = w["ApplyButtonBox"]
 ap_box.set_width_override(320.0)
 ap_box.set_height_override(54.0)
 set_vbox_slot(ap_box, unreal.HorizontalAlignment.H_ALIGN_CENTER, unreal.VerticalAlignment.V_ALIGN_CENTER, pad=(0, 24, 0, 0))
-w["Button_0"].slot.set_horizontal_alignment(unreal.HorizontalAlignment.H_ALIGN_FILL)
-w["Button_0"].slot.set_vertical_alignment(unreal.VerticalAlignment.V_ALIGN_FILL)
+set_box_slot(w["Button_0"], unreal.HorizontalAlignment.H_ALIGN_FILL, unreal.VerticalAlignment.V_ALIGN_FILL)
 set_button_label(w["Button_0"], w["TextBlock_0"], "APPLY", font_bold, 20, "#F4EFE4", apply_btn_style)
 
 # Tab 2: Sound Settings
@@ -947,18 +1064,15 @@ for (rbox_n, rbrd_n, hbox_n, lbl_box_n, lbl_n, lbl_txt,
     rbrd.set_padding(make_margin(24, 12, 24, 12))
     rbrd.set_horizontal_alignment(unreal.HorizontalAlignment.H_ALIGN_FILL)
     rbrd.set_vertical_alignment(unreal.VerticalAlignment.V_ALIGN_CENTER)
-    rbrd.slot.set_horizontal_alignment(unreal.HorizontalAlignment.H_ALIGN_FILL)
-    rbrd.slot.set_vertical_alignment(unreal.VerticalAlignment.V_ALIGN_FILL)
+    set_box_slot(rbrd, unreal.HorizontalAlignment.H_ALIGN_FILL, unreal.VerticalAlignment.V_ALIGN_FILL)
 
-    w[hbox_n].slot.set_horizontal_alignment(unreal.HorizontalAlignment.H_ALIGN_FILL)
-    w[hbox_n].slot.set_vertical_alignment(unreal.VerticalAlignment.V_ALIGN_CENTER)
+    set_box_slot(w[hbox_n], unreal.HorizontalAlignment.H_ALIGN_FILL, unreal.VerticalAlignment.V_ALIGN_CENTER)
 
     lbox = w[lbl_box_n]
     lbox.set_width_override(180.0)
     lbox.clear_height_override()
     set_hbox_slot(lbox, unreal.HorizontalAlignment.H_ALIGN_LEFT, unreal.VerticalAlignment.V_ALIGN_CENTER)
-    w[lbl_n].slot.set_horizontal_alignment(unreal.HorizontalAlignment.H_ALIGN_LEFT)
-    w[lbl_n].slot.set_vertical_alignment(unreal.VerticalAlignment.V_ALIGN_CENTER)
+    set_box_slot(w[lbl_n], unreal.HorizontalAlignment.H_ALIGN_LEFT, unreal.VerticalAlignment.V_ALIGN_CENTER)
     configure_text(w[lbl_n], lbl_txt, font_reg, 20, "#EAE2D0", just=unreal.TextJustify.LEFT)
 
     w[spc_n].set_size(unreal.Vector2D(1.0, 1.0))
@@ -970,8 +1084,7 @@ for (rbox_n, rbrd_n, hbox_n, lbl_box_n, lbl_n, lbl_txt,
     set_hbox_slot(sbox, unreal.HorizontalAlignment.H_ALIGN_CENTER, unreal.VerticalAlignment.V_ALIGN_CENTER)
 
     sld = w[sld_n]
-    sld.slot.set_horizontal_alignment(unreal.HorizontalAlignment.H_ALIGN_FILL)
-    sld.slot.set_vertical_alignment(unreal.VerticalAlignment.V_ALIGN_CENTER)
+    set_box_slot(sld, unreal.HorizontalAlignment.H_ALIGN_FILL, unreal.VerticalAlignment.V_ALIGN_CENTER)
     sst = sld.get_editor_property("widget_style")
     ds = unreal.Vector2f()
     ds.import_text("(X=380.0,Y=32.0)")
@@ -987,8 +1100,7 @@ for (rbox_n, rbrd_n, hbox_n, lbl_box_n, lbl_n, lbl_txt,
     pbox.set_width_override(84.0)
     pbox.clear_height_override()
     set_hbox_slot(pbox, unreal.HorizontalAlignment.H_ALIGN_RIGHT, unreal.VerticalAlignment.V_ALIGN_CENTER, pad=(12, 0, 0, 0))
-    w[ptxt_n].slot.set_horizontal_alignment(unreal.HorizontalAlignment.H_ALIGN_RIGHT)
-    w[ptxt_n].slot.set_vertical_alignment(unreal.VerticalAlignment.V_ALIGN_CENTER)
+    set_box_slot(w[ptxt_n], unreal.HorizontalAlignment.H_ALIGN_RIGHT, unreal.VerticalAlignment.V_ALIGN_CENTER)
     configure_text(w[ptxt_n], "100%", font_bold, 19, "#EAE2D0", just=unreal.TextJustify.RIGHT)
 
 wbp = unreal.EditorAssetLibrary.load_asset("/Game/UI/Menu/OptionsMenu")
@@ -1031,8 +1143,7 @@ def rebuild_main_menu(mcp: McpSession) -> dict[str, Any]:
     root = info.get("rootWidget") or "CanvasPanel_117"
 
     # 2. Clean redundant button image children BEFORE adding button text children.
-    remove_widget_if_exists(mcp, path, by_name, "OptionsButtonArt")
-    remove_widget_if_exists(mcp, path, by_name, "QuitButtonArt")
+    remove_widgets_if_exist(mcp, path, by_name, ["OptionsButtonArt", "QuitButtonArt"])
 
     # 3. Create new structure panels cleanly & reparent preserved widgets out of old ScaleBoxes.
     ensure_panel(mcp, path, by_name, "BgScaleBox", "scale_box", root, stretch="ScaleToFill", stretchDirection="Both")
@@ -1072,8 +1183,7 @@ def rebuild_main_menu(mcp: McpSession) -> dict[str, Any]:
         reparent_widget(mcp, path, by_name, child, "VerticalBox_0", index=idx, force_order=True)
 
     # 4. Safe to remove emptied ScaleBoxes now.
-    remove_widget_if_exists(mcp, path, by_name, "ScaleBox_56")
-    remove_widget_if_exists(mcp, path, by_name, "ScaleBox_99")
+    remove_widgets_if_exist(mcp, path, by_name, ["ScaleBox_56", "ScaleBox_99"])
 
     # 5. Apply Slate brushes, fonts, colors, slots, and sizes.
     style_res = mcp.execute_python(MAIN_MENU_STYLE_CODE)
@@ -1096,6 +1206,51 @@ def rebuild_main_menu(mcp: McpSession) -> dict[str, Any]:
     }
 
 
+def purge_broken_text_bindings(mcp: McpSession, widget_path: str, by_name: dict[str, dict[str, Any]]) -> list[str]:
+    """Detach and recreate TextBlocks whose legacy UMG TextDelegate bindings point to removed BP functions.
+
+    `UWidgetBlueprint::Bindings` is protected in UE5.6 Python, while
+    `FWidgetBlueprintCompilerContext::CleanAndSanitizeBindings` automatically drops any
+    binding whose target widget is missing from `WidgetTree` during compile.
+    """
+    mcp._throttle()
+    resp = mcp._rpc(
+        "tools/call",
+        {
+            "name": "unreal",
+            "arguments": {
+                "operation": "execute",
+                "tool": "manage_blueprint",
+                "action": "compile",
+                "capability": "blueprint.compile",
+                "params": {"blueprintPath": widget_path, "saveAfterCompile": False},
+            },
+        },
+    )
+    sc = resp.get("result", {}).get("structuredContent", {})
+    diags = (
+        sc.get("typedError", {}).get("unrealDetail", {}).get("diagnostics")
+        or sc.get("data", {}).get("details", {}).get("diagnostics")
+        or []
+    )
+    broken: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for diag in diags:
+        msg = str(diag.get("message", ""))
+        m = re.search(r"on Widget '\s*([^']+?)\s*': Binding: 'None'", msg)
+        if m:
+            wname = m.group(1)
+            if wname not in seen and wname in by_name and by_name[wname].get("parentName"):
+                seen.add(wname)
+                broken.append((wname, str(by_name[wname]["parentName"])))
+    if not broken:
+        return []
+    remove_widgets_if_exist(mcp, widget_path, by_name, [w for w, _ in broken])
+    for wname, parent in broken:
+        ensure_content(mcp, widget_path, by_name, wname, "text_block", parent, text="")
+    return [w for w, _ in broken]
+
+
 def rebuild_options_menu(mcp: McpSession) -> dict[str, Any]:
     path = MENU_PATHS["options"]
     info, by_name = get_widget_map(mcp, path)
@@ -1105,7 +1260,7 @@ def rebuild_options_menu(mcp: McpSession) -> dict[str, Any]:
 
     removed_vars: list[str] = []
     try:
-        mcp.execute(
+        mcp.execute_consented(
             "manage_blueprint",
             "remove_variable",
             "blueprint.remove_variable",
@@ -1115,7 +1270,7 @@ def rebuild_options_menu(mcp: McpSession) -> dict[str, Any]:
     except McpError:
         for vname in LEGACY_OPTIONS_VARIABLES:
             try:
-                mcp.execute(
+                mcp.execute_consented(
                     "manage_blueprint",
                     "remove_variable",
                     "blueprint.remove_variable",
@@ -1128,7 +1283,7 @@ def rebuild_options_menu(mcp: McpSession) -> dict[str, Any]:
     removed_funcs: list[str] = []
     for fname in LEGACY_OPTIONS_FUNCTIONS:
         try:
-            mcp.execute(
+            mcp.execute_consented(
                 "manage_blueprint",
                 "remove_function",
                 "blueprint.remove_function",
@@ -1140,6 +1295,9 @@ def rebuild_options_menu(mcp: McpSession) -> dict[str, Any]:
 
     # Re-sweep EventGraph in case variable deletion left detached nodes.
     graph_after = clear_event_graph(mcp, path)
+
+    # Purge stale UMG TextDelegate bindings that pointed at deleted GetText* functions.
+    purged_bindings = purge_broken_text_bindings(mcp, path, by_name)
 
     # 2. Build framed responsive hierarchy preserving every C++-bound widget name.
     root = info.get("rootWidget") or "CanvasPanel_82"
@@ -1226,15 +1384,19 @@ def rebuild_options_menu(mcp: McpSession) -> dict[str, Any]:
         reparent_widget(mcp, path, by_name, child, "HorizontalBox_0", index=idx, force_order=True)
 
     # 3. Remove obsolete ScaleBoxes & slider inner HorizontalBoxes after moving children out.
-    for dead_widget in [
-        "ScaleBox_39",
-        "ScaleBox_87",
-        "ScaleBox_119",
-        "ScaleBox_148",
-        "HorizontalBox_332",
-        "HorizontalBox_5",
-    ]:
-        remove_widget_if_exists(mcp, path, by_name, dead_widget)
+    remove_widgets_if_exist(
+        mcp,
+        path,
+        by_name,
+        [
+            "ScaleBox_39",
+            "ScaleBox_87",
+            "ScaleBox_119",
+            "ScaleBox_148",
+            "HorizontalBox_332",
+            "HorizontalBox_5",
+        ],
+    )
 
     # 4. Apply Slate brushes, fonts, colors, slider styles, and slots, then compile + save.
     style_res = mcp.execute_python(OPTIONS_MENU_STYLE_CODE)
@@ -1250,6 +1412,7 @@ def rebuild_options_menu(mcp: McpSession) -> dict[str, Any]:
         "widgetCount": len(final_info.get("widgets", [])),
         "removedVariables": removed_vars,
         "removedFunctions": removed_funcs,
+        "purgedBindings": purged_bindings,
         "graphBefore": graph_before,
         "graphAfter": graph_after,
         "style": json.loads(style_res.get("output", "{}")),
@@ -1275,8 +1438,10 @@ def render_previews(mcp: McpSession, project_dir: Path, targets: list[str]) -> l
                 )
                 data = sc.get("data", {})
                 img_b64 = data.get("imageBase64")
-                if not img_b64:
+                if not img_b64 or str(img_b64).startswith("<"):
                     raise McpError(f"preview_widget returned no imageBase64 for {asset_path} @ {res}")
+                if "," in img_b64 and img_b64.lstrip().startswith("data:"):
+                    img_b64 = img_b64.split(",", 1)[1]
                 out_path = out_dir / f"{label}_{res}.png"
                 out_path.write_bytes(base64.b64decode(img_b64))
                 saved.append(str(out_path))

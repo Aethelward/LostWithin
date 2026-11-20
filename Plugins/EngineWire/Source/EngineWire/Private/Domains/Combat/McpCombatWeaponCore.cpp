@@ -1,0 +1,119 @@
+#include "Domains/Combat/McpCombatPrivate.h"
+
+namespace McpCombatHandlers
+{
+bool FCombatActionContext::HandleWeaponCore() const
+{
+    if (SubAction == TEXT("create_weapon_blueprint"))
+    {
+        if (Name.IsEmpty())
+        {
+            SendAutomationError(RequestingSocket, RequestId, TEXT("Missing name."), TEXT("INVALID_ARGUMENT"));
+            return true;
+        }
+
+        // Load the mesh before creating anything: a path that does not load used to be dropped
+        // while the weapon was still reported as created with it.
+        const FString MeshPath = GetJsonStringField(Payload, TEXT("weaponMeshPath"));
+        UStaticMesh* Mesh = MeshPath.IsEmpty() ? nullptr : LoadObject<UStaticMesh>(nullptr, *MeshPath);
+        if (!MeshPath.IsEmpty() && !Mesh)
+        {
+            SendAutomationError(RequestingSocket, RequestId, FString::Printf(TEXT("weaponMeshPath is not a static mesh: %s"), *MeshPath), TEXT("NOT_FOUND"));
+            return true;
+        }
+
+        FString Error;
+        UBlueprint* Blueprint = CreateActorBlueprint(AActor::StaticClass(), Path, Name, Error);
+        if (!Blueprint)
+        {
+            SendAutomationError(RequestingSocket, RequestId, Error, TEXT("CREATION_FAILED"));
+            return true;
+        }
+
+        UStaticMeshComponent* WeaponMesh = GetOrCreateSCSComponent<UStaticMeshComponent>(Blueprint, TEXT("WeaponMesh"));
+        if (WeaponMesh && Mesh)
+        {
+            WeaponMesh->SetStaticMesh(Mesh);
+        }
+
+        double BaseDamage = GetJsonNumberField(Payload, TEXT("baseDamage"), 25.0);
+        double FireRate = GetJsonNumberField(Payload, TEXT("fireRate"), 600.0);
+        double Range = GetJsonNumberField(Payload, TEXT("range"), 10000.0);
+        double Spread = GetJsonNumberField(Payload, TEXT("spread"), 2.0);
+
+        AddBlueprintVariableCombat(Blueprint, TEXT("BaseDamage"), MakeFloatPinType());
+        AddBlueprintVariableCombat(Blueprint, TEXT("FireRate"), MakeFloatPinType());
+        AddBlueprintVariableCombat(Blueprint, TEXT("Range"), MakeFloatPinType());
+        AddBlueprintVariableCombat(Blueprint, TEXT("Spread"), MakeFloatPinType());
+
+        FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
+        McpSafeCompileBlueprint(Blueprint);
+
+        SetVariableDefaultCombat<FDoubleProperty>(Blueprint, TEXT("BaseDamage"), BaseDamage);
+        SetVariableDefaultCombat<FDoubleProperty>(Blueprint, TEXT("FireRate"), FireRate);
+        SetVariableDefaultCombat<FDoubleProperty>(Blueprint, TEXT("Range"), Range);
+        SetVariableDefaultCombat<FDoubleProperty>(Blueprint, TEXT("Spread"), Spread);
+
+        if (!SaveOrReply(Blueprint))
+        {
+            return true;
+        }
+
+        TSharedPtr<FJsonObject> Result = McpHandlerUtils::CreateResultObject();
+        Result->SetStringField(TEXT("blueprintPath"), Blueprint->GetPathName());
+        Result->SetNumberField(TEXT("baseDamage"), BaseDamage);
+        Result->SetNumberField(TEXT("fireRate"), FireRate);
+        Result->SetNumberField(TEXT("range"), Range);
+        Result->SetNumberField(TEXT("spread"), Spread);
+
+        McpHandlerUtils::AddVerification(Result, Blueprint);
+        SendAutomationResponse(RequestingSocket, RequestId, true, TEXT("Weapon blueprint created successfully."), Result);
+        return true;
+    }
+    if (SubAction == TEXT("configure_weapon_mesh"))
+    {
+        UBlueprint* Blueprint = LoadBlueprintOrReply();
+        if (!Blueprint)
+        {
+            return true;
+        }
+
+        // A mesh that did not load, or a component that could not be made, was skipped while
+        // the reply still said "configured" and echoed the path back.
+        FString MeshPath = GetJsonStringField(Payload, TEXT("weaponMeshPath"));
+        if (MeshPath.IsEmpty())
+        {
+            SendAutomationError(RequestingSocket, RequestId, TEXT("Missing weaponMeshPath."), TEXT("INVALID_ARGUMENT"));
+            return true;
+        }
+        UStaticMesh* Mesh = LoadObject<UStaticMesh>(nullptr, *MeshPath);
+        if (!Mesh)
+        {
+            SendAutomationError(RequestingSocket, RequestId, FString::Printf(TEXT("weaponMeshPath is not a static mesh: %s"), *MeshPath), TEXT("NOT_FOUND"));
+            return true;
+        }
+        UStaticMeshComponent* WeaponMesh = GetOrCreateSCSComponent<UStaticMeshComponent>(Blueprint, TEXT("WeaponMesh"));
+        if (!WeaponMesh)
+        {
+            SendAutomationError(RequestingSocket, RequestId, TEXT("The WeaponMesh component could not be created on this Blueprint."), TEXT("COMPONENT_CREATE_FAILED"));
+            return true;
+        }
+        WeaponMesh->SetStaticMesh(Mesh);
+
+        McpSafeCompileBlueprint(Blueprint);
+        if (!SaveOrReply(Blueprint))
+        {
+            return true;
+        }
+
+        TSharedPtr<FJsonObject> Result = McpHandlerUtils::CreateResultObject();
+        Result->SetStringField(TEXT("blueprintPath"), Blueprint->GetPathName());
+        Result->SetStringField(TEXT("meshPath"), MeshPath);
+
+        McpHandlerUtils::AddVerification(Result, Blueprint);
+        SendAutomationResponse(RequestingSocket, RequestId, true, TEXT("Weapon mesh configured."), Result);
+        return true;
+    }
+    return false;
+}
+}

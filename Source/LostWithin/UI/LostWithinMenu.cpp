@@ -523,12 +523,12 @@ void ULostWithinOptionsMenu::PopulateSurvivalGuide()
 			"Tab - Inventory (read, use, drop or drag items)\n"
 			"Esc - Close a note or pause\n\n"
 			"Recover the three exit digits from randomized notes. Search toolboxes and side rooms; some toolboxes require a matching key. Read collected notes again from your inventory. Set the skull padlock's dials to the digits, in order, at the southeastern exit.\n\n"
-			"THE FOUR CREATURES\n"
-			"BoneDog follows sounds but can't pinpoint them, and misses by more in the dark; dropped items can distract it.\n"
-			"Flashlight draws BoneDog from afar when lit; turn it off or break line of sight.\n"
-			"Doll freezes only while you watch it in light - your flashlight or a torch. In the dark it keeps coming.\n"
-			"Ghoul recoils from the flashlight and never enters a torch's light.\n"
-			"Lunger is blind and deaf, but senses floor vibrations and close movement. Stand completely still near it.\n"
+			"HEADPHONES STRONGLY RECOMMENDED - listen closely to survive. Every creature tells you where it is by sound.\n\n"
+			"THE FOUR CREATURES - each hunts with one sense\n"
+			"Doll SEES. It sleeps in the dark and wakes the moment any light touches it - your flashlight or a torch. Awake, it sees you only when you are lit, and then it rushes you - watching it does not stop it. Only darkness puts it back to sleep.\n"
+			"Ghoul HEARS. It is blind and hears your exact footsteps; stay silent and it gives up. Light burns it away, but it waits at a torch's edge and puts the torch out.\n"
+			"BoneDog SMELLS. It is deaf and sees only 4 m, flashlight or not. It follows your trail, even to where you stand still. Torch smoke breaks the trail, and items you carried a while draw it once.\n"
+			"Lunger FEELS. Blind and deaf, it feels sprints, landings and movement close by. When you hear the ratchet, freeze or sidestep: its lunge goes in a straight line.\n"
 			"The cat's active chaos sanctuary can protect you.\n\n"
 			"There are no weapons or hiding cabinets. A monster must physically touch your body to kill you. Reading, inventory and the padlock view do not stop danger. The flashlight needs two batteries; conserve its charge."));
 	}

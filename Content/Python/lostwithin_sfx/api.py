@@ -41,8 +41,13 @@ class ApiError(SfxError):
 
 
 def default_key_file(environ: Optional[Mapping[str, str]] = None) -> Optional[str]:
+    """Windows: %LOCALAPPDATA%/LostWithin/...; Linux and macOS: $XDG_CONFIG_HOME (else ~/.config)/LostWithin/..."""
     environ = os.environ if environ is None else environ
     base = environ.get("LOCALAPPDATA")
+    if not base:
+        base = environ.get("XDG_CONFIG_HOME")
+        if not base and environ.get("HOME"):
+            base = os.path.join(environ["HOME"], ".config")
     if not base:
         return None
     return os.path.join(base, *KEY_FILE_PARTS)

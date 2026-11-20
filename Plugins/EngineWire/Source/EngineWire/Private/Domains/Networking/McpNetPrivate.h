@@ -1,0 +1,114 @@
+#pragma once
+
+#include "Core/Compatibility/McpVersionCompatibility.h"
+#include "Foundation/HandlerUtils/McpHandlerUtils.h"
+#include "Foundation/BridgeHelpers/McpHelpers.h"
+#include "Foundation/BridgeHelpers/Reflection/McpEnumName.h"
+#include "EngineWireSubsystem.h"
+
+#include "Dom/JsonObject.h"
+#include "EdGraph/EdGraph.h"
+#include "EdGraphSchema_K2.h"
+#include "Editor.h"
+#include "Engine/Blueprint.h"
+#include "Engine/NetDriver.h"
+#include "Engine/World.h"
+#include "EngineUtils.h"
+#include "GameFramework/Actor.h"
+#include "GameFramework/Character.h"
+#include "GameFramework/CharacterMovementComponent.h"
+#include "GameFramework/Pawn.h"
+#include "GameFramework/PlayerController.h"
+#include "K2Node_FunctionEntry.h"
+#include "Kismet2/BlueprintEditorUtils.h"
+#include "Misc/EngineVersionComparison.h"
+#include "UObject/UnrealType.h"
+
+namespace McpNetworkingHandlers
+{
+struct FNetworkingActionContext
+{
+    UEngineWireSubsystem& Bridge;
+    const FString& RequestId;
+    const TSharedPtr<FJsonObject>& Payload;
+    TSharedPtr<FMcpBridgeWebSocket> RequestingSocket;
+    TSharedPtr<FJsonObject>& ResultJson;
+};
+
+UBlueprint* LoadBlueprintFromPath(const FString& BlueprintPath);
+// blueprintPath missing -> INVALID_PARAMS, not loadable -> NOT_FOUND; both replies are sent here.
+UBlueprint* LoadBlueprintOrReply(FNetworkingActionContext& Context, const FString& BlueprintPath);
+// LoadBlueprintOrReply, then its class default Actor, the object an Actor setting is written to; null after the reply
+// (NOT_SUPPORTED when the class never compiled, so there are no defaults to write). OutBlueprint gets the Blueprint.
+AActor* LoadActorDefaultsOrReply(FNetworkingActionContext& Context, const FString& BlueprintPath, UBlueprint*& OutBlueprint);
+// The actor named ActorName in the Play world while a session runs, else the editor world, where every actor has
+// authority and no pawn a controller; null after the reply (INVALID_PARAMS when the name is missing, NO_WORLD,
+// NOT_FOUND). OutWorld, when given, gets the world searched.
+AActor* FindNetActorOrReply(FNetworkingActionContext& Context, const FString& ActorName, UWorld** OutWorld = nullptr);
+// Mark the edited Blueprint modified, compile it first when bCompile (compiled: a variable or function edit regenerates
+// the class, an actor-default edit does not), save it (saved; SAVE_FAILED when it could not be written) and send the
+// verified success reply.
+bool SaveBlueprintAndReply(FNetworkingActionContext& Context, UBlueprint* Blueprint, const FString& Detail, const TCHAR* Message,
+                           bool bCompile = false);
+// Whether the Blueprint's actor or component replicates (its class default): an RPC or a replicated variable travels
+// only then.
+bool McpBlueprintReplicates(const UBlueprint* Blueprint);
+// The Blueprint's own function graph named Name (FName compare, case ignored), or null.
+UEdGraph* FindFunctionGraph(UBlueprint* Blueprint, FName Name);
+// True when Name is free for a new function in Blueprint (FKismetNameValidator: own and inherited members).
+// Otherwise replies NAME_TAKEN (a member already has it) or INVALID_ARGUMENT (not a valid name) and returns false.
+// FBlueprintEditorUtils::CreateNewGraph does not refuse a taken name: it renames the graph holding it out of the way.
+bool CheckFreeMemberNameOrReply(FNetworkingActionContext& Context, UBlueprint* Blueprint, const FString& Name, const TCHAR* Field);
+// Parses Name as a value of TEnum ("COND_OwnerOnly", "DORM_Awake", "ROLE_Authority", "Exponential"; any spelling
+// McpParseEnum reads). An unknown name used to fall back to a default (COND_None, DORM_Never, ROLE_None) while the
+// reply echoed the caller's string, so it now fails and OutValidNames lists the accepted spellings.
+template <typename TEnum>
+bool TryParseNetEnum(const FString& Name, TEnum& OutValue, FString& OutValidNames)
+{
+    if (McpParseEnum(Name, OutValue))
+    {
+        return true;
+    }
+    const UEnum* Enum = StaticEnum<TEnum>();
+    TArray<FString> Names;
+    for (int32 Index = 0; Index < Enum->NumEnums(); ++Index)
+    {
+        const FString EntryName = Enum->GetNameStringByIndex(Index);
+        if (!EntryName.EndsWith(TEXT("_MAX"), ESearchCase::IgnoreCase))
+        {
+            Names.Add(EntryName);
+        }
+    }
+    OutValidNames = FString::Join(Names, TEXT(", "));
+    return false;
+}
+// Sends INVALID_ARGUMENT naming the field, the rejected value and the accepted ones.
+void ReplyInvalidEnum(FNetworkingActionContext& Context, const TCHAR* Field, const FString& Value, const FString& ValidNames);
+
+bool HandleSetPropertyReplicated(FNetworkingActionContext& Context);
+bool HandleSetReplicationCondition(FNetworkingActionContext& Context);
+bool HandleConfigureNetUpdateFrequency(FNetworkingActionContext& Context);
+bool HandleConfigureNetPriority(FNetworkingActionContext& Context);
+bool HandleSetNetDormancy(FNetworkingActionContext& Context);
+bool HandleConfigureReplicationGraph(FNetworkingActionContext& Context);
+bool HandleCreateRpcFunction(FNetworkingActionContext& Context);
+bool HandleConfigureRpcValidation(FNetworkingActionContext& Context);
+bool HandleSetRpcReliability(FNetworkingActionContext& Context);
+bool HandleSetOwner(FNetworkingActionContext& Context);
+bool HandleSetAutonomousProxy(FNetworkingActionContext& Context);
+bool HandleCheckHasAuthority(FNetworkingActionContext& Context);
+bool HandleCheckIsLocallyControlled(FNetworkingActionContext& Context);
+bool HandleConfigureNetCullDistance(FNetworkingActionContext& Context);
+bool HandleSetAlwaysRelevant(FNetworkingActionContext& Context);
+bool HandleSetOnlyRelevantToOwner(FNetworkingActionContext& Context);
+bool HandleSetReplicatedUsing(FNetworkingActionContext& Context);
+bool HandleConfigurePushModel(FNetworkingActionContext& Context);
+bool HandleConfigureClientPrediction(FNetworkingActionContext& Context);
+bool HandleConfigureServerCorrection(FNetworkingActionContext& Context);
+bool HandleConfigureMovementPrediction(FNetworkingActionContext& Context);
+bool HandleConfigureNetDriver(FNetworkingActionContext& Context);
+bool HandleSetNetRole(FNetworkingActionContext& Context);
+bool HandleConfigureReplicatedMovement(FNetworkingActionContext& Context);
+bool HandleAddNetworkPredictionData(FNetworkingActionContext& Context);
+bool HandleGetNetworkingInfo(FNetworkingActionContext& Context);
+}

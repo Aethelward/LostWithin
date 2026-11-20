@@ -1,0 +1,54 @@
+#pragma once
+
+#include "CoreMinimal.h"
+#include "HAL/IConsoleManager.h"
+#include "Runtime/Launch/Resources/Version.h"
+
+// Sets a console variable as the console does and reads it back. IConsoleVariable::Set drops a write with only a log
+// line when the variable is read-only, or when a source of higher priority holds it (a value typed in the console
+// beats one set by code), so a write that was only asked for read as applied. Empty when the value took; otherwise
+// why it did not.
+// Priority defaults to the console's, the highest there is, so this and console_command replace each other, last one
+// wins; a project setting passes ECVF_SetByProjectSetting, which a value set from the console or by code outranks.
+inline FString McpSetConsoleVariable(IConsoleVariable& Variable, const FString& Value,
+                                     EConsoleVariableFlags Priority = ECVF_SetByConsole)
+{
+    if (Variable.TestFlags(ECVF_ReadOnly))
+    {
+        return TEXT("read-only: fixed at startup, set it in the project's config");
+    }
+    Variable.Set(*Value, Priority);
+    // Read back: the variable's own change callback can still clamp or reset the value.
+    const float Wanted = FCString::Atof(*Value);
+    const bool bTook = Value.IsNumeric()
+        ? FMath::IsNearlyEqual(Variable.GetFloat(), Wanted, FMath::Max(1e-4f, FMath::Abs(Wanted) * 1e-5f))
+        : Variable.GetString().Equals(Value, ESearchCase::IgnoreCase);
+    return bTook ? FString() : FString::Printf(TEXT("stays %s: held by a higher-priority source"), *Variable.GetString());
+}
+
+// McpSetConsoleVariable on the variable called Name, filed for a reply: Name under OutApplied, or "Name (why not)" under
+// OutNotSet ("not in this engine version" when the variable is missing). True when the value took.
+inline bool McpSetConsoleVariableNamed(const FString& Name, const FString& Value, TArray<FString>& OutApplied,
+                                       TArray<FString>& OutNotSet)
+{
+    IConsoleVariable* Variable = IConsoleManager::Get().FindConsoleVariable(*Name);
+    const FString NotTaken = Variable ? McpSetConsoleVariable(*Variable, Value) : FString(TEXT("not in this engine version"));
+    if (!NotTaken.IsEmpty())
+    {
+        OutNotSet.Add(FString::Printf(TEXT("%s (%s)"), *Name, *NotTaken));
+        return false;
+    }
+    OutApplied.Add(Name);
+    return true;
+}
+
+// The render resolution of game views in percent (r.ScreenPercentage), filed as McpSetConsoleVariableNamed files it.
+// Before 5.3 Play In Editor takes the level viewport's screen percentage over it while
+// r.Editor.Viewport.OverridePIEScreenPercentage is on, so that goes off with it. Both doors to the variable set it here.
+inline void McpSetScreenPercentage(double Percent, TArray<FString>& OutApplied, TArray<FString>& OutNotSet)
+{
+    McpSetConsoleVariableNamed(TEXT("r.ScreenPercentage"), FString::SanitizeFloat(Percent), OutApplied, OutNotSet);
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION < 3
+    McpSetConsoleVariableNamed(TEXT("r.Editor.Viewport.OverridePIEScreenPercentage"), TEXT("0"), OutApplied, OutNotSet);
+#endif
+}

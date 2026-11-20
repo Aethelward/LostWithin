@@ -266,6 +266,155 @@
       "loop": true,
       "folder": "/Game/Audio/Ambience",
       "name": "AMB_Creak"
+    },
+
+    {
+      "id": "lunger_plate_idle",
+      "notes": "Monster senses (2026-11-20). Not generated yet: generating needs the user's OK (ElevenLabs credits). Replaces the vocal VO_Lunger_Idle once wired: the Lunger is a headless metal-cased creature with no voice.",
+      "prompt": "Heavy riveted steel armor plates groaning and creaking under pressure, muffled internal hydraulic compression thuds inside a metal casing, no voice, no breathing, dark stone corridor",
+      "duration": 2.5,
+      "variations": 3,
+      "folder": "/Game/NPC/Lunger/SFX/Mech",
+      "name": "SFX_Lunger_PlateIdle"
+    },
+
+    {
+      "id": "lunger_metal_footfall",
+      "notes": "Monster senses (2026-11-20). Not generated yet: generating needs the user's OK (ElevenLabs credits). Replaces the clawed SFX_Lunger_Step takes once wired; one take per stride.",
+      "prompt": "One single heavy metal-cased foot striking a stone floor: a dull iron clank with a short concrete thud, no claws",
+      "duration": 0.6,
+      "variations": 4,
+      "trim_silence": true,
+      "normalize_peak_db": -3.0,
+      "folder": "/Game/NPC/Lunger/SFX/Mech",
+      "name": "SFX_Lunger_MetalFootfall"
+    },
+
+    {
+      "id": "lunger_coil",
+      "notes": "Monster senses (2026-11-20). Not generated yet: generating needs the user's OK (ElevenLabs credits). UMonsterVibrationComponent::CoilSound, the 0.6 s telegraph before the lunge.",
+      "prompt": "Sharp mechanical steel ratchet: a fast tick-crank-hiss as a heavy spring latch winds open and pressurized air vents, tense and clear",
+      "duration": 0.8,
+      "variations": 2,
+      "trim_silence": true,
+      "normalize_peak_db": -4.0,
+      "folder": "/Game/NPC/Lunger/SFX/Mech",
+      "name": "SFX_Lunger_Coil"
+    },
+
+    {
+      "id": "lunger_slam",
+      "notes": "Monster senses (2026-11-20). Not generated yet: generating needs the user's OK (ElevenLabs credits). UMonsterVibrationComponent::SlamSound, when the lunge hits a wall.",
+      "prompt": "A heavy steel hull slamming into a concrete wall: a loud resonant metallic clang, then rapid hydraulic re-latch clicks",
+      "duration": 1.6,
+      "variations": 2,
+      "trim_silence": true,
+      "normalize_peak_db": -4.0,
+      "folder": "/Game/NPC/Lunger/SFX/Mech",
+      "name": "SFX_Lunger_Slam"
+    },
+
+    {
+      "id": "ghoul_heard_hiss",
+      "notes": "Monster senses (2026-11-20). Not generated yet: generating needs the user's OK (ElevenLabs credits). UMonsterLightAverseComponent::HeardYouSound, the head-snap when it hears the player.",
+      "prompt": "Blind undead ghoul snapping its head toward a sound: a short sharp wet hiss with a neck bone crack",
+      "duration": 1.0,
+      "variations": 2,
+      "trim_silence": true,
+      "normalize_peak_db": -5.0,
+      "folder": "/Game/NPC/Ghoul/SFX/Senses",
+      "name": "SFX_Ghoul_HeardHiss"
+    },
+
+    {
+      "id": "ghoul_pre_snuff",
+      "notes": "Monster senses (2026-11-20). Not generated yet: generating needs the user's OK (ElevenLabs credits). UMonsterLightAverseComponent::PreSnuffSound, 1.5 s before a torch goes out.",
+      "prompt": "A long cold drafty inhale drawing air toward a burning wall torch, the flame fluttering and straining",
+      "duration": 1.5,
+      "trim_silence": true,
+      "normalize_peak_db": -6.0,
+      "folder": "/Game/NPC/Ghoul/SFX/Senses",
+      "name": "SFX_Ghoul_PreSnuff"
+    },
+
+    {
+      "id": "ghoul_torch_snuff",
+      "notes": "Monster senses (2026-11-20). Not generated yet: generating needs the user's OK (ElevenLabs credits). UMonsterLightAverseComponent::SnuffSound, the torch going out.",
+      "prompt": "A wall torch flame suddenly extinguished: a soft sharp pop and a smoky hiss, then silence",
+      "duration": 1.0,
+      "trim_silence": true,
+      "normalize_peak_db": -5.0,
+      "folder": "/Game/NPC/Ghoul/SFX/Senses",
+      "name": "SFX_Ghoul_TorchSnuff"
+    },
+
+    {
+      "id": "doll_mimic",
+      "notes": "Monster senses (2026-11-20). Not generated yet: generating needs the user's OK (ElevenLabs credits). UMonsterSightFreezeComponent::MimicSounds, phantom lures while it lies dormant.",
+      "prompt": "Faint distant creepy lure in a dark corridor: a few soft small footsteps, or a short distorted toy music box chime, or a wooden creak",
+      "duration": 1.5,
+      "variations": 3,
+      "trim_silence": true,
+      "normalize_peak_db": -8.0,
+      "folder": "/Game/NPC/Doll/SFX/Senses",
+      "name": "SFX_Doll_Mimic"
+    },
+
+    {
+      "id": "doll_rear_click",
+      "notes": "Monster senses (2026-11-20). Not generated yet: generating needs the user's OK (ElevenLabs credits). UMonsterSightFreezeComponent::RearClickSound, once per unseen rush within 350 cm.",
+      "prompt": "A single sharp porcelain doll joint click and creak, very close and dry",
+      "duration": 0.6,
+      "variations": 2,
+      "trim_silence": true,
+      "normalize_peak_db": -4.0,
+      "folder": "/Game/NPC/Doll/SFX/Senses",
+      "name": "SFX_Doll_RearClick"
+    },
+
+    {
+      "id": "doll_gaze_buzz",
+      "notes": "Monster senses (2026-11-20). Not generated yet: generating needs the user's OK (ElevenLabs credits). UMonsterSightFreezeComponent::GazeBuzzSound, the rising interference before the flashlight blacks out.",
+      "prompt": "A rising electrical ballast buzz and static interference crackling louder, like a failing flashlight bulb",
+      "duration": 1.2,
+      "trim_silence": true,
+      "normalize_peak_db": -6.0,
+      "folder": "/Game/NPC/Doll/SFX/Senses",
+      "name": "SFX_Doll_GazeBuzz"
+    },
+
+    {
+      "id": "bonedog_sniff",
+      "notes": "Monster senses (2026-11-20). Not generated yet: generating needs the user's OK (ElevenLabs credits). UMonsterScentComponent::SniffSounds, played slow on a cold trail and fast on a fresh one.",
+      "prompt": "A skeletal dog sniffing the floor: short wet rapid sniffs and snuffles through a bony snout",
+      "duration": 0.8,
+      "variations": 3,
+      "trim_silence": true,
+      "normalize_peak_db": -5.0,
+      "folder": "/Game/NPC/BoneDog/SFX/Senses",
+      "name": "SFX_BoneDog_Sniff"
+    },
+
+    {
+      "id": "bonedog_huff",
+      "notes": "Monster senses (2026-11-20). Not generated yet: generating needs the user's OK (ElevenLabs credits). UMonsterScentComponent::AirLockSound, when it smells the player directly.",
+      "prompt": "A skeletal dog catching a strong scent: one deep huffing snort and a rattling growl",
+      "duration": 1.0,
+      "trim_silence": true,
+      "normalize_peak_db": -4.0,
+      "folder": "/Game/NPC/BoneDog/SFX/Senses",
+      "name": "SFX_BoneDog_Huff"
+    },
+
+    {
+      "id": "bonedog_lost_trail",
+      "notes": "Monster senses (2026-11-20). Not generated yet: generating needs the user's OK (ElevenLabs credits). UMonsterScentComponent::LostTrailSound, when the trail dies or a decoy comes up empty.",
+      "prompt": "A skeletal dog sneezing in confusion: a short dry snort and sneeze, then a puzzled huff",
+      "duration": 1.0,
+      "trim_silence": true,
+      "normalize_peak_db": -5.0,
+      "folder": "/Game/NPC/BoneDog/SFX/Senses",
+      "name": "SFX_BoneDog_LostTrail"
     }
   ]
 }

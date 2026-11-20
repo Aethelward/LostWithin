@@ -3,6 +3,7 @@
 #include "AI/MonsterSightFreezeComponent.h"
 
 #include "AI/MonsterAIComponent.h"
+#include "AI/MonsterFootstepComponent.h"
 #include "AI/MonsterHearingComponent.h"
 #include "AIController.h"
 #include "Camera/PlayerCameraManager.h"
@@ -16,6 +17,7 @@
 #include "GameFramework/PlayerController.h"
 #include "Kismet/GameplayStatics.h"
 #include "LostWithinCharacter.h"
+#include "Sound/SoundBase.h"
 
 UMonsterSightFreezeComponent::UMonsterSightFreezeComponent()
 {
@@ -109,8 +111,9 @@ void UMonsterSightFreezeComponent::TickComponent(float DeltaTime, ELevelTick Tic
 			}
 		}
 	}
-	else if (bAutoStalkWhenUnobserved)
+	if (bAutoStalkWhenUnobserved)
 	{
+		// Also runs while held, so a rush the hold interrupted ends cleanly.
 		UpdateStalkingMovement(DeltaTime);
 	}
 }
@@ -490,10 +493,17 @@ void UMonsterSightFreezeComponent::UpdateSightFreeze(float DeltaTime)
 		}
 		bIsObserved = false;
 		bIsIlluminated = false;
+		bIsDormant = false;
+		bSeesPlayer = false;
+		bHasSeenPlayer = false;
+		bRushing = false;
+		GazeLockSeconds = 0.0f;
+		FlickerRemaining = 0.0f;
 		return;
 	}
 
 	const APlayerController* PC = FindPlayerController();
+	ALostWithinCharacter* PlayerChar = FindPlayerCharacter();
 	bool bObserved = false;
 	bool bIlluminated = false;
 
@@ -502,18 +512,192 @@ void UMonsterSightFreezeComponent::UpdateSightFreeze(float DeltaTime)
 		EvaluatePlayerObservation(PC, bObserved, bIlluminated);
 	}
 
+	bool bBeamOnDoll = false;
+	bIsDollLit = EvaluateDollLit(PlayerChar, bBeamOnDoll);
+
+	// Gaze flicker: the lit beam held on the watched Doll builds interference until the flashlight blacks out.
+	FlickerRemaining = FMath::Max(0.0f, FlickerRemaining - DeltaTime);
+	if (bFreezeWhenWatched && GazeFlickerTime > 0.0f && FlickerRemaining <= 0.0f && bObserved && bBeamOnDoll && PlayerChar)
+	{
+		GazeLockSeconds += DeltaTime;
+		if (!bGazeBuzzPlayed && GazeLockSeconds >= GazeFlickerTime - GazeBuzzLeadTime)
+		{
+			bGazeBuzzPlayed = true;
+			PlaySoundAt(GazeBuzzSound, PlayerChar->GetActorLocation());
+		}
+		if (GazeLockSeconds >= GazeFlickerTime)
+		{
+			PlayerChar->BlackoutFlashlight(GazeFlickerBlackout);
+			FlickerRemaining = GazeFlickerBlackout;
+			GazeLockSeconds = 0.0f;
+			bGazeBuzzPlayed = false;
+		}
+	}
+	else if (FlickerRemaining <= 0.0f)
+	{
+		GazeLockSeconds = 0.0f;
+		bGazeBuzzPlayed = false;
+	}
+	const bool bFlickering = FlickerRemaining > 0.0f;
+	if (bFlickering)
+	{
+		// The beam is dark for a moment: the Doll is awake, unwatched and lunges at the player it was staring at.
+		bObserved = false;
+	}
+
 	if (bIsObserved != bObserved)
 	{
 		bIsObserved = bObserved;
 		OnObservedChanged.Broadcast(bIsObserved);
 	}
 	bIsIlluminated = bIlluminated;
+	bIsDormant = bDormantInDarkness && !bIsDollLit && !bFlickering;
 
-	const bool bShouldFreeze = bIsObserved;
-	if (bShouldFreeze != bIsFrozen)
+	// Sight is its only sense, and it needs light: dormant, it sees nothing and forgets.
+	if (bIsDormant || !bRequireSightOfPlayer)
 	{
-		SetFrozen(bShouldFreeze);
+		bSeesPlayer = false;
+		if (bIsDormant)
+		{
+			bHasSeenPlayer = false;
+		}
 	}
+	else
+	{
+		bSeesPlayer = bFlickering ? IsValid(PlayerChar) && !PlayerChar->IsDead() : CanSeePlayer(PlayerChar, bBeamOnDoll);
+		if (bSeesPlayer)
+		{
+			bHasSeenPlayer = true;
+			LastSeenPlayerLocation = PlayerChar->GetActorLocation();
+		}
+	}
+
+	// Only darkness holds it now; watching freezes it only with the older bFreezeWhenWatched rule.
+	const bool bShouldHold = (bFreezeWhenWatched && bIsObserved) || bIsDormant;
+	if (bShouldHold != bIsFrozen)
+	{
+		SetFrozen(bShouldHold);
+	}
+
+	UpdateMimic(DeltaTime, PlayerChar);
+}
+
+bool UMonsterSightFreezeComponent::EvaluateDollLit(const ALostWithinCharacter* PlayerChar, bool& bOutBeamLit) const
+{
+	bOutBeamLit = false;
+	const AActor* Owner = GetOwner();
+	if (!IsValid(Owner))
+	{
+		return false;
+	}
+	TArray<FVector, TInlineAllocator<2>> SamplePoints;
+	SamplePoints.Add(Owner->GetActorLocation() + FVector(0.0f, 0.0f, DetectionTraceOffsetZ));
+	if (const ACharacter* Character = Cast<ACharacter>(Owner))
+	{
+		if (const USkeletalMeshComponent* Mesh = Character->GetMesh(); Mesh && Mesh->DoesSocketExist(HeadSocketOrBoneName))
+		{
+			SamplePoints.Add(Mesh->GetSocketLocation(HeadSocketOrBoneName));
+		}
+	}
+	const ULostWithinLightSubsystem* Light = ULostWithinLightSubsystem::Get(this);
+	bool bLit = false;
+	for (const FVector& Point : SamplePoints)
+	{
+		if (PlayerChar && IsPointIlluminatedByFlashlight(PlayerChar, Point))
+		{
+			bOutBeamLit = true;
+			bLit = true;
+		}
+		else if (bTorchLightCounts && Light && Light->IsPointTorchLit(Point, Owner, PlayerChar))
+		{
+			bLit = true;
+		}
+	}
+	return bLit;
+}
+
+bool UMonsterSightFreezeComponent::CanSeePlayer(const ALostWithinCharacter* PlayerChar, bool bBeamOnDoll) const
+{
+	const AActor* Owner = GetOwner();
+	if (!IsValid(Owner) || !IsValid(PlayerChar) || PlayerChar->IsDead())
+	{
+		return false;
+	}
+	FVector Eye = Owner->GetActorLocation() + FVector(0.0f, 0.0f, DetectionTraceOffsetZ);
+	if (const ACharacter* Character = Cast<ACharacter>(Owner))
+	{
+		if (const USkeletalMeshComponent* Mesh = Character->GetMesh(); Mesh && Mesh->DoesSocketExist(HeadSocketOrBoneName))
+		{
+			Eye = Mesh->GetSocketLocation(HeadSocketOrBoneName);
+		}
+	}
+	const FVector Body = PlayerChar->GetActorLocation();
+	if (FVector::Dist(Eye, Body) > DollSightRange || !HasLineOfSightToPoint(Eye, Body, Owner, PlayerChar))
+	{
+		return false;
+	}
+	// The player is visible to it only when lit: standing in a torch's light, or behind a lit lens facing it.
+	const ULostWithinLightSubsystem* Light = ULostWithinLightSubsystem::Get(this);
+	const bool bPlayerTorchLit = bTorchLightCounts && Light && Light->IsPointTorchLit(Body, PlayerChar, Owner);
+	return bPlayerTorchLit || (bBeamOnDoll && PlayerChar->IsFlashlightOn());
+}
+
+bool UMonsterSightFreezeComponent::IsActorRushingAtPlayer(const AActor* Actor)
+{
+	const UMonsterSightFreezeComponent* Doll = IsValid(Actor) ? Actor->FindComponentByClass<UMonsterSightFreezeComponent>() : nullptr;
+	return Doll && Doll->IsRushing();
+}
+
+void UMonsterSightFreezeComponent::PlaySoundAt(USoundBase* Sound, const FVector& Location) const
+{
+	const UWorld* World = GetWorld();
+	if (Sound && World && World->IsGameWorld())
+	{
+		UGameplayStatics::PlaySoundAtLocation(this, Sound, Location, 1.0f, 1.0f, 0.0f, SoundAttenuation);
+	}
+}
+
+void UMonsterSightFreezeComponent::UpdateMimic(float DeltaTime, const ALostWithinCharacter* PlayerChar)
+{
+	const AActor* Owner = GetOwner();
+	if (!bIsDormant || MimicPlayerRange <= 0.0f || !IsValid(Owner) || !IsValid(PlayerChar) || PlayerChar->IsDead()
+		|| FVector::Dist(Owner->GetActorLocation(), PlayerChar->GetActorLocation()) > MimicPlayerRange)
+	{
+		MimicTimer = -1.0f;
+		return;
+	}
+	const float LowInterval = FMath::Max(1.0f, static_cast<float>(FMath::Min(MimicIntervalRange.X, MimicIntervalRange.Y)));
+	const float HighInterval = FMath::Max(LowInterval, static_cast<float>(FMath::Max(MimicIntervalRange.X, MimicIntervalRange.Y)));
+	if (MimicTimer < 0.0f)
+	{
+		MimicTimer = FMath::FRandRange(LowInterval, HighInterval);
+	}
+	MimicTimer -= DeltaTime;
+	if (MimicTimer > 0.0f)
+	{
+		return;
+	}
+	MimicTimer = FMath::FRandRange(LowInterval, HighInterval);
+
+	const TArray<TObjectPtr<USoundBase>>* Sounds = &MimicSounds;
+	if (Sounds->IsEmpty())
+	{
+		if (const UMonsterFootstepComponent* Steps = Owner->FindComponentByClass<UMonsterFootstepComponent>())
+		{
+			Sounds = &Steps->FootstepSounds;
+		}
+	}
+	if (Sounds->IsEmpty())
+	{
+		return;
+	}
+	// A false cue to the player's left, right or behind, meant to turn their beam (and its light) away.
+	const FVector Directions[] = { PlayerChar->GetActorRightVector(), -PlayerChar->GetActorRightVector(), -PlayerChar->GetActorForwardVector() };
+	const FVector Direction = Directions[FMath::RandRange(0, 2)];
+	const float Low = static_cast<float>(FMath::Min(MimicOffsetRange.X, MimicOffsetRange.Y));
+	const float High = static_cast<float>(FMath::Max(MimicOffsetRange.X, MimicOffsetRange.Y));
+	const FVector Location = PlayerChar->GetActorLocation() + Direction.GetSafeNormal2D() * FMath::FRandRange(Low, High);
+	PlaySoundAt((*Sounds)[FMath::RandRange(0, Sounds->Num() - 1)], Location);
 }
 
 void UMonsterSightFreezeComponent::SetFrozen(bool bFreeze)
@@ -583,7 +767,8 @@ void UMonsterSightFreezeComponent::ApplyUnfrozenState()
 		MoveComp && (!MonsterAI || !MonsterAI->bIsRagdolled))
 	{
 		MoveComp->SetMovementMode(MOVE_Walking);
-		MoveComp->MaxWalkSpeed = StalkWalkSpeed;
+		MoveComp->MaxWalkSpeed = (bRequireSightOfPlayer && !bSeesPlayer && !bHasSeenPlayer && bSavedInitialSpeed)
+			? CachedMaxWalkSpeed : (bRequireSightOfPlayer ? RushSpeed : StalkWalkSpeed);
 	}
 
 	// 2. Resume skeletal animation
@@ -607,7 +792,52 @@ void UMonsterSightFreezeComponent::ResumeStalking()
 
 void UMonsterSightFreezeComponent::UpdateStalkingMovement(float DeltaTime)
 {
-	if (bIsFrozen || IsReactingToCat() || UMonsterHearingComponent::IsActorInvestigating(GetOwner()))
+	ACharacter* Character = Cast<ACharacter>(GetOwner());
+	ALostWithinCharacter* Player = FindPlayerCharacter();
+	const bool bBlocked = bIsFrozen || IsReactingToCat() || UMonsterHearingComponent::IsActorInvestigating(GetOwner())
+		|| !Character || !Player || Player->IsDead();
+
+	if (bRequireSightOfPlayer)
+	{
+		// It goes for a player it sees, else for the place it last saw them; with neither, the roam loop runs.
+		const bool bHasTarget = !bBlocked && (bSeesPlayer || bHasSeenPlayer);
+		if (bHasTarget && !bSeesPlayer && FVector::Dist2D(Character->GetActorLocation(), LastSeenPlayerLocation) <= 60.0f)
+		{
+			bHasSeenPlayer = false; // nobody here any more
+		}
+		const bool bRushNow = bHasTarget && (bSeesPlayer || bHasSeenPlayer);
+		if (!bRushNow)
+		{
+			if (bRushing)
+			{
+				bRushing = false;
+				bRearClickPlayed = false;
+				if (!bBlocked)
+				{
+					if (AAIController* AIC = Character ? Cast<AAIController>(Character->GetController()) : nullptr)
+					{
+						AIC->StopMovement();
+					}
+				}
+				if (UCharacterMovementComponent* MoveComp = Character ? Character->GetCharacterMovement() : nullptr; MoveComp && bSavedInitialSpeed && !bIsFrozen)
+				{
+					MoveComp->MaxWalkSpeed = CachedMaxWalkSpeed;
+				}
+			}
+			return;
+		}
+		if (!bRushing)
+		{
+			bRushing = true;
+			RepathTimer = StalkRepathInterval; // move this tick
+		}
+		if (!bRearClickPlayed && !bIsObserved && FVector::Dist(Character->GetActorLocation(), Player->GetActorLocation()) <= RearClickDistance)
+		{
+			bRearClickPlayed = true;
+			PlaySoundAt(RearClickSound, Character->GetActorLocation());
+		}
+	}
+	else if (bBlocked)
 	{
 		return;
 	}
@@ -619,18 +849,6 @@ void UMonsterSightFreezeComponent::UpdateStalkingMovement(float DeltaTime)
 	}
 	RepathTimer = 0.0f;
 
-	ACharacter* Character = Cast<ACharacter>(GetOwner());
-	if (!Character)
-	{
-		return;
-	}
-
-	ALostWithinCharacter* Player = FindPlayerCharacter();
-	if (!Player || Player->IsDead())
-	{
-		return;
-	}
-
 	// Ensure correct stalking walk speed
 	if (UCharacterMovementComponent* MoveComp = Character->GetCharacterMovement())
 	{
@@ -638,19 +856,26 @@ void UMonsterSightFreezeComponent::UpdateStalkingMovement(float DeltaTime)
 		{
 			MoveComp->SetMovementMode(MOVE_Walking);
 		}
-		MoveComp->MaxWalkSpeed = StalkWalkSpeed;
+		MoveComp->MaxWalkSpeed = bRequireSightOfPlayer ? RushSpeed : StalkWalkSpeed;
 	}
 
+	const bool bTowardPlayer = !bRequireSightOfPlayer || bSeesPlayer;
 	if (AAIController* AIC = Cast<AAIController>(Character->GetController()))
 	{
 		// No stop-on-overlap: the capsules overlap freely, so the Doll keeps walking until its body touches the player.
-		AIC->MoveToActor(Player, StalkAcceptanceRadius, /*bStopOnOverlap=*/false);
+		if (bTowardPlayer)
+		{
+			AIC->MoveToActor(Player, StalkAcceptanceRadius, /*bStopOnOverlap=*/false);
+		}
+		else
+		{
+			AIC->MoveToLocation(LastSeenPlayerLocation, StalkAcceptanceRadius, /*bStopOnOverlap=*/false);
+		}
 	}
 	else
 	{
 		// Fallback direct movement input if running without an AIController
-		const FVector ToPlayer = Player->GetActorLocation() - Character->GetActorLocation();
-		const FVector Direction = ToPlayer.GetSafeNormal2D();
-		Character->AddMovementInput(Direction, 1.0f);
+		const FVector Target = bTowardPlayer ? Player->GetActorLocation() : LastSeenPlayerLocation;
+		Character->AddMovementInput((Target - Character->GetActorLocation()).GetSafeNormal2D(), 1.0f);
 	}
 }

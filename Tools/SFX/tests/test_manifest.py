@@ -10,9 +10,9 @@ from lostwithin_sfx.manifest import ManifestError, estimate_credits, load_manife
 class RealManifestTests(unittest.TestCase):
     def test_project_manifest_is_valid_and_matches_the_planned_batch(self) -> None:
         manifest = load_manifest(support.MANIFEST_FILE)
-        self.assertEqual(len(manifest.sounds), 29)
+        self.assertEqual(len(manifest.sounds), 42)
         total = sum(estimate_credits(e.duration, e.variations) for e in manifest.sounds)
-        self.assertEqual(total, 7488)
+        self.assertEqual(total, 8708)
         self.assertNotIn("death_sting", manifest.ids(), "replaced by death_jumpscare + death_game_over")
         steps = [e for e in manifest.sounds if e.id.endswith("_step")]
         self.assertEqual(sorted(e.id for e in steps), ["bonedog_step", "doll_step", "ghoul_step", "lunger_step"])
@@ -28,6 +28,11 @@ class RealManifestTests(unittest.TestCase):
             self.assertEqual(entry.model_id, "eleven_text_to_sound_v3")
             self.assertEqual(entry.output_format, "wav_48000")
         self.assertTrue(all(e.loop for e in manifest.sounds if e.name.startswith("AMB_")))
+        # Monster-senses cues (2026-11-20): no loops; every one-shot cue is trimmed (the plate idle bed is not).
+        senses = [e for e in manifest.sounds if e.folder.endswith(("/Mech", "/Senses"))]
+        self.assertEqual(len(senses), 13)
+        self.assertTrue(all(not e.loop for e in senses))
+        self.assertTrue(all(e.trim_silence for e in senses if e.id != "lunger_plate_idle"))
         self.assertFalse(any(e.loop for e in manifest.sounds if not e.name.startswith("AMB_")))
         self.assertNotIn("lunger_alert", manifest.ids(), "Lunger is deaf and has no alert vocals")
 

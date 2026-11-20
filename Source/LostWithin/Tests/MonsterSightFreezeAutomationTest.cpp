@@ -76,6 +76,12 @@ namespace
 
 		Result.SightFreeze = NewObject<UMonsterSightFreezeComponent>(Result.Actor, TEXT("SightFreezeAI"));
 		Result.SightFreeze->bRequireLineOfSight = false; // Synthetic test environment without static geometry
+		// Pins the older always-stalking Doll; dormancy, lit sight and the gaze flicker are tested in LostWithin.AI.Senses.
+		Result.SightFreeze->bDormantInDarkness = false;
+		Result.SightFreeze->bFreezeWhenWatched = true;
+		Result.SightFreeze->bRequireSightOfPlayer = false;
+		Result.SightFreeze->GazeFlickerTime = 0.0f;
+		Result.SightFreeze->MimicPlayerRange = 0.0f;
 		Result.SightFreeze->RegisterComponent();
 
 		Result.Actor->FinishSpawning(Transform);

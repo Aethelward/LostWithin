@@ -1,0 +1,52 @@
+#include "Domains/MaterialAuthoring/McpMatPrivate.h"
+
+namespace McpMaterialAuthoringHandlers
+{
+bool HandleAddTextureSample(UEngineWireSubsystem* Bridge, const FString& RequestId, const FString& SubAction, const TSharedPtr<FJsonObject>& Payload, TSharedPtr<FMcpBridgeWebSocket> Socket)
+{
+  if (SubAction == TEXT("add_texture_sample")) {
+    LOAD_EDITABLE_MATERIAL_OR_FUNCTION_OR_RETURN();
+
+    FString TexturePath, ParameterName;
+    Payload->TryGetStringField(TEXT("texturePath"), TexturePath);
+    Payload->TryGetStringField(TEXT("parameterName"), ParameterName);
+
+    // SECURITY: Validate texturePath if provided
+    if (!TexturePath.IsEmpty()) {
+      if (!SanitizeMaterialPathOrReply(Bridge, RequestId, Socket, TEXT("texturePath"), TexturePath))
+        return true;
+    }
+
+    // Resolve shared texture/sampler options first
+    UTexture *ResolvedTexture = nullptr;
+    if (!TexturePath.IsEmpty()) {
+      // A path that did not load was dropped and the sample added empty, answered as a success.
+      ResolvedTexture = Cast<UTexture>(McpLoadAsset(TexturePath));
+      if (!ResolvedTexture) {
+        Bridge->SendAutomationError(Socket, RequestId,
+            FString::Printf(TEXT("Texture not found: %s"), *TexturePath), TEXT("ASSET_NOT_FOUND"));
+        return true;
+      }
+    }
+    // A named sample is a TextureSampleParameter2D, which derives from TextureSample.
+    UMaterialExpressionTextureSample *CreatedExpr = NewObject<UMaterialExpressionTextureSample>(
+        HostOuter,
+        ParameterName.IsEmpty() ? UMaterialExpressionTextureSample::StaticClass()
+                                : UMaterialExpressionTextureSampleParameter2D::StaticClass(),
+        NAME_None, RF_Transactional);
+    if (UMaterialExpressionTextureSampleParameter2D *Param = Cast<UMaterialExpressionTextureSampleParameter2D>(CreatedExpr)) {
+      Param->ParameterName = FName(*ParameterName);
+    }
+    // The sampler follows the texture: a normal map sampled as Color fails the compile.
+    if (ResolvedTexture) {
+      CreatedExpr->Texture = ResolvedTexture;
+      CreatedExpr->AutoSetSampleType();
+    }
+    TSharedPtr<FJsonObject> Result = PlaceMaterialExpression(RequestId, Material, Function, CreatedExpr, X, Y);
+    Bridge->SendAutomationResponse(Socket, RequestId, true, TEXT("Texture sample added."), Result);
+    return true;
+  }
+
+  return false;
+}
+}

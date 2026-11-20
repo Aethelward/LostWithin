@@ -24,6 +24,8 @@ straight into Content as SoundWaves. The list of sounds lives in Git; the API ke
 
    Check it saved (this prints only the length, about 50 characters, not the key):
    `(Get-Item "$env:LOCALAPPDATA\LostWithin\elevenlabs-api-key.txt").Length`.
+   On Linux (the Arch workstation), the key file is `~/.config/LostWithin/elevenlabs-api-key.txt`
+   (`$XDG_CONFIG_HOME` when set). Create it in an editor, then `chmod 600` it and check it with `wc -c`; never print it.
    A hidden `Read-Host -AsSecureString` prompt is not recommended: Ctrl+V often does not paste into it, which
    silently saves an empty file. The tool reports an empty file as "is empty".
 

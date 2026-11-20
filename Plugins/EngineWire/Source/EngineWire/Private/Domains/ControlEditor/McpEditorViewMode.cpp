@@ -1,0 +1,157 @@
+#include "Domains/ControlEditor/McpEditorSupport.h"
+#include "Foundation/HandlerUtils/McpHandlerUtilsJson.h"
+#include "Foundation/BridgeHelpers/Reflection/McpEnumName.h"
+#include "Editor/EditorPerformanceSettings.h"
+#include "Misc/App.h"
+
+#include "Camera/PlayerCameraManager.h"
+#include "Engine/GameViewportClient.h"
+#include "GameFramework/PlayerController.h"
+#include "ShowFlags.h"
+
+// Any engine view mode by its enum name with or without VMI_ (PathTracing, CollisionPawn, VisualizeNanite) or its display
+// name ("Path Tracing"), spaces, underscores and case ignored (McpParseEnum). Ten names were known; the rest went to a
+// console command the editor does not run, so a path-traced or collision view could not be shown.
+static bool FindViewModeByName(const FString &Name, EViewModeIndex &OutMode, FString &OutName) {
+  if (!McpParseEnum(Name, OutMode, /*bHidden=*/false) || OutMode == VMI_Unknown) {
+    return false;
+  }
+  OutName = McpEnumName(OutMode).RightChop(4);
+  return true;
+}
+
+bool UEngineWireSubsystem::HandleControlEditorSetViewMode(
+    const FString &RequestId, const TSharedPtr<FJsonObject> &Payload,
+    TSharedPtr<FMcpBridgeWebSocket> Socket) {
+  FString Mode;
+  Payload->TryGetStringField(TEXT("viewMode"), Mode);
+  EViewModeIndex ViewModeIndex = VMI_Lit;
+  FString Chosen;
+  if (!FindViewModeByName(Mode, ViewModeIndex, Chosen)) {
+    SendStandardErrorResponse(this, Socket, RequestId, TEXT("INVALID_ARGUMENT"),
+                              FString::Printf(TEXT("'%s' is not a view mode. Common ones: Lit, Unlit, Wireframe, DetailLighting, "
+                                  "LightingOnly, LightComplexity, ShaderComplexity, LightmapDensity, CollisionPawn, CollisionVisibility, "
+                                  "LODColoration, PathTracing, VisualizeNanite, VisualizeLumen; any view mode of this engine version works "
+                                  "by its enum or display name."), *Mode), nullptr);
+    return true;
+  }
+
+  // While the player plays, the game viewport is the one on screen, so the mode goes there. The level viewport hidden
+  // behind it took the mode before, and the reply said it was set while the game looked the same.
+  if (GEditor->PlayWorld && !GetEjectedPieViewportClientForMcp() && GEditor->GameViewport) {
+    GEditor->GameViewport->ViewModeIndex = ViewModeIndex;
+    ApplyViewMode(ViewModeIndex, /*bPerspective=*/true, GEditor->GameViewport->EngineShowFlags);
+    TSharedPtr<FJsonObject> Resp = McpHandlerUtils::CreateResultObject();
+    Resp->SetStringField(TEXT("viewMode"), Chosen);
+    Resp->SetStringField(TEXT("method"), TEXT("game_viewport"));
+    SendAutomationResponse(Socket, RequestId, true, TEXT("View mode set on the running game's view"), Resp, FString());
+    return true;
+  }
+
+  FEditorViewportClient *ViewportClient = GetActiveEditorViewportClientForMcp();
+  if (!ViewportClient) {
+    SendStandardErrorResponse(this, Socket, RequestId, TEXT("NO_VIEWPORT"),
+                              TEXT("No level viewport is open to show a view mode in."), nullptr);
+    return true;
+  }
+  ViewportClient->SetViewMode(ViewModeIndex);
+  ViewportClient->Invalidate();
+  TSharedPtr<FJsonObject> Resp = McpHandlerUtils::CreateResultObject();
+  Resp->SetStringField(TEXT("viewMode"), Chosen);
+  Resp->SetStringField(TEXT("method"), TEXT("viewport_client"));
+  SendAutomationResponse(Socket, RequestId, true, TEXT("View mode set"), Resp, FString());
+  return true;
+}
+
+bool UEngineWireSubsystem::HandleControlEditorSetCameraFov(
+    const FString &RequestId, const TSharedPtr<FJsonObject> &Payload,
+    TSharedPtr<FMcpBridgeWebSocket> Socket) {
+  double Fov = GetJsonNumberField(Payload, TEXT("fov"), 90.0);
+  if (Fov <= 1.0 || Fov >= 179.0) {
+    SendStandardErrorResponse(this, Socket, RequestId, TEXT("INVALID_ARGUMENT"),
+                              TEXT("fov must be between 1 and 179 degrees"), nullptr);
+    return true;
+  }
+
+  // While the player plays, the camera on screen is the game's: its field of view is locked to the value until play
+  // stops. The level viewport hidden behind it took the value before and nothing on screen changed.
+  if (GEditor->PlayWorld && !GetEjectedPieViewportClientForMcp()) {
+    APlayerController *Controller = GEditor->PlayWorld->GetFirstPlayerController();
+    if (Controller && Controller->PlayerCameraManager) {
+      Controller->PlayerCameraManager->SetFOV(static_cast<float>(Fov));
+      TSharedPtr<FJsonObject> Resp = McpHandlerUtils::CreateResultObject();
+      Resp->SetNumberField(TEXT("fov"), Fov);
+      Resp->SetStringField(TEXT("method"), TEXT("player_camera_manager"));
+      SendAutomationResponse(Socket, RequestId, true, TEXT("The running game's camera FOV is locked to the value"), Resp,
+                             FString());
+      return true;
+    }
+  }
+
+  if (FEditorViewportClient* ViewportClient = GetActiveEditorViewportClientForMcp()) {
+    ViewportClient->ViewFOV = static_cast<float>(Fov);
+    ViewportClient->FOVAngle = static_cast<float>(Fov);
+    ViewportClient->Invalidate();
+
+    TSharedPtr<FJsonObject> Resp = McpHandlerUtils::CreateResultObject();
+    Resp->SetNumberField(TEXT("fov"), Fov);
+    Resp->SetStringField(TEXT("method"), TEXT("viewport_client"));
+    SendAutomationResponse(Socket, RequestId, true, TEXT("Camera FOV set"), Resp,
+                           FString());
+    return true;
+  }
+
+  SendStandardErrorResponse(this, Socket, RequestId, TEXT("VIEWPORT_NOT_AVAILABLE"),
+                            TEXT("No editor viewport available for FOV update"), nullptr);
+  return true;
+}
+
+bool UEngineWireSubsystem::HandleControlEditorSetViewportRealtime(
+    const FString &RequestId, const TSharedPtr<FJsonObject> &Payload,
+    TSharedPtr<FMcpBridgeWebSocket> Socket) {
+  // Accept both documented spellings. Reading only `realtime` made a schema-
+  // valid {enabled: false} behave as absent/default-true.
+  bool bRealtime = true;
+  if (!Payload->TryGetBoolField(TEXT("realtime"), bRealtime))
+  {
+    Payload->TryGetBoolField(TEXT("enabled"), bRealtime);
+  }
+
+  FLevelEditorModule& LevelEditorModule = FModuleManager::GetModuleChecked<FLevelEditorModule>("LevelEditor");
+  TSharedPtr<IAssetViewport> ActiveViewport = LevelEditorModule.GetFirstActiveViewport();
+
+  if (ActiveViewport.IsValid()) {
+    FEditorViewportClient& ViewportClient = ActiveViewport->GetAssetViewportClient();
+    ViewportClient.SetRealtime(bRealtime);
+    // Another system's override wins over the setting: the reply said enabled while every capture still found the
+    // viewport not realtime. This request's own override goes on top of it, taken off again by the next call. Not the
+    // background one: the editor re-adds that on every tick while it is in the background with "Use Less CPU when in
+    // Background" on, so no override outlasts the frame and the reply says what holds it instead.
+    static const FText McpOverride = NSLOCTEXT("EngineWire", "McpRealtimeOverride", "EngineWire request");
+    ViewportClient.RemoveRealtimeOverride(McpOverride, false);
+    const UEditorPerformanceSettings *Performance = GetDefault<UEditorPerformanceSettings>();
+    const bool bBackgroundHold = bRealtime && !FApp::HasFocus() && Performance && Performance->bThrottleCPUWhenNotForeground;
+    FString Held;
+    if (ViewportClient.IsRealtime() != bRealtime) {
+      Held = ViewportClient.GetRealtimeOverrideMessage().ToString();
+      if (!bBackgroundHold) ViewportClient.AddRealtimeOverride(bRealtime, McpOverride);
+    }
+    const bool bReached = !bBackgroundHold && ViewportClient.IsRealtime();
+
+    TSharedPtr<FJsonObject> Resp = McpHandlerUtils::CreateResultObject();
+    Resp->SetBoolField(TEXT("realtime"), bReached);
+    if (!Held.IsEmpty()) Resp->SetStringField(bBackgroundHold ? TEXT("heldBy") : TEXT("overrode"), Held);
+    const TCHAR *Message = bBackgroundHold
+        ? TEXT("Realtime is set, but the editor is in the background with Use Less CPU when in Background on, which holds every viewport off realtime until the editor is in front: control_editor configure_editor setting=window unthrottle lifts it for this session.")
+        : bReached ? TEXT("Viewport realtime enabled") : TEXT("Viewport realtime disabled");
+    Resp->SetStringField(TEXT("message"), Message);
+
+    SendAutomationResponse(Socket, RequestId, true, Message, Resp, FString());
+    return true;
+  }
+
+  // The fallback exec "Viewport Realtime" is a command no editor version has: it changed nothing under a success reply.
+  SendStandardErrorResponse(this, Socket, RequestId, TEXT("NO_VIEWPORT"),
+                            TEXT("No level viewport is open to set realtime on."), nullptr);
+  return true;
+}

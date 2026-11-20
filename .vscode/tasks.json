@@ -4,15 +4,23 @@
         {
             "label": "Build LostWithinEditor (close Unreal first)",
             "type": "process",
-            "command": "powershell.exe",
-            "args": [
-                "-NoLogo",
-                "-NoProfile",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-File",
-                "${workspaceFolder}/BuildCheck.ps1"
-            ],
+            "windows": {
+                "command": "powershell.exe",
+                "args": [
+                    "-NoLogo",
+                    "-NoProfile",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                    "${workspaceFolder}/BuildCheck.ps1"
+                ]
+            },
+            "linux": {
+                "command": "bash",
+                "args": [
+                    "${workspaceFolder}/BuildCheck.sh"
+                ]
+            },
             "options": {
                 "cwd": "${workspaceFolder}"
             },
@@ -20,7 +28,10 @@
                 "kind": "build",
                 "isDefault": true
             },
-            "problemMatcher": "$msCompile",
+            "problemMatcher": [
+                "$msCompile",
+                "$gcc"
+            ],
             "presentation": {
                 "reveal": "always",
                 "panel": "dedicated",

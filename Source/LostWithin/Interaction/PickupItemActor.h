@@ -49,12 +49,12 @@ struct LOSTWITHIN_API FLostWithinFlashlightLightParams
 };
 
 /**
- *  Built-in catalog presets mapping assets under /Game/Item/* to inventory item definitions.
+ *  Built-in catalog presets mapping assets under /Game/Item/ to inventory item definitions.
  */
 UENUM(BlueprintType)
 enum class ELostWithinItemPreset : uint8
 {
-	/** Uses custom ItemData / assigned /Game/Item/* mesh directly */
+	/** Uses custom ItemData / assigned /Game/Item/ mesh directly */
 	Custom UMETA(DisplayName = "Custom (Use Mesh / ItemData)"),
 	/** Tactical flashlight (/Game/Item/Flashlight/StaticMeshes/defaultMaterial) */
 	Flashlight UMETA(DisplayName = "Flashlight (/Game/Item/Flashlight)"),
@@ -73,7 +73,7 @@ enum class ELostWithinItemPreset : uint8
 };
 
 /**
- *  World pickup actor representing an inventory item under /Game/Item/*.
+ *  World pickup actor representing an inventory item under /Game/Item/.
  *  Simulates Chaos physics with no spin/bob animation for both placed and dropped items.
  */
 UCLASS()
@@ -101,7 +101,7 @@ public:
 
 	APickupItemActor();
 
-	/** Canonical ItemIDs for built-in /Game/Item/* pickups */
+	/** Canonical ItemIDs for built-in /Game/Item/ pickups */
 	static const FName PlaceholderItemID;
 	static const FName FlashlightItemID;
 	static const FName BatteryItemID;
@@ -112,7 +112,7 @@ public:
 	/** Base ItemID of paper notes; each note gets a unique "PaperNote_<id>" so notes never stack */
 	static const FName PaperNoteItemID;
 
-	/** Asset paths for built-in /Game/Item/* static meshes */
+	/** Asset paths for built-in /Game/Item/ static meshes */
 	static const TCHAR* FlashlightMeshAssetPath;
 	static const TCHAR* FlashlightAltMeshAssetPath;
 	static const TCHAR* BatteryMeshAssetPath;
@@ -137,7 +137,7 @@ public:
 	/** Default uniform pickup scale applied to AA batteries */
 	static constexpr float DefaultBatteryPickupScale = 0.025f;
 
-	/** Quick-select preset for any built-in /Game/Item/* pickup */
+	/** Quick-select preset for any built-in /Game/Item/ pickup */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Pickup")
 	ELostWithinItemPreset ItemPreset = ELostWithinItemPreset::Custom;
 
@@ -197,7 +197,7 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Pickup|Audio", meta = (ClampMin = "0.0", ClampMax = "4.0"))
 	float DropSoundVolume = 0.85f;
 
-	/** Configures this pickup from one of the built-in /Game/Item/* presets */
+	/** Configures this pickup from one of the built-in /Game/Item/ presets */
 	UFUNCTION(BlueprintCallable, Category = "Pickup")
 	void ConfigureFromPreset(ELostWithinItemPreset Preset, bool bForceApplyPresetScale = true);
 

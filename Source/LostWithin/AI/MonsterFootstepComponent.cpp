@@ -18,6 +18,8 @@ namespace
 	constexpr float FootstepMinPitch = 0.25f;
 	constexpr float FootstepMaxPitch = 4.0f;
 	constexpr float MinStrideLength = 10.0f;
+	/** Height of the step sound above the capsule bottom, so the wall-occlusion trace starts clear of the floor. */
+	constexpr double FootstepOcclusionLiftCm = 20.0;
 }
 
 namespace MonsterFootstepRules
@@ -55,6 +57,14 @@ UMonsterFootstepComponent::UMonsterFootstepComponent()
 	Attenuation.LPFRadiusMax = 1950.0f;
 	Attenuation.LPFFrequencyAtMin = 20000.0f;
 	Attenuation.LPFFrequencyAtMax = 2500.0f;
+
+	// Headphones: binaural HRTF panning (Resonance Audio in the project audio settings), muffled through walls.
+	Attenuation.SpatializationAlgorithm = ESoundSpatializationAlgorithm::SPATIALIZATION_HRTF;
+	Attenuation.bEnableOcclusion = true;
+	Attenuation.OcclusionTraceChannel = ECC_Visibility;
+	Attenuation.OcclusionLowPassFilterFrequency = 1500.0f;
+	Attenuation.OcclusionVolumeAttenuation = 0.5f;
+	Attenuation.OcclusionInterpolationTime = 0.2f;
 
 	Stream.GenerateNewSeed();
 }
@@ -116,8 +126,11 @@ void UMonsterFootstepComponent::PlayStep()
 	const UWorld* World = GetWorld();
 	if (World && World->GetNetMode() != NM_DedicatedServer)
 	{
-		UGameplayStatics::PlaySoundAtLocation(this, Sound, GetFeetLocation(), FRotator::ZeroRotator, VolumeMultiplier,
-			Stream.FRandRange(PitchLow, PitchHigh), 0.0f, RuntimeAttenuation);
+		// The owner is ignored by the occlusion trace, and the source sits just above the floor so the trace does not
+		// start inside it.
+		UGameplayStatics::PlaySoundAtLocation(this, Sound, GetFeetLocation() + FVector(0.0, 0.0, FootstepOcclusionLiftCm),
+			FRotator::ZeroRotator, VolumeMultiplier, Stream.FRandRange(PitchLow, PitchHigh), 0.0f, RuntimeAttenuation,
+			/*ConcurrencySettings=*/nullptr, GetOwner());
 	}
 	UE_LOG(LogLostWithin, Verbose, TEXT("MonsterFootstep: %s -> %s"), *GetNameSafe(GetOwner()), *GetNameSafe(Sound));
 }

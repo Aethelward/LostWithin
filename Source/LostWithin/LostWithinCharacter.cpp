@@ -962,7 +962,8 @@ void ALostWithinCharacter::RefreshFlashlightState()
 		FlashlightThirdPersonMesh->MarkRenderStateDirty();
 	}
 
-	const bool bLightActive = bHasFlashlight && bIsFlashlightOn && InventoryComponent && InventoryComponent->CanOperateFlashlight();
+	const bool bLightActive = bHasFlashlight && bIsFlashlightOn && !bFlashlightBlackedOut
+		&& InventoryComponent && InventoryComponent->CanOperateFlashlight();
 	if (FlashlightSpotLight)
 	{
 		FlashlightSpotLight->SetVisibility(bLightActive);
@@ -978,6 +979,25 @@ void ALostWithinCharacter::RefreshFlashlightState()
 	}
 
 	UpdateFlashlightBatteryHUD();
+}
+
+void ALostWithinCharacter::BlackoutFlashlight(float Seconds)
+{
+	if (Seconds <= 0.0f || !FlashlightSpotLight || !FlashlightSpotLight->IsVisible())
+	{
+		return;
+	}
+	bFlashlightBlackedOut = true;
+	FlashlightSpotLight->SetVisibility(false);
+	if (FlashlightFillLight)
+	{
+		FlashlightFillLight->SetVisibility(false);
+	}
+	GetWorldTimerManager().SetTimer(FlashlightBlackoutTimer, FTimerDelegate::CreateWeakLambda(this, [this]()
+	{
+		bFlashlightBlackedOut = false;
+		RefreshFlashlightState();
+	}), Seconds, false);
 }
 
 void ALostWithinCharacter::UpdateFlashlightBatteryHUD()
@@ -1113,7 +1133,7 @@ void ALostWithinCharacter::StartFlickerSequence()
 	FTimerHandle EndHandle;
 	GetWorldTimerManager().SetTimer(EndHandle, [this]()
 	{
-		if (bIsFlashlightOn && FlashlightSpotLight)
+		if (bIsFlashlightOn && !bFlashlightBlackedOut && FlashlightSpotLight)
 		{
 			FlashlightSpotLight->SetVisibility(true);
 			if (FlashlightFillLight)

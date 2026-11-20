@@ -1,0 +1,308 @@
+
+#include "Domains/AssetWorkflow/Structs/McpAssetStructsShared.h"
+#include "Safety/McpSafeOperationsAssetClassification.h"
+#include "Foundation/BridgeHelpers/Blueprints/McpBPPaths.h"
+#include "UObject/ObjectRedirector.h"
+#include "Domains/AssetWorkflow/Rename/McpAssetRenameGuard.h"
+#include "IAssetTools.h"
+#include "EditorAssetLibrary.h"
+#include "Foundation/BridgeHelpers/Security/McpProjectPaths.h"
+
+// Copy all variable descriptions from Src into a freshly created (empty) Dst
+// struct. Avoids DuplicateObject (which triggers a UDS reinstancing cascade
+// that deadlocks synchronous native requests).
+static void CopyStructMembers(UUserDefinedStruct* Dst, UUserDefinedStruct* Src)
+{
+    for (const FStructVariableDescription& Var : FStructureEditorUtils::GetVarDesc(Src))
+    {
+        // Skip the engine-seeded default variable (MemberVar_0) that every
+        // UserDefinedStruct carries; it is not a real user member.
+        if (Var.FriendlyName == TEXT("MemberVar_0"))
+        {
+            continue;
+        }
+        FEdGraphPinType Pin = Var.ToPinType();
+        if (FStructureEditorUtils::AddVariable(Dst, Pin))
+        {
+            if (FStructVariableDescription* NewVar =
+                    FStructureEditorUtils::GetVarDescByGuid(Dst,
+                        FStructureEditorUtils::GetVarDesc(Dst).Last().VarGuid))
+            {
+                NewVar->FriendlyName = Var.FriendlyName;
+                NewVar->DefaultValue = Var.DefaultValue;
+                NewVar->ToolTip = Var.ToolTip;
+#if ENGINE_MAJOR_VERSION > 5 || ENGINE_MINOR_VERSION >= 5
+                NewVar->MetaData = Var.MetaData;
+#endif
+            }
+        }
+    }
+}
+
+// duplicate_struct and rename_struct
+bool HandleStructAssetAction_Rename(UEngineWireSubsystem& Bridge, const FString& RequestId, const FString& Action, const TSharedPtr<FJsonObject>& Payload, TSharedPtr<FMcpBridgeWebSocket> RequestingSocket)
+{
+    const FString Lower = Action.ToLower();
+
+    // duplicate_struct's copy (rename_struct goes through AssetTools instead)
+    auto DuplicateStructTo = [&](const FString& SrcPath, const FString& DestPath,
+                                 const FString& DestName, FString& OutError, FString& OutCode) -> UUserDefinedStruct*
+    {
+        OutCode = TEXT("OPERATION_FAILED");
+        const FString SanitizedSrcPath = SanitizeProjectRelativePath(SrcPath);
+        UUserDefinedStruct* Src = LoadObject<UUserDefinedStruct>(nullptr, *SanitizedSrcPath);
+        if (!Src)
+        {
+            OutError = FString::Printf(TEXT("Struct not found: %s"), *SrcPath);
+            return nullptr;
+        }
+
+        // Refused when any asset already holds the destination (the caller has only ruled out a struct there): a bare
+        // CreatePackage handed back that asset's package, and the copy made in it was a fatal error.
+        UPackage* DestPkg = McpCreatePackageForNewAsset(DestPath, OutError, OutCode);
+        if (!DestPkg)
+        {
+            return nullptr;
+        }
+
+        UUserDefinedStruct* Dst = CreateUnseededUserStruct(DestPkg, DestName);
+        if (!Dst)
+        {
+            OutError = TEXT("Failed to create duplicate struct");
+            return nullptr;
+        }
+
+        CopyStructMembers(Dst, Src);
+        FinishStructEdit(Dst, true);
+        return Dst;
+    };
+
+    if (Lower == TEXT("duplicate_struct"))
+    {
+        FString StructPath = GetJsonStringField(Payload, TEXT("structPath"));
+        FString DestName = GetJsonStringField(Payload, TEXT("destinationName"));
+        FString DestPath = GetJsonStringField(Payload, TEXT("destinationPath"));
+        DestName.TrimStartAndEndInline();
+        if (StructPath.IsEmpty() || (DestName.IsEmpty() && DestPath.IsEmpty()))
+        {
+            Bridge.SendAutomationError(RequestingSocket, RequestId,
+                TEXT("Missing required parameter: structPath and (destinationName|destinationPath)"),
+                TEXT("MISSING_PARAMETER"));
+            return true;
+        }
+
+        // Same rule as asset.duplicate: destinationPath is a folder when destinationName is given
+        // (unless an asset sits there) or when it names an existing folder; otherwise it is the
+        // full new asset path. With only destinationName the copy stays beside the source.
+        FString DupParentFolder = FPaths::GetPath(StructPath);
+        FString FinalName = DestName;
+        if (!DestPath.IsEmpty())
+        {
+            const bool bIsFolder = DestPath.EndsWith(TEXT("/")) || UEditorAssetLibrary::DoesDirectoryExist(DestPath) ||
+                (!DestName.IsEmpty() && !McpAssetExists(DestPath));
+            DupParentFolder = bIsFolder ? DestPath : FPaths::GetPath(DestPath);
+            DupParentFolder.RemoveFromEnd(TEXT("/"));
+            if (FinalName.IsEmpty())
+            {
+                FinalName = FPaths::GetBaseFilename(bIsFolder ? StructPath : DestPath);
+            }
+        }
+
+        // Normalize the resolved name and validate the destination through the
+        // project's asset-path validation before creating the package. This
+        // rejects out-of-root paths, '..' traversal, and read-only engine/script
+        // targets, and yields a canonical package path for CreatePackage.
+        FinalName = SanitizeAssetName(FinalName);
+        FString DupPackageName;
+        FString DupPathError;
+        if (!ValidateAssetCreationPath(DupParentFolder, FinalName, DupPackageName, DupPathError))
+        {
+            Bridge.SendAutomationError(RequestingSocket, RequestId, DupPathError, TEXT("INVALID_PATH"));
+            return true;
+        }
+        // Engine/script roots are read-only; asset creation must target /Game.
+        if (McpSafeOperations::IsEngineContentPackage(DupPackageName) || DupPackageName.StartsWith(TEXT("/Script/")))
+        {
+            Bridge.SendAutomationError(RequestingSocket, RequestId,
+                TEXT("Destination must reside under /Game (engine/script roots are read-only)"),
+                TEXT("INVALID_PATH"));
+            return true;
+        }
+        // A copy onto an existing struct (for example its own name in the source folder) would overwrite it.
+        const FString DupObjectPath = DupPackageName + TEXT(".") + FinalName;
+        if (LoadObject<UUserDefinedStruct>(nullptr, *DupObjectPath))
+        {
+            Bridge.SendAutomationError(RequestingSocket, RequestId,
+                TEXT("Destination already exists: ") + DupObjectPath, TEXT("ALREADY_EXISTS"));
+            return true;
+        }
+
+        FString Err, ErrCode;
+        UUserDefinedStruct* Dup = DuplicateStructTo(StructPath, DupPackageName, FinalName, Err, ErrCode);
+        if (!Dup)
+        {
+            Bridge.SendAutomationError(RequestingSocket, RequestId, Err, ErrCode);
+            return true;
+        }
+
+        TSharedPtr<FJsonObject> Result = McpHandlerUtils::CreateResultObject();
+        Result->SetStringField(TEXT("sourcePath"), StructPath);
+        Result->SetStringField(TEXT("duplicatedPath"), DupObjectPath);
+        Result->SetBoolField(TEXT("duplicated"), true);
+        Bridge.SendAutomationResponse(RequestingSocket, RequestId, true,
+            TEXT("Struct duplicated"), Result);
+        return true;
+    }
+
+    // rename_struct  (supported AssetTools rename with automatic redirector)
+    if (Lower == TEXT("rename_struct"))
+    {
+        FString StructPath = GetJsonStringField(Payload, TEXT("structPath"));
+        if (StructPath.IsEmpty())
+        {
+            Bridge.SendAutomationError(RequestingSocket, RequestId,
+                TEXT("Missing required parameter: structPath"), TEXT("MISSING_PARAMETER"));
+            return true;
+        }
+
+        // Resolve the destination object path. The canonical new parameter is
+        // newStructPath (a full object path, e.g. /Game/Folder/NewName.NewName).
+        // Fall back to the legacy newName (+ optional destinationFolder) style.
+        FString NewStructPath = GetJsonStringField(Payload, TEXT("newStructPath"));
+        FString NewName = GetJsonStringField(Payload, TEXT("newName"));
+        FString DestFolder = GetJsonStringField(Payload, TEXT("destinationFolder"));
+
+        // The destination's folder and name: newStructPath's, else newName in destinationFolder (default: the struct's).
+        FString NewParentFolder;
+        FString NewRawName;
+        if (!NewStructPath.IsEmpty())
+        {
+            NewParentFolder = FPaths::GetPath(NewStructPath);
+            NewRawName = FPaths::GetBaseFilename(NewStructPath);
+        }
+        else if (!NewName.IsEmpty())
+        {
+            NewParentFolder = DestFolder.IsEmpty() ? FPaths::GetPath(StructPath) : DestFolder;
+            NewRawName = SanitizeAssetName(NewName);
+        }
+        else
+        {
+            Bridge.SendAutomationError(RequestingSocket, RequestId,
+                TEXT("Missing required parameter: structPath and (newStructPath | newName)"),
+                TEXT("MISSING_PARAMETER"));
+            return true;
+        }
+
+        // Validate the resolved destination through the project's asset-path
+        // validation before performing the rename. This rejects out-of-root
+        // paths, '..' traversal, and read-only engine/script targets, and
+        // normalizes the folder/name so the rename lands on a canonical path.
+        FString FinalObjectPath;
+        FString NewNameOnly;
+        FString NewPackagePath;
+        {
+            const FString NewSanitizedName = SanitizeAssetName(NewRawName);
+            FString NewPackageName;
+            FString NewPathError;
+            if (!ValidateAssetCreationPath(NewParentFolder, NewSanitizedName, NewPackageName, NewPathError))
+            {
+                Bridge.SendAutomationError(RequestingSocket, RequestId, NewPathError, TEXT("INVALID_PATH"));
+                return true;
+            }
+            // Engine/script roots are read-only; asset creation must target /Game.
+            if (McpSafeOperations::IsEngineContentPackage(NewPackageName) || NewPackageName.StartsWith(TEXT("/Script/")))
+            {
+                Bridge.SendAutomationError(RequestingSocket, RequestId,
+                    TEXT("Destination must reside under /Game (engine/script roots are read-only)"),
+                    TEXT("INVALID_PATH"));
+                return true;
+            }
+            NewNameOnly = NewSanitizedName;
+            NewPackagePath = FPaths::GetPath(NewPackageName);
+            FinalObjectPath = NewPackageName + TEXT(".") + NewSanitizedName;
+        }
+
+        // Sanitize the read-only source path before lookup (root-safe).
+        const FString SanitizedStructPath = SanitizeProjectRelativePath(StructPath);
+        UUserDefinedStruct* S = LoadObject<UUserDefinedStruct>(nullptr, *SanitizedStructPath);
+        if (!S)
+        {
+            Bridge.SendAutomationError(RequestingSocket, RequestId,
+                TEXT("Struct not found: ") + StructPath, TEXT("NOT_FOUND"));
+            return true;
+        }
+
+        // Reject a no-op rename.
+        if (FinalObjectPath == StructPath)
+        {
+            Bridge.SendAutomationError(RequestingSocket, RequestId,
+                TEXT("newStructPath equals the current struct path; no rename performed"),
+                TEXT("NOOP"));
+            return true;
+        }
+
+        // Reject an explicit collision rather than silently overwriting an
+        // existing asset (issue #510: explicit diagnostics for failures).
+        // Only check for an actual struct at the destination. The older
+        // FindPackage check produced false positives in UE 5.7 (the package
+        // path resolution matched the parent /Game package or a stale
+        // redirector), blocking valid renames of brand-new names.
+        // Root-safe lookup: sanitize the destination path before the collision check.
+        const FString SanitizedDestPath = SanitizeProjectRelativePath(FinalObjectPath);
+        if (!SanitizedDestPath.IsEmpty() && LoadObject<UUserDefinedStruct>(nullptr, *SanitizedDestPath))
+        {
+            Bridge.SendAutomationError(RequestingSocket, RequestId,
+                TEXT("Destination already exists: ") + FinalObjectPath, TEXT("ALREADY_EXISTS"));
+            return true;
+        }
+
+        // AssetTools saves what it moves itself, past McpSafeAssetSave: a path-restricted caller's struct and its new
+        // home are held to its prefixes here (newStructPath may have been relative, rooted by this handler).
+        if (!McpCapabilityPrincipal::ActiveRequestPermitsPath(S->GetOutermost()->GetName()) ||
+            !McpCapabilityPrincipal::ActiveRequestPermitsPath(NewPackagePath / NewNameOnly))
+        {
+            Bridge.SendAutomationError(RequestingSocket, RequestId,
+                TEXT("The struct or its destination is outside the caller's allowed paths; nothing was renamed."),
+                TEXT("PATH_NOT_PERMITTED"));
+            return true;
+        }
+
+        // The editor's own rename: it moves the asset, leaves a UObjectRedirector at the old path when the struct is
+        // referenced, fixes up soft references and saves the affected packages. Through the shared rename, as
+        // asset.rename goes: no progress window and no question an unattended editor answers Cancel. Whether it
+        // worked is read from the destination below, so its report and failure text are not used.
+        TArray<FAssetRenameData> RenameData;
+        RenameData.Emplace(S, NewPackagePath, NewNameOnly);
+        FString Unused;
+        McpAssetRename::RenameWithSettingsFollow(RenameData, MakeShared<FJsonObject>(), Unused);
+
+        UUserDefinedStruct* Renamed = LoadObject<UUserDefinedStruct>(nullptr, *FinalObjectPath);
+        if (!Renamed)
+        {
+            Bridge.SendAutomationError(RequestingSocket, RequestId,
+                TEXT("Rename failed: struct not found at destination ") + FinalObjectPath,
+                TEXT("OPERATION_FAILED"));
+            return true;
+        }
+
+        // Did the supported rename leave a redirector at the old path?
+        const bool bLeftRedirector = (LoadObject<UObjectRedirector>(nullptr, *SanitizedStructPath) != nullptr);
+
+        // Recompile every referencing Blueprint and notify matching DataTables (redirector detection above happens
+        // first). The refresh compiles the struct, which dirties the package AssetTools has just saved: save it again.
+        FinishStructEdit(S, true);
+
+        TSharedPtr<FJsonObject> Result = McpHandlerUtils::CreateResultObject();
+        Result->SetStringField(TEXT("oldPath"), StructPath);
+        Result->SetStringField(TEXT("newPath"), FinalObjectPath);
+        Result->SetStringField(TEXT("newName"), NewNameOnly);
+        Result->SetStringField(TEXT("assetPath"), FinalObjectPath);
+        Result->SetBoolField(TEXT("renamed"), true);
+        Result->SetBoolField(TEXT("leftRedirector"), bLeftRedirector);
+        Bridge.SendAutomationResponse(RequestingSocket, RequestId, true,
+            TEXT("Struct renamed"), Result);
+        return true;
+    }
+
+    return false;
+}

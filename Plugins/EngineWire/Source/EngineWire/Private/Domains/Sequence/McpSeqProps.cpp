@@ -1,0 +1,184 @@
+#include "Core/Compatibility/McpVersionCompatibility.h"
+#include "Foundation/BridgeHelpers/Blueprints/McpBPPaths.h"
+#include "Domains/Sequence/McpSeqFrameRate.h"
+#include "Domains/Sequence/McpSeqEditorSupport.h"
+#include "Domains/Sequence/Validation/McpSeqFrameMath.h"
+
+namespace {
+// Why Object at Path has no playback properties to read or set.
+FString McpNotALevelSequence(const FString &Path, const UObject *Object) {
+  return Cast<ULevelSequence>(Object) ? FString::Printf(TEXT("%s has no movie scene"), *Path)
+                                      : FString::Printf(TEXT("%s is a %s, not a Level Sequence"), *Path, *Object->GetClass()->GetName());
+}
+
+// What both handlers answer, read back: frameRate (the display rate, a number) and the playback range in display-rate
+// frames, the unit the contract names (it is stored in tick resolution).
+void AddPlaybackValues(const TSharedPtr<FJsonObject> &Resp, const UMovieScene *MovieScene) {
+  const FFrameRate FR = MovieScene->GetDisplayRate();
+  Resp->SetNumberField(TEXT("frameRate"), FR.AsDecimal());
+  const TRange<FFrameNumber> Range = MovieScene->GetPlaybackRange();
+  const FFrameRate TickRate = MovieScene->GetTickResolution();
+  const double Start = FFrameRate::TransformTime(FFrameTime(Range.GetLowerBoundValue()), TickRate, FR).FloorToFrame().Value;
+  const double End = FFrameRate::TransformTime(FFrameTime(Range.GetUpperBoundValue()), TickRate, FR).FloorToFrame().Value;
+  Resp->SetNumberField(TEXT("playbackStart"), Start);
+  Resp->SetNumberField(TEXT("playbackEnd"), End);
+  Resp->SetNumberField(TEXT("lengthInFrames"), End - Start);
+}
+} // namespace
+
+bool UEngineWireSubsystem::HandleSequenceSetProperties(
+    const FString &RequestId, const TSharedPtr<FJsonObject> &Payload,
+    TSharedPtr<FMcpBridgeWebSocket> Socket) {
+  TSharedPtr<FJsonObject> LocalPayload =
+      Payload.IsValid() ? Payload : McpHandlerUtils::CreateResultObject();
+  FString SeqPath;
+  UObject *SeqObj = McpSequence::LoadAssetOrReply(this, RequestId, Socket, LocalPayload, TEXT("sequence_set_properties"), SeqPath);
+  if (!SeqObj) {
+    return true;
+  }
+  TSharedPtr<FJsonObject> Resp = McpHandlerUtils::CreateResultObject();
+
+  if (ULevelSequence *LevelSeq = Cast<ULevelSequence>(SeqObj)) {
+    if (UMovieScene *MovieScene = LevelSeq->GetMovieScene()) {
+      bool bModified = false;
+      double LengthInFramesValue = 0.0;
+      double PlaybackStartValue = 0.0;
+      double PlaybackEndValue = 0.0;
+
+      const bool bHasFrameRate = LocalPayload->HasField(TEXT("frameRate"));
+      const bool bHasLengthInFrames = LocalPayload->TryGetNumberField(
+          TEXT("lengthInFrames"), LengthInFramesValue);
+      const bool bHasPlaybackStart = LocalPayload->TryGetNumberField(
+          TEXT("playbackStart"), PlaybackStartValue);
+      const bool bHasPlaybackEnd = LocalPayload->TryGetNumberField(
+          TEXT("playbackEnd"), PlaybackEndValue);
+      // A call that set nothing answered "properties updated".
+      if (!bHasFrameRate && !bHasLengthInFrames && !bHasPlaybackStart && !bHasPlaybackEnd) {
+        SendAutomationError(Socket, RequestId,
+                            TEXT("Pass frameRate, playbackStart, playbackEnd or lengthInFrames. Nothing was changed."),
+                            TEXT("INVALID_ARGUMENT"));
+        return true;
+      }
+
+      FFrameRate NewRate = MovieScene->GetDisplayRate();
+      if (bHasFrameRate) {
+        FString FrameRateError;
+        if (!McpSequenceFrameRate::TryParse(
+                LocalPayload, TEXT("frameRate"), NewRate, FrameRateError)) {
+          SendAutomationError(Socket, RequestId,
+                                            FrameRateError,
+                                            TEXT("INVALID_ARGUMENT"));
+          return true;
+        }
+      }
+
+      TRange<FFrameNumber> NewRange = MovieScene->GetPlaybackRange();
+      bool bRangeChanged = false;
+      if (bHasPlaybackStart || bHasPlaybackEnd || bHasLengthInFrames) {
+        // Work in display-rate frames (the contract's unit); the stored range
+        // is in tick resolution, so convert on the way in and out.
+        const FFrameRate TickRate = MovieScene->GetTickResolution();
+        FFrameNumber StartFrame = FFrameRate::TransformTime(FFrameTime(NewRange.GetLowerBoundValue()), TickRate, NewRate).FloorToFrame();
+        FFrameNumber EndFrame = FFrameRate::TransformTime(FFrameTime(NewRange.GetUpperBoundValue()), TickRate, NewRate).FloorToFrame();
+
+        FString FrameError;
+        if (bHasPlaybackStart &&
+            !McpSequenceFrameMath::TryFrameNumber(
+                PlaybackStartValue, StartFrame, FrameError)) {
+          SendAutomationError(
+              Socket, RequestId, FrameError,
+              TEXT("INVALID_ARGUMENT"));
+          return true;
+        }
+        if (bHasPlaybackEnd) {
+          if (!McpSequenceFrameMath::TryFrameNumber(
+                  PlaybackEndValue, EndFrame, FrameError)) {
+            SendAutomationError(
+                Socket, RequestId, FrameError,
+                TEXT("INVALID_ARGUMENT"));
+            return true;
+          }
+        } else if (bHasLengthInFrames) {
+          FFrameNumber Length;
+          if (!McpSequenceFrameMath::TryFrameNumber(
+                  LengthInFramesValue, Length, FrameError)) {
+            SendAutomationError(
+                Socket, RequestId, FrameError,
+                TEXT("INVALID_ARGUMENT"));
+            return true;
+          }
+          if (!McpSequenceFrameMath::TryAddFrames(
+                  StartFrame,
+                  FMath::Max(0, Length.Value),
+                  EndFrame, FrameError)) {
+            SendAutomationError(
+                Socket, RequestId, FrameError,
+                TEXT("INVALID_ARGUMENT"));
+            return true;
+          }
+        }
+
+        // An end before the start was turned into an empty range under a success reply.
+        if (EndFrame < StartFrame) {
+          SendAutomationError(Socket, RequestId,
+                              FString::Printf(TEXT("playbackEnd %d is before playbackStart %d. Nothing was changed."),
+                                              EndFrame.Value, StartFrame.Value),
+                              TEXT("INVALID_ARGUMENT"));
+          return true;
+        }
+        NewRange = TRange<FFrameNumber>(
+            FFrameRate::TransformTime(FFrameTime(StartFrame), NewRate, TickRate).FloorToFrame(),
+            FFrameRate::TransformTime(FFrameTime(EndFrame), NewRate, TickRate).FloorToFrame());
+        bRangeChanged = true;
+      }
+
+      // Modify before the change, so undo restores the old values (after it, undo held the new ones).
+      bModified = NewRate != MovieScene->GetDisplayRate() ||
+                  (bRangeChanged && NewRange != MovieScene->GetPlaybackRange());
+      if (bModified)
+        MovieScene->Modify();
+      if (NewRate != MovieScene->GetDisplayRate())
+        MovieScene->SetDisplayRate(NewRate);
+      if (bRangeChanged)
+        MovieScene->SetPlaybackRange(NewRange);
+
+      AddPlaybackValues(Resp, MovieScene);
+      Resp->SetBoolField(TEXT("applied"), bModified);
+
+      SendAutomationResponse(Socket, RequestId, true,
+                             bModified ? TEXT("Sequence properties set; the sequence is unsaved")
+                                       : TEXT("Sequence properties already had those values"),
+                             Resp, FString());
+      return true;
+    }
+  }
+  SendAutomationError(Socket, RequestId, McpNotALevelSequence(SeqPath, SeqObj),
+                      TEXT("INVALID_SEQUENCE"));
+  return true;
+}
+
+bool UEngineWireSubsystem::HandleSequenceGetProperties(
+    const FString &RequestId, const TSharedPtr<FJsonObject> &Payload,
+    TSharedPtr<FMcpBridgeWebSocket> Socket) {
+  TSharedPtr<FJsonObject> LocalPayload =
+      Payload.IsValid() ? Payload : McpHandlerUtils::CreateResultObject();
+  FString SeqPath;
+  UObject *SeqObj = McpSequence::LoadAssetOrReply(this, RequestId, Socket, LocalPayload, TEXT("sequence_get_properties"), SeqPath);
+  if (!SeqObj) {
+    return true;
+  }
+  TSharedPtr<FJsonObject> Resp = McpHandlerUtils::CreateResultObject();
+
+  if (ULevelSequence *LevelSeq = Cast<ULevelSequence>(SeqObj)) {
+    if (UMovieScene *MovieScene = LevelSeq->GetMovieScene()) {
+      AddPlaybackValues(Resp, MovieScene);
+      SendAutomationResponse(Socket, RequestId, true,
+                             TEXT("properties retrieved"), Resp, FString());
+      return true;
+    }
+  }
+  // Any other asset answered success with every value 0, the same as a real sequence at 0.
+  SendAutomationError(Socket, RequestId, McpNotALevelSequence(SeqPath, SeqObj),
+                      TEXT("INVALID_SEQUENCE"));
+  return true;
+}

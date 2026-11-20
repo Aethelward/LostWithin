@@ -4,6 +4,10 @@
 
 #include "AI/MonsterAIComponent.h"
 #include "AIController.h"
+#include "Animation/AnimInstance.h"
+#include "Animation/AnimMontage.h"
+#include "Animation/AnimSequenceBase.h"
+#include "Components/SkeletalMeshComponent.h"
 #include "Components/CapsuleComponent.h"
 #include "Engine/Engine.h"
 #include "Engine/World.h"
@@ -14,6 +18,7 @@
 #include "Kismet/GameplayStatics.h"
 #include "Navigation/PathFollowingComponent.h"
 #include "NavigationSystem.h"
+#include "Sound/SoundBase.h"
 
 namespace
 {
@@ -27,6 +32,8 @@ UMonsterVibrationComponent::UMonsterVibrationComponent()
 	PrimaryComponentTick.bStartWithTickEnabled = true;
 	PrimaryComponentTick.TickGroup = TG_PrePhysics;
 	SetAutoActivate(true);
+	LungeAnimation = TSoftObjectPtr<UAnimSequenceBase>(FSoftObjectPath(
+		TEXT("/Game/NPC/Lunger/base_basic_pbr_Anim_Armature_human_000038_InPlace.base_basic_pbr_Anim_Armature_human_000038_InPlace")));
 }
 
 void UMonsterVibrationComponent::BeginPlay()
@@ -163,7 +170,8 @@ bool UMonsterVibrationComponent::CanSenseTurbulence(const AActor* PotentialActor
 
 bool UMonsterVibrationComponent::SenseFloorVibration(const FVector& Location, float Radius, AActor* InstigatorActor)
 {
-	if (!CanSenseFloorVibration(Location, Radius, InstigatorActor) || IsReactingToCat())
+	if (!CanSenseFloorVibration(Location, Radius, InstigatorActor) || IsReactingToCat()
+		|| State == EMonsterVibrationState::Lunging || State == EMonsterVibrationState::Jammed)
 	{
 		return false;
 	}
@@ -172,24 +180,13 @@ bool UMonsterVibrationComponent::SenseFloorVibration(const FVector& Location, fl
 	LastSenseKind = (Radius >= (LandingVibrationRadius - 50.0f))
 		? EMonsterVibrationSenseKind::LandingTremor
 		: EMonsterVibrationSenseKind::SprintTremor;
-
-	if (State == EMonsterVibrationState::Idle)
-	{
-		ApplyInvestigateSpeed();
-	}
-
-	SetState(EMonsterVibrationState::Investigating);
-	StateElapsed = 0.0f;
-	bUseDirectMovement = false;
-	IssueMove();
-
-	OnVibrationSensed.Broadcast(InvestigationLocation, LastSenseKind);
+	ReactToSense();
 	return true;
 }
 
 bool UMonsterVibrationComponent::SenseTurbulence(const FVector& Location, AActor* InstigatorActor)
 {
-	if (IsReactingToCat())
+	if (IsReactingToCat() || State == EMonsterVibrationState::Lunging || State == EMonsterVibrationState::Jammed)
 	{
 		return false;
 	}
@@ -201,18 +198,7 @@ bool UMonsterVibrationComponent::SenseTurbulence(const FVector& Location, AActor
 	{
 		MonsterAI->bPlayerIsNear = true;
 	}
-
-	if (State == EMonsterVibrationState::Idle)
-	{
-		ApplyInvestigateSpeed();
-	}
-
-	SetState(EMonsterVibrationState::Investigating);
-	StateElapsed = 0.0f;
-	bUseDirectMovement = false;
-	IssueMove();
-
-	OnVibrationSensed.Broadcast(InvestigationLocation, LastSenseKind);
+	ReactToSense();
 	return true;
 }
 
@@ -227,7 +213,8 @@ void UMonsterVibrationComponent::HandleNoiseBroadcast(const FLostWithinNoiseEven
 	// Only footsteps that carry enough force (sprints or landings) generate floor tremors.
 	if (Noise.Kind == ELostWithinNoiseKind::Footstep)
 	{
-		bool bIsTremor = Noise.Radius >= (SprintVibrationRadius * 0.6f);
+		// Only a sprint shakes the floor: a running footstep (9 m noise) is below the 12 m sprint tremor radius.
+		bool bIsTremor = Noise.Radius >= SprintVibrationRadius;
 		if (!bIsTremor && IsValid(Noise.NoiseMaker))
 		{
 			const float MakerSpeed = Noise.NoiseMaker->GetVelocity().Size2D();
@@ -448,12 +435,16 @@ void UMonsterVibrationComponent::TickComponent(float DeltaTime, ELevelTick TickT
 
 	if (IsReactingToCat())
 	{
+		RestoreLungeMovement();
 		bSpeedApplied = false;
 		Finish(/*bRestoreSpeed=*/false);
 		return;
 	}
 
-	CheckPlayerProximityAndMovement();
+	if (State != EMonsterVibrationState::Lunging && State != EMonsterVibrationState::Jammed)
+	{
+		CheckPlayerProximityAndMovement();
+	}
 
 	if (State == EMonsterVibrationState::Idle)
 	{
@@ -461,18 +452,270 @@ void UMonsterVibrationComponent::TickComponent(float DeltaTime, ELevelTick TickT
 	}
 
 	StateElapsed += DeltaTime;
-	if (State == EMonsterVibrationState::Investigating)
+	switch (State)
 	{
+	case EMonsterVibrationState::Investigating:
 		UpdateMoving(DeltaTime);
-	}
-	else if (State == EMonsterVibrationState::Searching)
-	{
+		break;
+	case EMonsterVibrationState::Searching:
 		UpdateSearching(DeltaTime);
+		break;
+	case EMonsterVibrationState::Coiling:
+		UpdateCoiling(DeltaTime);
+		break;
+	case EMonsterVibrationState::Lunging:
+		UpdateLunging(DeltaTime);
+		break;
+	case EMonsterVibrationState::Jammed:
+		UpdateJammed(DeltaTime);
+		break;
+	default:
+		break;
+	}
+}
+
+void UMonsterVibrationComponent::RegisterComponentTickFunctions(bool bRegister)
+{
+	Super::RegisterComponentTickFunctions(bRegister);
+	// Tick before the monster's movement, so the lunge velocity applies in the same frame.
+	if (ACharacter* Character = Cast<ACharacter>(GetOwner()); Character && Character->GetCharacterMovement())
+	{
+		if (bRegister) { Character->GetCharacterMovement()->AddTickPrerequisiteComponent(this); }
+		else { Character->GetCharacterMovement()->RemoveTickPrerequisiteComponent(this); }
+	}
+}
+
+void UMonsterVibrationComponent::ReactToSense()
+{
+	if (State == EMonsterVibrationState::Coiling)
+	{
+		// Still moving while it coils: the lunge will fire at the latest point it felt.
+		bFreshSenseDuringCoil = true;
+		OnVibrationSensed.Broadcast(InvestigationLocation, LastSenseKind);
+		return;
+	}
+
+	if (State == EMonsterVibrationState::Idle)
+	{
+		ApplyInvestigateSpeed();
+	}
+
+	const AActor* Owner = GetOwner();
+	const bool bInLungeRange = bEnableLunge && Owner
+		&& FVector::Dist2D(Owner->GetActorLocation(), InvestigationLocation) <= LungeTriggerRange;
+	if (bInLungeRange)
+	{
+		BeginCoil();
+	}
+	else
+	{
+		SetState(EMonsterVibrationState::Investigating);
+		StateElapsed = 0.0f;
+		bUseDirectMovement = false;
+		IssueMove();
+	}
+	OnVibrationSensed.Broadcast(InvestigationLocation, LastSenseKind);
+}
+
+void UMonsterVibrationComponent::BeginCoil()
+{
+	StopOwnerMovement();
+	SetState(EMonsterVibrationState::Coiling);
+	StateElapsed = 0.0f;
+	PhaseDuration = FMath::FRandRange(static_cast<float>(FMath::Min(CoilDurationRange.X, CoilDurationRange.Y)),
+		static_cast<float>(FMath::Max(CoilDurationRange.X, CoilDurationRange.Y)));
+	bFreshSenseDuringCoil = false;
+	PlaySoundAt(CoilSound);
+	StartLungeAnim(PhaseDuration);
+}
+
+void UMonsterVibrationComponent::UpdateCoiling(float DeltaTime)
+{
+	AActor* Owner = GetOwner();
+	if (!Owner)
+	{
+		return;
+	}
+	// Planted, turning its hull toward the last thing it felt.
+	const FVector Toward = (InvestigationLocation - Owner->GetActorLocation()).GetSafeNormal2D();
+	if (!Toward.IsNearlyZero())
+	{
+		Owner->SetActorRotation(FRotator(0.0f, Toward.Rotation().Yaw, 0.0f));
+	}
+	if (StateElapsed < PhaseDuration)
+	{
+		return;
+	}
+	if (bFreshSenseDuringCoil)
+	{
+		BeginLunge();
+	}
+	else
+	{
+		// Nothing moved while it coiled: the latches release and it feels around where it stands.
+		StopLungeAnim(0.25f);
+		BeginSearch();
+	}
+}
+
+void UMonsterVibrationComponent::BeginLunge()
+{
+	ACharacter* Character = Cast<ACharacter>(GetOwner());
+	LockedDirection = Character ? (InvestigationLocation - Character->GetActorLocation()).GetSafeNormal2D() : FVector::ZeroVector;
+	if (!Character || LockedDirection.IsNearlyZero())
+	{
+		BeginJam(/*bSlammed=*/false);
+		return;
+	}
+	StopOwnerMovement();
+	if (UCharacterMovementComponent* Movement = Character->GetCharacterMovement())
+	{
+		if (!bLungeMovementApplied)
+		{
+			LungeSavedMaxWalkSpeed = Movement->MaxWalkSpeed;
+			LungeSavedMaxAcceleration = Movement->MaxAcceleration;
+			bLungeMovementApplied = true;
+		}
+		Movement->MaxWalkSpeed = LungeSpeed;
+		Movement->MaxAcceleration = FMath::Max(Movement->MaxAcceleration, LungeSpeed * 20.0f);
+		if (Movement->MovementMode == MOVE_None)
+		{
+			Movement->SetMovementMode(MOVE_Walking);
+		}
+		Movement->Velocity = LockedDirection * LungeSpeed + FVector(0.0f, 0.0f, Movement->Velocity.Z);
+	}
+	Character->SetActorRotation(FRotator(0.0f, LockedDirection.Rotation().Yaw, 0.0f));
+	SetState(EMonsterVibrationState::Lunging);
+	StateElapsed = 0.0f;
+	SetLungeAnimPhase(LungeAnimLeapStart, LungeAnimLeapEnd, LungeDuration);
+}
+
+void UMonsterVibrationComponent::UpdateLunging(float DeltaTime)
+{
+	ACharacter* Character = Cast<ACharacter>(GetOwner());
+	UCharacterMovementComponent* Movement = Character ? Character->GetCharacterMovement() : nullptr;
+	if (!Movement)
+	{
+		BeginJam(/*bSlammed=*/false);
+		return;
+	}
+	// The velocity the last move left: a wall in the locked line stops it dead.
+	const float Speed2D = Movement->Velocity.Size2D();
+	if (StateElapsed > 0.1f && Speed2D < LungeSpeed * WallSlamSpeedRatio)
+	{
+		BeginJam(/*bSlammed=*/true);
+		return;
+	}
+	if (StateElapsed >= LungeDuration)
+	{
+		BeginJam(/*bSlammed=*/false);
+		return;
+	}
+	Movement->Velocity = LockedDirection * LungeSpeed + FVector(0.0f, 0.0f, Movement->Velocity.Z);
+	Character->AddMovementInput(LockedDirection, 1.0f);
+}
+
+void UMonsterVibrationComponent::BeginJam(bool bSlammed)
+{
+	RestoreLungeMovement();
+	StopOwnerMovement();
+	if (ACharacter* Character = Cast<ACharacter>(GetOwner()))
+	{
+		if (UCharacterMovementComponent* Movement = Character->GetCharacterMovement())
+		{
+			Movement->StopMovementImmediately();
+		}
+	}
+	bLastLungeSlammed = bSlammed;
+	if (bSlammed)
+	{
+		PlaySoundAt(SlamSound);
+	}
+	SetState(EMonsterVibrationState::Jammed);
+	StateElapsed = 0.0f;
+	PhaseDuration = FMath::FRandRange(static_cast<float>(FMath::Min(JamDurationRange.X, JamDurationRange.Y)),
+		static_cast<float>(FMath::Max(JamDurationRange.X, JamDurationRange.Y)));
+	// The stumble of the attack clip plays out over the jam.
+	const UAnimSequenceBase* Clip = LungeAnimation.Get();
+	SetLungeAnimPhase(LungeAnimLeapEnd, Clip ? Clip->GetPlayLength() : LungeAnimLeapEnd, PhaseDuration);
+}
+
+void UMonsterVibrationComponent::UpdateJammed(float DeltaTime)
+{
+	if (StateElapsed >= PhaseDuration)
+	{
+		Finish(/*bRestoreSpeed=*/true);
+	}
+}
+
+void UMonsterVibrationComponent::RestoreLungeMovement()
+{
+	if (!bLungeMovementApplied)
+	{
+		return;
+	}
+	bLungeMovementApplied = false;
+	ACharacter* Character = Cast<ACharacter>(GetOwner());
+	if (UCharacterMovementComponent* Movement = Character ? Character->GetCharacterMovement() : nullptr)
+	{
+		Movement->MaxWalkSpeed = LungeSavedMaxWalkSpeed;
+		Movement->MaxAcceleration = LungeSavedMaxAcceleration;
+	}
+}
+
+void UMonsterVibrationComponent::StartLungeAnim(float Duration)
+{
+	StopLungeAnim(0.0f);
+	const ACharacter* Character = Cast<ACharacter>(GetOwner());
+	UAnimInstance* Anim = Character && Character->GetMesh() ? Character->GetMesh()->GetAnimInstance() : nullptr;
+	UAnimSequenceBase* Clip = Anim ? LungeAnimation.LoadSynchronous() : nullptr;
+	if (!Clip || LungeAnimLeapStart <= 0.0f || Duration <= 0.0f)
+	{
+		return;
+	}
+	// The whole clip as one dynamic montage in the slot: it overrides the roam blend until it ends or is stopped.
+	LungeMontage = Anim->PlaySlotAnimationAsDynamicMontage(Clip, LungeAnimSlot, /*BlendInTime=*/0.1f, /*BlendOutTime=*/0.25f,
+		/*InPlayRate=*/LungeAnimLeapStart / Duration);
+}
+
+void UMonsterVibrationComponent::SetLungeAnimPhase(float ClipTime, float ClipEnd, float Duration)
+{
+	UAnimMontage* Montage = LungeMontage.Get();
+	const ACharacter* Character = Cast<ACharacter>(GetOwner());
+	UAnimInstance* Anim = Character && Character->GetMesh() ? Character->GetMesh()->GetAnimInstance() : nullptr;
+	if (!Montage || !Anim || !Anim->Montage_IsPlaying(Montage) || Duration <= 0.0f || ClipEnd <= ClipTime)
+	{
+		return;
+	}
+	Anim->Montage_SetPosition(Montage, ClipTime);
+	Anim->Montage_SetPlayRate(Montage, (ClipEnd - ClipTime) / Duration);
+}
+
+void UMonsterVibrationComponent::StopLungeAnim(float BlendOut)
+{
+	UAnimMontage* Montage = LungeMontage.Get();
+	LungeMontage.Reset();
+	const ACharacter* Character = Cast<ACharacter>(GetOwner());
+	UAnimInstance* Anim = Character && Character->GetMesh() ? Character->GetMesh()->GetAnimInstance() : nullptr;
+	if (Montage && Anim && Anim->Montage_IsPlaying(Montage))
+	{
+		Anim->Montage_Stop(BlendOut, Montage);
+	}
+}
+
+void UMonsterVibrationComponent::PlaySoundAt(USoundBase* Sound) const
+{
+	const AActor* Owner = GetOwner();
+	if (Sound && Owner && Owner->GetWorld() && Owner->GetWorld()->IsGameWorld())
+	{
+		UGameplayStatics::PlaySoundAtLocation(this, Sound, Owner->GetActorLocation(), 1.0f, 1.0f, 0.0f, SoundAttenuation);
 	}
 }
 
 void UMonsterVibrationComponent::Finish(bool bRestoreSpeed)
 {
+	RestoreLungeMovement();
+	StopLungeAnim(0.25f);
 	if (bRestoreSpeed)
 	{
 		RestoreWalkSpeed();

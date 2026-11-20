@@ -1,0 +1,162 @@
+// Copyright (c) 2025 EngineWire Contributors
+
+#include "EngineWireSubsystem.h"
+#include "Foundation/BridgeHelpers/McpHelpers.h"
+#include "Foundation/HandlerUtils/McpHandlerUtils.h"
+
+#include "Dom/JsonObject.h"
+#include "Misc/EngineVersionComparison.h"
+#include "Serialization/JsonSerializer.h"
+#include "Serialization/JsonWriter.h"
+
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "UObject/MetaData.h"
+#include "UObject/Package.h"
+
+bool UEngineWireSubsystem::HandleSetMetadata(
+    const FString &RequestId, const TSharedPtr<FJsonObject> &Payload,
+    TSharedPtr<FMcpBridgeWebSocket> Socket) {
+  FString SafeAssetPath;
+  if (!McpReadAssetPathOrReply(this, Socket, RequestId, Payload, SafeAssetPath))
+    return true;
+
+  const TSharedPtr<FJsonObject> *MetadataObjPtr = nullptr;
+  if (!Payload->TryGetObjectField(TEXT("metadata"), MetadataObjPtr) ||
+      !MetadataObjPtr) {
+    // Treat missing/empty metadata as a no-op success; nothing to write.
+    TSharedPtr<FJsonObject> Resp = McpHandlerUtils::CreateResultObject();
+    Resp->SetStringField(TEXT("assetPath"), SafeAssetPath);
+    Resp->SetNumberField(TEXT("updatedKeys"), 0);
+    SendAutomationResponse(Socket, RequestId, true,
+                           TEXT("No metadata provided; no-op"), Resp,
+                           FString());
+    return true;
+  }
+
+  UObject *Asset = McpLoadAsset(SafeAssetPath);
+  if (!Asset) {
+    SendAutomationError(Socket, RequestId,
+                        TEXT("Failed to load asset"),
+                        TEXT("LOAD_FAILED"));
+    return true;
+  }
+
+  UPackage *Package = Asset->GetOutermost();
+  if (!Package) {
+    SendAutomationError(Socket, RequestId,
+                        TEXT("Failed to resolve package for asset"),
+                        TEXT("PACKAGE_NOT_FOUND"));
+    return true;
+  }
+
+  // GetMetaData returns the metadata object that is owned by this package.
+  // UE 5.0 uses UMetaData*, UE 5.6+ uses FMetaData&
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
+  FMetaData& Meta = Package->GetMetaData();
+#else
+  UMetaData* Meta = Package->GetMetaData();
+#endif
+
+  const TSharedPtr<FJsonObject> &MetadataObj = *MetadataObjPtr;
+  int32 UpdatedCount = 0;
+
+  for (const auto &Kvp : MetadataObj->Values) {
+    const FString Key(*Kvp.Key);
+    const TSharedPtr<FJsonValue> &Val = Kvp.Value;
+
+    FString ValueString;
+    if (!Val.IsValid() || Val->IsNull()) {
+      continue;
+    }
+    switch (Val->Type) {
+    case EJson::String:
+      ValueString = Val->AsString();
+      break;
+    case EJson::Number:
+      ValueString = LexToString(Val->AsNumber());
+      break;
+    case EJson::Boolean:
+      ValueString = Val->AsBool() ? TEXT("true") : TEXT("false");
+      break;
+    default:
+      // For arrays/objects, store a compact JSON string
+      {
+        FString JsonOut;
+        const TSharedRef<TJsonWriter<>> Writer =
+            TJsonWriterFactory<>::Create(&JsonOut);
+        FJsonSerializer::Serialize(Val, TEXT(""), Writer);
+        ValueString = JsonOut;
+      }
+      break;
+    }
+
+    if (!ValueString.IsEmpty()) {
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
+      Meta.SetValue(Asset, *Key, *ValueString);
+#else
+      Meta->SetValue(Asset, *Key, *ValueString);
+#endif
+      ++UpdatedCount;
+    }
+  }
+
+  if (UpdatedCount > 0) {
+    Package->SetDirtyFlag(true);
+  }
+
+  TSharedPtr<FJsonObject> Resp = McpHandlerUtils::CreateResultObject();
+  Resp->SetStringField(TEXT("assetPath"), SafeAssetPath);
+  Resp->SetNumberField(TEXT("updatedKeys"), UpdatedCount);
+
+  // Add verification data
+  McpHandlerUtils::AddVerification(Resp, Asset);
+
+  SendAutomationResponse(Socket, RequestId, true,
+                         TEXT("Asset metadata updated"), Resp, FString());
+  return true;
+}
+
+bool UEngineWireSubsystem::HandleGetMetadata(
+    const FString &RequestId, const TSharedPtr<FJsonObject> &Payload,
+    TSharedPtr<FMcpBridgeWebSocket> Socket) {
+  FString AssetPath;
+  if (!McpReadAssetPathOrReply(this, Socket, RequestId, Payload, AssetPath))
+    return true;
+
+  UObject *Asset = McpLoadAsset(AssetPath);
+  if (!Asset) {
+    SendAutomationError(Socket, RequestId,
+                        TEXT("Failed to load asset"),
+                        TEXT("LOAD_FAILED"));
+    return true;
+  }
+
+  TSharedPtr<FJsonObject> Resp = McpHandlerUtils::CreateResultObject();
+  Resp->SetStringField(TEXT("assetPath"), AssetPath);
+
+  // 1. Asset Registry Tags
+  Resp->SetObjectField(TEXT("tags"), McpAssetRegistryTagsToJson(FAssetData(Asset)));
+
+  // 2. Package Metadata information
+  UPackage *Package = Asset->GetOutermost();
+  if (Package) {
+
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
+    const TMap<FName, FString> *ObjectMeta = FMetaData::GetMapForObject(Asset);
+#else
+    UMetaData* Meta = Package->GetMetaData();
+    const TMap<FName, FString> *ObjectMeta = Meta->GetMapForObject(Asset);
+#endif
+    if (ObjectMeta) {
+      TSharedPtr<FJsonObject> MetaObj = McpHandlerUtils::CreateResultObject();
+      for (const auto &Entry : *ObjectMeta) {
+        MetaObj->SetStringField(Entry.Key.ToString(), Entry.Value);
+      }
+      Resp->SetObjectField(TEXT("metadata"), MetaObj);
+    }
+  }
+
+  SendAutomationResponse(Socket, RequestId, true, TEXT("Metadata retrieved"),
+                         Resp, FString());
+  return true;
+}

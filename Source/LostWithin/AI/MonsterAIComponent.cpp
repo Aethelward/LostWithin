@@ -5,6 +5,7 @@
 #include "AI/MonsterHearingComponent.h"
 #include "AI/MonsterLightAttractionComponent.h"
 #include "AI/MonsterLightAverseComponent.h"
+#include "AI/MonsterScentComponent.h"
 #include "AI/MonsterSightFreezeComponent.h"
 #include "AI/MonsterVibrationComponent.h"
 #include "AIController.h"
@@ -109,8 +110,11 @@ bool UMonsterAIComponent::CanRunNormalAI(AActor* Actor)
 	}
 	// A Ghoul chasing the player in darkness, or a BoneDog drawn to the flashlight, owns its movement and runs with
 	// its fastest gait; the Blueprint roam loop waits.
+	// A BoneDog following scent and a Doll rushing at the player it saw own their movement too.
 	return !UMonsterLightAverseComponent::IsActorDarkStalkingPlayer(Actor)
-		&& !UMonsterLightAttractionComponent::IsActorAttractedToLight(Actor);
+		&& !UMonsterLightAttractionComponent::IsActorAttractedToLight(Actor)
+		&& !UMonsterScentComponent::IsActorTrackingScent(Actor)
+		&& !UMonsterSightFreezeComponent::IsActorRushingAtPlayer(Actor);
 }
 
 AActor* UMonsterAIComponent::GetThreateningCat() const
@@ -263,6 +267,10 @@ void UMonsterAIComponent::UpdateCatProximity()
 			if (UMonsterLightAttractionComponent* LightAttraction = Character->FindComponentByClass<UMonsterLightAttractionComponent>())
 			{
 				LightAttraction->ReleaseForCatReaction();
+			}
+			if (UMonsterScentComponent* Scent = Character->FindComponentByClass<UMonsterScentComponent>())
+			{
+				Scent->ReleaseForCatReaction();
 			}
 			if (UMonsterSightFreezeComponent* SightFreeze = Character->FindComponentByClass<UMonsterSightFreezeComponent>();
 				SightFreeze && SightFreeze->bCatReactionHasPriority && SightFreeze->IsFrozen())

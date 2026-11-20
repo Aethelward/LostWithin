@@ -1,0 +1,106 @@
+#include "Domains/Sessions/McpSessionsPrivate.h"
+
+#include "Foundation/BridgeHelpers/McpHelpers.h"
+#include "EngineWireSubsystem.h"
+#include "Foundation/HandlerUtils/McpHandlerUtils.h"
+
+
+bool HandleMutePlayer(
+    UEngineWireSubsystem* Subsystem,
+    const FString& RequestId,
+    const TSharedPtr<FJsonObject>& Payload,
+    TSharedPtr<FMcpBridgeWebSocket> Socket)
+{
+    FString PlayerName = GetJsonStringField(Payload, TEXT("playerName"), TEXT(""));
+    FString TargetPlayerId = GetJsonStringField(Payload, TEXT("targetPlayerId"), TEXT(""));
+    bool bMuted = GetJsonBoolField(Payload, TEXT("muted"), true);
+    int32 LocalPlayerNum = static_cast<int32>(GetJsonNumberField(Payload, TEXT("localPlayerNum"), 0));
+    bool bSystemWide = GetJsonBoolField(Payload, TEXT("systemWide"), false);
+
+    if (PlayerName.IsEmpty() && TargetPlayerId.IsEmpty())
+    {
+        Subsystem->SendAutomationError(Socket, RequestId,
+            TEXT("Either playerName or targetPlayerId is required"), TEXT("INVALID_ARGUMENT"));
+        return true;
+    }
+
+    FString TargetIdentifier = !TargetPlayerId.IsEmpty() ? TargetPlayerId : PlayerName;
+    bool bSuccess = false;
+    bool bAppliedToVoiceInterface = false;
+    FString StatusMessage;
+
+#if MCP_HAS_ONLINE_SUBSYSTEM
+    {
+        IOnlineSubsystem* OnlineSub = IOnlineSubsystem::Get();
+        if (OnlineSub)
+        {
+            IOnlineVoicePtr VoiceInterface = OnlineSub->GetVoiceInterface();
+            if (VoiceInterface.IsValid())
+            {
+                IOnlineIdentityPtr IdentityInterface = OnlineSub->GetIdentityInterface();
+                if (IdentityInterface.IsValid())
+                {
+                    // The same identity and voice calls on every version: 5.7 and later answered "mute was not applied".
+                    FUniqueNetIdPtr NetId = IdentityInterface->CreateUniquePlayerId(TargetPlayerId);
+                    if (NetId.IsValid())
+                    {
+                        if (bMuted)
+                        {
+                            bSuccess = VoiceInterface->MuteRemoteTalker(LocalPlayerNum, *NetId, bSystemWide);
+                        }
+                        else
+                        {
+                            bSuccess = VoiceInterface->UnmuteRemoteTalker(LocalPlayerNum, *NetId, bSystemWide);
+                        }
+                        StatusMessage = bSuccess
+                            ? FString::Printf(TEXT("Player '%s' %s via OnlineSubsystem"),
+                                *TargetIdentifier, bMuted ? TEXT("muted") : TEXT("unmuted"))
+                            : TEXT("Voice interface mute operation failed");
+                        bAppliedToVoiceInterface = bSuccess;
+                    }
+                    else
+                    {
+                        bSuccess = false;
+                        StatusMessage = TEXT("Unable to resolve target player net ID; mute was not applied");
+                    }
+                }
+                else
+                {
+                    bSuccess = false;
+                    StatusMessage = TEXT("Identity interface not available; mute was not applied");
+                }
+            }
+            else
+            {
+                bSuccess = false;
+                StatusMessage = TEXT("Voice interface not configured; mute was not applied");
+            }
+        }
+        else
+        {
+            bSuccess = false;
+            StatusMessage = TEXT("OnlineSubsystem not available; mute was not applied");
+        }
+    }
+#else
+    {
+        bSuccess = false;
+        StatusMessage = TEXT("No voice system available in this build; mute was not applied");
+    }
+#endif
+
+    // A mute no voice system applied answers NOT_SUPPORTED.
+    TSharedPtr<FJsonObject> ResponseJson = McpHandlerUtils::CreateResultObject();
+    ResponseJson->SetStringField(TEXT("target"), TargetIdentifier);
+    ResponseJson->SetBoolField(TEXT("muted"), bMuted);
+    ResponseJson->SetBoolField(TEXT("success"), bSuccess);
+    ResponseJson->SetBoolField(TEXT("appliedToVoiceInterface"), bAppliedToVoiceInterface);
+    ResponseJson->SetNumberField(TEXT("localPlayerNum"), LocalPlayerNum);
+    ResponseJson->SetBoolField(TEXT("systemWide"), bSystemWide);
+    ResponseJson->SetStringField(TEXT("status"), StatusMessage);
+
+    FString Message = FString::Printf(TEXT("Player '%s' %s: %s"),
+        *TargetIdentifier, bMuted ? TEXT("muted") : TEXT("unmuted"), *StatusMessage);
+    Subsystem->SendAutomationResponse(Socket, RequestId, bSuccess, Message, ResponseJson, bSuccess ? FString() : TEXT("NOT_SUPPORTED"));
+    return true;
+}

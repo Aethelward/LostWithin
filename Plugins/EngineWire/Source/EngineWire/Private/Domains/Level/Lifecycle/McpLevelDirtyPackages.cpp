@@ -1,0 +1,70 @@
+#include "Domains/Level/Lifecycle/McpLevelDirtyPackageLoad.h"
+
+#include "Dom/JsonObject.h"
+#include "Dom/JsonValue.h"
+#include "Engine/Level.h"
+#include "Engine/World.h"
+#include "FileHelpers.h"
+#include "RenderingThread.h"
+
+#include "Safety/McpSafeOperationsAssetSave.h"
+#include "Safety/McpSafeOperationsLevelSave.h"
+
+using McpSafeOperations::McpSafeAssetSave;
+using McpSafeOperations::McpSafeLevelSave;
+
+namespace McpLevelHandlers {
+TArray<UPackage*> AddBlockingDirtyPackages(const TSharedPtr<FJsonObject>& Result) {
+  int32 WorldCount = 0;
+  const TArray<UPackage*> Packages = McpSafeOperations::McpBlockingDirtyPackages(WorldCount);
+  TArray<TSharedPtr<FJsonValue>> Names;
+  for (int32 Index = 0; Index < Packages.Num() && Index < 100; ++Index) {
+    Names.Add(MakeShared<FJsonValueString>(Packages[Index]->GetName()));
+  }
+  Result->SetArrayField(TEXT("unsavedPackages"), Names);
+  Result->SetNumberField(TEXT("unsavedPackageCount"), Packages.Num());
+  return Packages;
+}
+
+FString FirstPackageName(const TArray<UPackage*>& Packages) {
+  return Packages.Num() > 0 ? Packages[0]->GetName() : FString(TEXT("none"));
+}
+
+void AddUnsavedState(const TSharedPtr<FJsonObject>& Result, const ULevel* Level) {
+  // "Is the level saved?" had no read answer; restart_editor validateOnly was the only one.
+  const TArray<UPackage*> Packages = AddBlockingDirtyPackages(Result);
+  // A one-file-per-actor (World Partition) level keeps its actors in external packages:
+  // moving one dirties that package, not the level's.
+  bool bUnsaved = Level && Level->GetOutermost()->IsDirty();
+  if (Level && !bUnsaved) {
+    for (UPackage* External : Level->GetLoadedExternalObjectPackages()) {
+      if (External && External->IsDirty() && Packages.Contains(External)) {
+        bUnsaved = true;
+        break;
+      }
+    }
+  }
+  Result->SetBoolField(TEXT("unsaved"), bUnsaved);
+}
+
+bool SaveBlockingDirtyPackagesForLevelLoad(int32& OutInitialWorldPackages,
+                                           int32& OutInitialContentPackages,
+                                           int32& OutRemainingWorldPackages,
+                                           int32& OutRemainingContentPackages,
+                                           int32& OutFailedPackages) {
+  OutFailedPackages = 0;
+  const TArray<UPackage*> Packages = McpSafeOperations::McpBlockingDirtyPackages(OutInitialWorldPackages);
+  OutInitialContentPackages = Packages.Num() - OutInitialWorldPackages;
+  for (UPackage* Package : Packages) {
+    UWorld* PackageWorld = UWorld::FindWorldInPackage(Package);
+    const bool bSaved = PackageWorld && PackageWorld->PersistentLevel
+        ? McpSafeLevelSave(PackageWorld->PersistentLevel, Package->GetName())
+        : McpSafeAssetSave(Package);
+    OutFailedPackages += bSaved ? 0 : 1;
+  }
+
+  FlushRenderingCommands();
+  McpSafeOperations::McpCountBlockingDirtyPackages(OutRemainingWorldPackages, OutRemainingContentPackages);
+  return OutFailedPackages == 0 && OutRemainingWorldPackages + OutRemainingContentPackages == 0;
+}
+} // namespace McpLevelHandlers

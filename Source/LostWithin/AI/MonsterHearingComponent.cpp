@@ -129,6 +129,23 @@ bool UMonsterHearingComponent::HearNoise(const FLostWithinNoiseEvent& Noise)
 		}
 	}
 
+	// A player footstep: remember exactly where it was. A hunter that chases by ear (the Ghoul's dark stalk) takes it
+	// from here, so this component does not walk to it as well.
+	if (Noise.Kind == ELostWithinNoiseKind::Footstep && IsValid(Noise.NoiseMaker) && Noise.NoiseMaker->IsA<APawn>())
+	{
+		++HeardPlayerCount;
+		LastHeardPlayerLocation = Noise.Location;
+		if (UMonsterLightAverseComponent::IsActorHuntingByEar(GetOwner()))
+		{
+			if (IsInvestigating())
+			{
+				StopInvestigating();
+			}
+			OnNoiseHeard.Broadcast(Noise.Location, Noise.Kind);
+			return true;
+		}
+	}
+
 	InvestigationLocation = ResolveInvestigationTarget(Noise.Location);
 	CurrentNoiseKind = Noise.Kind;
 	if (State == EInvestigationState::Idle)

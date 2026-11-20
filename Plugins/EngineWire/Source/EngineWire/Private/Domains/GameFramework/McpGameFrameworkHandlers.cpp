@@ -1,0 +1,26 @@
+#include "Domains/GameFramework/McpGameFrameworkContext.h"
+
+bool UEngineWireSubsystem::HandleManageGameFrameworkAction(
+    const FString& RequestId,
+    const FString& Action,
+    const TSharedPtr<FJsonObject>& Payload,
+    TSharedPtr<FMcpBridgeWebSocket> RequestingSocket)
+{
+    McpGameFrameworkHandlers::FActionContext Context =
+        McpGameFrameworkHandlers::MakeActionContext(this, RequestId, Payload, RequestingSocket);
+
+    if (!McpGameFrameworkHandlers::ValidateCommonFields(Context))
+    {
+        return true;
+    }
+
+    if (McpGameFrameworkHandlers::HandleCoreClassAction(Context)) return true;
+    if (McpGameFrameworkHandlers::HandleGameModeConfigAction(Context)) return true;
+    if (McpGameFrameworkHandlers::HandlePlayerFlowAction(Context)) return true;
+    if (McpGameFrameworkHandlers::HandleInfoAction(Context)) return true;
+
+    Context.SendError(
+        FString::Printf(TEXT("Unknown subAction: %s"), *Context.SubAction),
+        TEXT("UNKNOWN_SUBACTION"));
+    return true;
+}

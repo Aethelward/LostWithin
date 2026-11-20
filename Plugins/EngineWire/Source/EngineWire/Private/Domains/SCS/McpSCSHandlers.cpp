@@ -1,0 +1,262 @@
+#include "Domains/SCS/McpSCSHandlers.h"
+#include "Domains/SCS/McpSCSPropagate.h"
+
+#include "Core/Compatibility/McpVersionCompatibility.h"
+
+#include "Domains/SCS/McpSCSSupport.h"
+
+#include "Foundation/BridgeHelpers/Blueprints/McpBPActorBinding.h"
+#include "Foundation/BridgeHelpers/McpHelpers.h"
+#include "EngineWireSubsystem.h"
+#include "Foundation/HandlerUtils/McpHandlerUtils.h"
+
+#include "UObject/UnrealType.h"
+#include "GameFramework/Actor.h"
+#include "Components/SceneComponent.h"
+#include "Editor.h"
+#include "Engine/Blueprint.h"
+#include "Engine/Engine.h"
+#include "Engine/SCS_Node.h"
+#include "Engine/SimpleConstructionScript.h"
+#include "Kismet2/BlueprintEditorUtils.h"
+
+namespace McpSCSHandlers {
+void EnableLoadOverlapsForBuoyancy(UBlueprint *Blueprint) {
+  USimpleConstructionScript *SCS = Blueprint->SimpleConstructionScript;
+  AActor *CDO = Blueprint->GeneratedClass ? Cast<AActor>(Blueprint->GeneratedClass->GetDefaultObject()) : nullptr;
+  const bool bBuoyant = SCS && SCS->GetAllNodes().ContainsByPredicate([](const USCS_Node *Node) {
+    for (const UClass *Class = Node ? Node->ComponentClass : nullptr; Class; Class = Class->GetSuperClass()) {
+      if (Class->GetFName() == TEXT("BuoyancyComponent")) {
+        return true;
+      }
+    }
+    return false;
+  });
+  if (!bBuoyant || !CDO) {
+    return;
+  }
+  TArray<UObject *> Instances;
+  CDO->GetArchetypeInstances(Instances);
+  McpEnableWaterOverlaps(CDO);
+  for (UObject *Instance : Instances) {
+    AActor *Actor = Cast<AActor>(Instance);
+    if (IsValid(Actor)) {
+      McpEnableWaterOverlaps(Actor);
+    }
+  }
+}
+}
+
+bool FSCSHandlers::bSaveScsChanges = true;
+
+void FSCSHandlers::FinalizeBlueprintSCSChange(UBlueprint *Blueprint,
+                                              bool &bOutCompiled,
+                                              bool &bOutSaved) {
+  bOutCompiled = false;
+  bOutSaved = false;
+
+  McpSCSHandlers::EnableLoadOverlapsForBuoyancy(Blueprint);
+  FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
+  bOutCompiled = McpSafeCompileBlueprint(Blueprint);
+
+  // save false leaves the Blueprint unsaved: every edit but modify saved it anyway while the schema took save false.
+  if (!bSaveScsChanges) {
+    return;
+  }
+  bOutSaved = McpSafeAssetSave(Blueprint);
+  if (!bOutSaved) {
+    UE_LOG(LogEngineWireSubsystem, Warning,
+           TEXT("McpSafeAssetSave reported failure for '%s' after SCS "
+                "change"),
+           *Blueprint->GetPathName());
+  }
+}
+
+void FSCSHandlers::FinalizeTemplateEdit(UBlueprint *Blueprint, const McpScsPropagate::FDefaults &Defaults,
+                                        const TSharedPtr<FJsonObject> &Result, bool &bOutCompiled, bool &bOutSaved) {
+  TArray<FString> UpdatedInstances;
+  Defaults.Propagate(&UpdatedInstances);
+  FinalizeBlueprintSCSChange(Blueprint, bOutCompiled, bOutSaved);
+  // The recompile re-creates the placed actors; one that still shows the old value takes the new one now.
+  TArray<FString> UpdatedAgain;
+  Defaults.Propagate(&UpdatedAgain);
+  for (const FString &Path : UpdatedAgain) {
+    UpdatedInstances.AddUnique(Path);
+  }
+  if (UpdatedInstances.Num() > 0) {
+    Result->SetNumberField(TEXT("instancesUpdated"), UpdatedInstances.Num());
+    Result->SetArrayField(TEXT("updatedInstances"), McpScsPropagate::ToJsonStrings(UpdatedInstances));
+  }
+}
+
+namespace McpSCSHandlers {
+
+TSharedPtr<FJsonObject> SCSFail(TSharedPtr<FJsonObject> Result, const FString &Error, const TCHAR *Code) {
+  Result->SetBoolField(TEXT("success"), false);
+  Result->SetStringField(TEXT("error"), Error);
+  Result->SetStringField(TEXT("errorCode"), Code);
+  return Result;
+}
+
+UBlueprint *LoadScsBlueprint(const FString &BlueprintPath, const TSharedPtr<FJsonObject> &Result, bool bRequireScs) {
+  // Every SCS edit compiles the Blueprint, which during Play can take the editor down: only add refused it.
+  bool bPlaying = GEditor->IsPlaySessionInProgress();
+  for (const FWorldContext &Context : GEngine->GetWorldContexts()) {
+    bPlaying = bPlaying || Context.WorldType == EWorldType::PIE || Context.WorldType == EWorldType::Game;
+  }
+  if (bPlaying) {
+    SCSFail(Result, TEXT("SCS operations cannot modify Blueprints during Play In Editor (PIE). Please stop the play "
+                         "session first."), TEXT("PIE_ACTIVE"));
+    return nullptr;
+  }
+  FString NormalizedPath;
+  FString ErrorMsg;
+  UBlueprint *Blueprint = LoadBlueprintAsset(BlueprintPath, NormalizedPath, ErrorMsg);
+  if (!Blueprint) {
+    SCSFail(Result, ErrorMsg.IsEmpty() ? FString::Printf(TEXT("Blueprint asset not found at path: %s"), *BlueprintPath) : ErrorMsg,
+            TEXT("ASSET_NOT_FOUND"));
+    return nullptr;
+  }
+  if (bRequireScs && !Blueprint->SimpleConstructionScript) {
+    SCSFail(Result, FString::Printf(TEXT("Blueprint has no SimpleConstructionScript: %s"), *BlueprintPath), TEXT("SCS_NOT_FOUND"));
+    return nullptr;
+  }
+  return Blueprint;
+}
+
+FString GetSCSNodeName(const USCS_Node *Node) {
+  if (!Node || !Node->GetVariableName().IsValid()) {
+    return FString();
+  }
+  return Node->GetVariableName().ToString();
+}
+
+// A component of that exact name wins over the alias: the interaction tools name their scene root "Root", and
+// attachTo "Root" landed on the DefaultSceneRoot above it.
+bool IsSCSRootAlias(USimpleConstructionScript *SCS, const FString &Name) {
+  return (Name.Equals(TEXT("RootComponent"), ESearchCase::IgnoreCase) ||
+          Name.Equals(TEXT("DefaultSceneRoot"), ESearchCase::IgnoreCase) ||
+          Name.Equals(TEXT("Root"), ESearchCase::IgnoreCase)) &&
+         !FindScsNodeByName(SCS, Name);
+}
+
+bool IsSCSRootNode(USimpleConstructionScript *SCS, USCS_Node *Node) {
+  return SCS && Node && SCS->GetRootNodes().Contains(Node);
+}
+
+// The root set is not the root: on a Character every top node is the capsule's child, and a component with no
+// transform sits in the root set too, so its first node put a component under a sibling or a movement component.
+USCS_Node *SCSRootAliasNode(USimpleConstructionScript *SCS) {
+  USCS_Node *Node = nullptr;
+  if (!SCS->GetSceneRootComponentTemplate(false, &Node)) {
+    Node = SCS->GetDefaultSceneRootNode();
+  }
+  return Node && Node->GetSCS() == SCS ? Node : nullptr;
+}
+
+void AddSCSNodeVerification(TSharedPtr<FJsonObject> Result,
+                            USimpleConstructionScript *SCS, USCS_Node *Node) {
+  if (!Result || !SCS || !Node) {
+    return;
+  }
+
+  const FString NodeName = GetSCSNodeName(Node);
+  TSharedPtr<FJsonObject> Verification = MakeShared<FJsonObject>();
+  Verification->SetStringField(TEXT("componentName"), NodeName);
+  Verification->SetBoolField(
+      TEXT("existsInSCS"), FindScsNodeByName(SCS, NodeName) == Node);
+  Verification->SetNumberField(TEXT("childCount"), Node->GetChildNodes().Num());
+  if (Node->ComponentClass) {
+    Verification->SetStringField(TEXT("componentClass"),
+                                 Node->ComponentClass->GetName());
+  }
+
+  // A node with no SCS parent is not necessarily at the root: it may be attached
+  // to an inherited native component, or be a non-scene component sitting at the
+  // top of the tree. Reporting "(root)" and isRoot:true for both was how a
+  // RotatingMovementComponent came back looking like the Blueprint's root.
+  USCS_Node *ParentNode = SCS->FindParentNode(Node);
+  // Native or a parent Blueprint's part: either is recorded on the node by name (SetParent).
+  const bool bNativeParent = !ParentNode && !Node->ParentComponentOrVariableName.IsNone();
+  const bool bSceneComponent =
+      Node->ComponentClass &&
+      Node->ComponentClass->IsChildOf(USceneComponent::StaticClass());
+  if (ParentNode) {
+    Verification->SetStringField(TEXT("parent"), GetSCSNodeName(ParentNode));
+  } else if (bNativeParent) {
+    Verification->SetStringField(TEXT("parent"),
+                                 Node->ParentComponentOrVariableName.ToString());
+    Verification->SetBoolField(TEXT("parentIsInherited"), true);
+  } else if (!bSceneComponent) {
+    // Non-scene components have no attachment at all; the SCS just holds them.
+    Verification->SetStringField(TEXT("parent"), TEXT("(none - not a scene component)"));
+  } else {
+    Verification->SetStringField(TEXT("parent"), TEXT("(root)"));
+  }
+  Verification->SetBoolField(TEXT("isRoot"),
+                             bSceneComponent && !ParentNode && !bNativeParent &&
+                                 IsSCSRootNode(SCS, Node));
+  Verification->SetBoolField(TEXT("parentVerified"),
+                             ParentNode != nullptr || bNativeParent ||
+                                 !bSceneComponent || IsSCSRootNode(SCS, Node));
+
+  if (USceneComponent *SceneComp =
+          Cast<USceneComponent>(Node->ComponentTemplate)) {
+    const FTransform Relative = SceneComp->GetRelativeTransform();
+    TSharedPtr<FJsonObject> Transform = MakeShared<FJsonObject>();
+    Transform->SetArrayField(TEXT("location"), McpHandlerUtils::VectorToJsonArray(Relative.GetLocation()));
+    Transform->SetArrayField(TEXT("rotation"), McpHandlerUtils::RotatorToJsonArray(Relative.GetRotation().Rotator()));
+    Transform->SetArrayField(TEXT("scale"), McpHandlerUtils::VectorToJsonArray(Relative.GetScale3D()));
+    Verification->SetObjectField(TEXT("transform"), Transform);
+  }
+
+  Result->SetObjectField(TEXT("scsVerification"), Verification);
+}
+
+bool SCSParentMatches(USimpleConstructionScript *SCS, USCS_Node *Node,
+                      const FString &ExpectedParentName) {
+  if (!SCS || !Node) {
+    return false;
+  }
+  USCS_Node *ActualParent = SCS->FindParentNode(Node);
+  if (ExpectedParentName.IsEmpty()) {
+    // No specific parent requested: accept the engine's default placements — the node is
+    // root, is not yet parented, or was auto-attached as a child of the root (the default
+    // for a 2nd component added without an explicit parent).
+    return ActualParent == nullptr || IsSCSRootNode(SCS, Node) ||
+           IsSCSRootNode(SCS, ActualParent);
+  }
+  if (IsSCSRootAlias(SCS, ExpectedParentName)) {
+    return ActualParent ? IsSCSRootNode(SCS, ActualParent)
+                        : IsSCSRootNode(SCS, Node);
+  }
+  if (ActualParent) {
+    return GetSCSNodeName(ActualParent)
+        .Equals(ExpectedParentName, ESearchCase::IgnoreCase);
+  }
+  // A node attached to an inherited component, native or a parent Blueprint's, has no SCS parent: the
+  // parent is recorded on the node itself. Verifying only the SCS tree rejected
+  // every such attach as "parent did not match" after it had already worked.
+  if (Node->ParentComponentOrVariableName.IsNone()) {
+    return false;
+  }
+  const FString StoredParent = Node->ParentComponentOrVariableName.ToString();
+  if (StoredParent.Equals(ExpectedParentName, ESearchCase::IgnoreCase)) {
+    return true;
+  }
+  // SetParent stores the component's object name (CollisionCylinder) while
+  // callers name the property that exposes it (CapsuleComponent). Resolve the
+  // requested name on the owner CDO and compare the component itself.
+  UClass *OwnerClass = SCS->GetOwnerClass();
+  AActor *CDO = OwnerClass ? Cast<AActor>(OwnerClass->GetDefaultObject()) : nullptr;
+  if (!CDO) {
+    return false;
+  }
+  const FObjectProperty *Held = McpFindComponentProperty(OwnerClass, ExpectedParentName, false);
+  const UObject *Value = Held && Held->PropertyClass->IsChildOf(USceneComponent::StaticClass())
+                            ? Held->GetObjectPropertyValue_InContainer(CDO) : nullptr;
+  return Value && Value->GetName().Equals(StoredParent, ESearchCase::IgnoreCase);
+}
+
+}
+

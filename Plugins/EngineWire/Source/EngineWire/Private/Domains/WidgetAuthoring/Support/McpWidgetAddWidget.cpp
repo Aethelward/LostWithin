@@ -1,0 +1,98 @@
+#include "Domains/WidgetAuthoring/McpWidgetActions.h"
+#include "Domains/WidgetAuthoring/Support/McpWidgetBPLoading.h"
+#include "Domains/WidgetAuthoring/Support/McpWidgetTreeMutation.h"
+#include "Domains/WidgetAuthoring/Support/McpWidgetValidate.h"
+#include "Kismet2/BlueprintEditorUtils.h"
+
+#include "Foundation/BridgeHelpers/McpHelpers.h"
+#include "Foundation/HandlerUtils/McpHandlerUtils.h"
+#include "EngineWireSubsystem.h"
+#include "WidgetBlueprint.h"
+
+namespace WidgetAuthoringHandlers
+{
+using namespace WidgetAuthoringHelpers;
+
+bool AddConfiguredWidget(
+    UEngineWireSubsystem& Subsystem,
+    const FString& RequestId,
+    const TSharedPtr<FJsonObject>& Payload,
+    TSharedPtr<FMcpBridgeWebSocket> RequestingSocket,
+    TSharedPtr<FJsonObject> ResultJson,
+    UClass* WidgetClass,
+    const TCHAR* DefaultSlotName,
+    const TCHAR* Label,
+    TFunctionRef<void(UWidget*)> Configure)
+{
+    const FString WidgetPath = GetJsonStringField(Payload, TEXT("widgetPath"));
+    if (WidgetPath.IsEmpty())
+    {
+        Subsystem.SendAutomationError(RequestingSocket, RequestId, TEXT("Missing required parameter: widgetPath"), TEXT("MISSING_PARAMETER"));
+        return true;
+    }
+
+    FString SlotName = GetJsonStringField(Payload, TEXT("slotName"), DefaultSlotName);
+    UWidgetBlueprint* WidgetBP = LoadWidgetBlueprintOrReply(Subsystem, RequestId, RequestingSocket, WidgetPath);
+    if (!WidgetBP)
+    {
+        return true;
+    }
+
+    // Unnamed, a second add is a second widget (it used to re-configure the first one); named, a
+    // taken name is refused before anything is built.
+    if (!Payload->HasField(TEXT("slotName")) && WidgetBP->WidgetTree->FindWidget(FName(*SlotName)))
+    {
+        SlotName = McpFreeWidgetName(WidgetBP, FName(*SlotName));
+    }
+    const FString NameConflict = McpWidgetNameConflict(WidgetBP, FName(*SlotName));
+    if (!NameConflict.IsEmpty())
+    {
+        Subsystem.SendAutomationError(RequestingSocket, RequestId, FString::Printf(
+            TEXT("Nothing was added: %s. Pick another slotName, e.g. '%s'."), *NameConflict, *McpFreeWidgetName(WidgetBP, FName(*SlotName))),
+            TEXT("NAME_CONFLICT"));
+        return true;
+    }
+
+    UWidget* Widget = WidgetBP->WidgetTree->ConstructWidget<UWidget>(WidgetClass, FName(*SlotName));
+
+    // Registering the GUID first keeps compilation from tripping the
+    // "Variable was deleted but still has a GUID" ensure.
+    RegisterWidgetGuid(WidgetBP, Widget);
+    Configure(Widget);
+
+    // SafeAddWidgetToTree handles root replacement and applies canvas geometry;
+    // a failed insert rolls the widget back out.
+    if (!SafeAddWidgetToTree(WidgetBP, Widget, ResolveParentSlotName(Payload), Payload))
+    {
+        UnregisterWidgetGuid(WidgetBP, Widget);
+        WidgetBP->WidgetTree->RemoveWidget(Widget);
+        Subsystem.SendAutomationError(RequestingSocket, RequestId, FString::Printf(TEXT("Failed to add %s to widget tree"), Label), TEXT("TREE_ERROR"));
+        return true;
+    }
+
+    FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(WidgetBP);
+
+    FString ValidationError;
+    if (!ValidateWidgetCreation(WidgetBP, SlotName, ValidationError))
+    {
+        // The widget comes back out, so a failed compile does not leave the Blueprint broken.
+        UnregisterWidgetGuid(WidgetBP, Widget);
+        WidgetBP->WidgetTree->RemoveWidget(Widget);
+        MarkWidgetBlueprintModifiedAndSave(WidgetBP);
+        ValidationError += TEXT(" The widget was removed again.");
+        Subsystem.SendAutomationError(RequestingSocket, RequestId, ValidationError, TEXT("ENGINE_ERROR"));
+        return true;
+    }
+    // Every widget added here is a variable, so the generated class gets its property now: an edit_graph
+    // step naming it right after this call failed as "not marked as a variable" until a compile.
+    CompileAndSaveWidgetBlueprint(WidgetBP, ResultJson);
+
+    const FString Message = FString::Printf(TEXT("Added %s"), Label);
+    ResultJson->SetStringField(TEXT("message"), Message);
+    ResultJson->SetStringField(TEXT("widgetPath"), WidgetAuthoringHelpers::WidgetBlueprintPackagePath(WidgetBP));
+    ResultJson->SetStringField(TEXT("slotName"), SlotName);
+    McpHandlerUtils::AddVerification(ResultJson, WidgetBP);
+    Subsystem.SendAutomationResponse(RequestingSocket, RequestId, true, Message, ResultJson);
+    return true;
+}
+}

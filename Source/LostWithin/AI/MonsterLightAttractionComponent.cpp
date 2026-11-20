@@ -88,7 +88,18 @@ bool UMonsterLightAttractionComponent::HasClearView(const FVector& From, const F
 bool UMonsterLightAttractionComponent::IsDrawnBy(const ALostWithinCharacter* PlayerChar) const
 {
 	const AActor* Owner = GetOwner();
-	if (!IsValid(Owner) || !IsValid(PlayerChar) || PlayerChar->IsDead() || !PlayerChar->IsFlashlightOn())
+	if (!IsValid(Owner) || !IsValid(PlayerChar) || PlayerChar->IsDead())
+	{
+		return false;
+	}
+	if (!bRequireFlashlight)
+	{
+		// Near-sighted: only a player this close, with nothing between, is seen; light makes no difference.
+		const FVector Eye = Owner->GetActorLocation() + FVector(0.0f, 0.0f, EyeHeight);
+		const FVector Body = PlayerChar->GetActorLocation();
+		return FVector::Dist(Eye, Body) <= AttractionRadius && HasClearView(Eye, Body, PlayerChar);
+	}
+	if (!PlayerChar->IsFlashlightOn())
 	{
 		return false;
 	}

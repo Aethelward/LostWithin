@@ -1,6 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Inventory/InventoryComponent.h"
+
+#include "Gameplay/LostWithinScentSubsystem.h"
 #include "Engine/World.h"
 #include "GameFramework/Actor.h"
 #include "GameFramework/Pawn.h"
@@ -148,6 +150,10 @@ bool UInventoryComponent::AddItem(const FInventoryItem& ItemToAdd, int32& OutRem
 
 	const int32 EffectiveMaxStack = FMath::Max(1, ItemToAdd.MaxStackSize);
 	const int32 InitialRemaining = OutRemainingQuantity;
+	if (const UWorld* World = GetWorld(); World && !FirstHeldTime.Contains(ItemToAdd.ItemID))
+	{
+		FirstHeldTime.Add(ItemToAdd.ItemID, World->GetTimeSeconds());
+	}
 
 	// First fill existing stacks of the same ItemID (keeping distinct battery charges separate)
 	for (FInventoryItem& ExistingItem : Items)
@@ -267,11 +273,20 @@ bool UInventoryComponent::DropItemAtSlot(int32 SlotIndex, int32 Quantity)
 		return false;
 	}
 
-	SpawnWorldPickupForItem(DroppedItem);
+	const ULostWithinScentSubsystem* Scent = ULostWithinScentSubsystem::Get(this);
+	const bool bCarriesScent = Scent && GetSecondsHeld(DroppedItem.ItemID) >= Scent->ItemScentMinHeldSeconds;
+	SpawnWorldPickupForItem(DroppedItem, bCarriesScent);
 	return true;
 }
 
-void UInventoryComponent::SpawnWorldPickupForItem(const FInventoryItem& DroppedItem) const
+float UInventoryComponent::GetSecondsHeld(FName ItemID) const
+{
+	const UWorld* World = GetWorld();
+	const double* Since = FirstHeldTime.Find(ItemID);
+	return (World && Since) ? static_cast<float>(World->GetTimeSeconds() - *Since) : 0.0f;
+}
+
+void UInventoryComponent::SpawnWorldPickupForItem(const FInventoryItem& DroppedItem, bool bCarriesScent) const
 {
 	AActor* Owner = GetOwner();
 	UWorld* World = GetWorld();
@@ -323,6 +338,13 @@ void UInventoryComponent::SpawnWorldPickupForItem(const FInventoryItem& DroppedI
 		DroppedPickup->ApplyItemData(DroppedItem);
 		const FVector LaunchVelocity = ForwardDir * 220.0f + FVector(0.0f, 0.0f, 160.0f);
 		DroppedPickup->DropWithPhysics(DropStart, LaunchVelocity, { Owner });
+		if (bCarriesScent)
+		{
+			if (ULostWithinScentSubsystem* Scent = ULostWithinScentSubsystem::Get(this))
+			{
+				Scent->AddItemScent(DroppedPickup);
+			}
+		}
 	}
 }
 

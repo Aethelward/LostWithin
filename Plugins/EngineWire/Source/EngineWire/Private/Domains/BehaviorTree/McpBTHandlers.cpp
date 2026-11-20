@@ -1,0 +1,91 @@
+#include "Core/Compatibility/McpVersionCompatibility.h"
+#include "Foundation/HandlerUtils/McpOptionalModule.h"
+#include "Core/Routing/McpConsolidatedActionRouting.h"
+#include "Domains/BehaviorTree/McpBTPrivate.h"
+
+#include "Modules/ModuleManager.h"
+
+namespace {
+
+bool BehaviorTreeEditorModuleRequired(const FString& SubAction)
+{
+#if MCP_HAS_BEHAVIOR_TREE_GRAPH
+  return SubAction != TEXT("get_tree");
+#else
+  return SubAction != TEXT("create") && SubAction != TEXT("get_tree");
+#endif
+}
+
+bool EnsureBehaviorTreeEditorModule(
+    UEngineWireSubsystem* Subsystem,
+    const McpBehaviorTreeHandlers::FRequestContext& Context,
+    const FString& SubAction)
+{
+  if (!BehaviorTreeEditorModuleRequired(SubAction) || McpLoadOptionalModule(TEXT("BehaviorTreeEditor"))) {
+    return true;
+  }
+
+  Subsystem->SendAutomationError(
+      Context.RequestingSocket,
+      Context.RequestId,
+      TEXT("BehaviorTreeEditor plugin is not enabled in this project. Enable the Behavior Tree Editor plugin to use Behavior Tree graph editing features."),
+      TEXT("BEHAVIORTREEEDITOR_PLUGIN_NOT_ENABLED"));
+  return false;
+}
+
+}
+
+bool UEngineWireSubsystem::HandleBehaviorTreeAction(
+    const FString& RequestId,
+    const FString& Action,
+    const TSharedPtr<FJsonObject>& Payload,
+    TSharedPtr<FMcpBridgeWebSocket> RequestingSocket)
+{
+  // manage_ai's dispatcher calls this only for a sub-action of McpConsolidatedActions::BehaviorTree() it read here.
+  const FString SubAction = McpConsolidatedActions::GetPayloadSubAction(Payload);
+
+  const McpBehaviorTreeHandlers::FRequestContext Context{
+      RequestId, Payload, RequestingSocket};
+  if (!EnsureBehaviorTreeEditorModule(this, Context, SubAction)) {
+    return true;
+  }
+
+  if (SubAction == TEXT("create")) {
+    return McpBehaviorTreeHandlers::HandleCreate(this, Context);
+  }
+  if (SubAction == TEXT("get_tree")) {
+    return McpBehaviorTreeHandlers::HandleGetTree(this, Context);
+  }
+
+  McpBehaviorTreeHandlers::FGraphContext GraphContext{nullptr, nullptr};
+  if (!McpBehaviorTreeHandlers::LoadBehaviorTreeForGraph(this, Context,
+                                                         GraphContext)) {
+    return true;
+  }
+
+  if (SubAction == TEXT("add_node")) {
+    return McpBehaviorTreeHandlers::HandleAddNode(this, Context, GraphContext);
+  }
+  if (SubAction == TEXT("connect_nodes")) {
+    return McpBehaviorTreeHandlers::HandleConnectNodes(this, Context,
+                                                       GraphContext);
+  }
+  if (SubAction == TEXT("remove_node") || SubAction == TEXT("break_connections")) {
+    return McpBehaviorTreeHandlers::HandleUnlinkNode(this, Context, GraphContext,
+                                                     SubAction == TEXT("remove_node"));
+  }
+  if (SubAction == TEXT("set_node_properties")) {
+    return McpBehaviorTreeHandlers::HandleSetNodeProperties(this, Context,
+                                                            GraphContext);
+  }
+  if (SubAction == TEXT("add_subnode")) {
+    return McpBehaviorTreeHandlers::HandleAddSubnode(this, Context,
+                                                     GraphContext);
+  }
+
+  SendAutomationError(RequestingSocket, RequestId,
+                      FString::Printf(TEXT("Unknown subAction: %s"),
+                                      *SubAction),
+                      TEXT("INVALID_SUBACTION"));
+  return true;
+}

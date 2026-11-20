@@ -8,6 +8,7 @@
 #include "EngineUtils.h"
 #include "HAL/PlatformTime.h"
 #include "Kismet/GameplayStatics.h"
+#include "TimerManager.h"
 #include "LostWithinCharacter.h"
 
 namespace
@@ -150,4 +151,95 @@ bool ULostWithinLightSubsystem::IsPointLit(const FVector& Point, const AActor* I
 		return true;
 	}
 	return IsPointTorchLit(Point, Ignore, Player, OutLightLocation);
+}
+
+void ULostWithinLightSubsystem::GetLitTorchLocations(TArray<FVector>& OutLocations) const
+{
+	RefreshIfStale();
+	OutLocations.Reset();
+	for (const TWeakObjectPtr<UPointLightComponent>& Weak : TorchLights)
+	{
+		const UPointLightComponent* Light = Weak.Get();
+		if (Light && Light->IsVisible() && Light->Intensity > 0.0f && Light->IsRegistered())
+		{
+			OutLocations.Add(Light->GetComponentLocation());
+		}
+	}
+}
+
+UPointLightComponent* ULostWithinLightSubsystem::FindLitTorchNear(const FVector& Point, float Radius) const
+{
+	RefreshIfStale();
+	UPointLightComponent* Best = nullptr;
+	float BestDistanceSquared = FMath::Square(Radius);
+	for (const TWeakObjectPtr<UPointLightComponent>& Weak : TorchLights)
+	{
+		UPointLightComponent* Light = Weak.Get();
+		if (!Light || !Light->IsVisible() || Light->Intensity <= 0.0f || !Light->IsRegistered())
+		{
+			continue;
+		}
+		const float DistanceSquared = FVector::DistSquared(Light->GetComponentLocation(), Point);
+		if (DistanceSquared <= BestDistanceSquared)
+		{
+			BestDistanceSquared = DistanceSquared;
+			Best = Light;
+		}
+	}
+	return Best;
+}
+
+bool ULostWithinLightSubsystem::SnuffTorch(UPointLightComponent* Light, float Seconds)
+{
+	UWorld* World = GetWorld();
+	if (!World || !Light || !Light->IsVisible() || IsTorchSnuffed(Light))
+	{
+		return false;
+	}
+	Light->SetVisibility(false);
+	FTimerHandle& Handle = SnuffedTorches.Add(Light);
+	if (Seconds > 0.0f)
+	{
+		World->GetTimerManager().SetTimer(Handle,
+			FTimerDelegate::CreateUObject(this, &ULostWithinLightSubsystem::RelightTorch, TWeakObjectPtr<UPointLightComponent>(Light)),
+			Seconds, false);
+	}
+	return true;
+}
+
+bool ULostWithinLightSubsystem::IsTorchSnuffed(const UPointLightComponent* Light) const
+{
+	return Light && SnuffedTorches.Contains(TWeakObjectPtr<UPointLightComponent>(const_cast<UPointLightComponent*>(Light)));
+}
+
+void ULostWithinLightSubsystem::RelightTorch(TWeakObjectPtr<UPointLightComponent> Light)
+{
+	if (FTimerHandle* Handle = SnuffedTorches.Find(Light))
+	{
+		if (UWorld* World = GetWorld())
+		{
+			World->GetTimerManager().ClearTimer(*Handle);
+		}
+		SnuffedTorches.Remove(Light);
+	}
+	if (UPointLightComponent* Lamp = Light.Get())
+	{
+		Lamp->SetVisibility(true);
+	}
+}
+
+void ULostWithinLightSubsystem::RelightAllSnuffedTorches()
+{
+	TArray<TWeakObjectPtr<UPointLightComponent>> Snuffed;
+	SnuffedTorches.GetKeys(Snuffed);
+	for (const TWeakObjectPtr<UPointLightComponent>& Light : Snuffed)
+	{
+		RelightTorch(Light);
+	}
+}
+
+void ULostWithinLightSubsystem::Deinitialize()
+{
+	RelightAllSnuffedTorches();
+	Super::Deinitialize();
 }

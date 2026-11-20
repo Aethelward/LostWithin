@@ -1,0 +1,163 @@
+// Copyright (c) 2025 EngineWire Contributors
+
+#include "EngineWireSubsystem.h"
+#include "Foundation/BridgeHelpers/McpHelpers.h"
+#include "Foundation/HandlerUtils/McpHandlerUtils.h"
+
+#include "Dom/JsonObject.h"
+#include "Misc/PackageName.h"
+
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "ISourceControlModule.h"
+#include "ISourceControlProvider.h"
+#include "SourceControlHelpers.h"
+
+bool UEngineWireSubsystem::HandleGetSourceControlState(
+    const FString &RequestId,
+    const TSharedPtr<FJsonObject> &Payload,
+    TSharedPtr<FMcpBridgeWebSocket> Socket) {
+
+  TArray<FString> AssetPaths = McpGetStringListField(Payload, TEXT("assetPaths"), TEXT("assetPath"));
+
+  if (AssetPaths.Num() == 0) {
+    SendAutomationError(Socket, RequestId,
+                        TEXT("assetPath (string) or assetPaths (array) required"),
+                        TEXT("INVALID_ARGUMENT"));
+    return true;
+  }
+
+  // recursive (declared, never read): also report every /Game package the
+  // assets depend on, transitively.
+  // ponytail: capped at 512 packages; page it if a real project needs more.
+  if (GetJsonBoolField(Payload, TEXT("recursive"), false)) {
+    IAssetRegistry &Registry = FAssetRegistryModule::GetRegistry();
+    TSet<FString> Seen;
+    for (const FString &Path : AssetPaths) {
+      Seen.Add(FPackageName::ObjectPathToPackageName(SanitizeProjectRelativePath(Path)));
+    }
+    for (int32 Index = 0; Index < AssetPaths.Num() && AssetPaths.Num() < 512; ++Index) {
+      TArray<FName> Dependencies;
+      Registry.GetDependencies(FName(*FPackageName::ObjectPathToPackageName(SanitizeProjectRelativePath(AssetPaths[Index]))), Dependencies);
+      for (const FName &Dependency : Dependencies) {
+        const FString DependencyName = Dependency.ToString();
+        // A dependency outside a path-restricted caller's prefixes is neither walked nor reported.
+        if (DependencyName.StartsWith(TEXT("/Game/")) && !Seen.Contains(DependencyName) &&
+            McpCapabilityPrincipal::ActiveRequestPermitsPath(DependencyName)) {
+          Seen.Add(DependencyName);
+          AssetPaths.Add(DependencyName);
+        }
+      }
+    }
+  }
+
+  if (!ISourceControlModule::Get().IsEnabled()) {
+    TSharedPtr<FJsonObject> Result = McpHandlerUtils::CreateResultObject();
+    Result->SetBoolField(TEXT("sourceControlEnabled"), false);
+    Result->SetStringField(TEXT("message"), TEXT("Source control is not enabled"));
+    SendAutomationResponse(Socket, RequestId, true,
+                           TEXT("Source control disabled"), Result, FString());
+    return true;
+  }
+
+  ISourceControlProvider &SourceControlProvider =
+      ISourceControlModule::Get().GetProvider();
+
+  TArray<TSharedPtr<FJsonValue>> StatesArray;
+
+  for (const FString &AssetPath : AssetPaths) {
+    const FString SafeAssetPath = SanitizeProjectRelativePath(AssetPath);
+    TSharedPtr<FJsonObject> StateObj = McpHandlerUtils::CreateResultObject();
+    StateObj->SetStringField(TEXT("assetPath"), SafeAssetPath.IsEmpty() ? AssetPath : SafeAssetPath);
+
+    if (SafeAssetPath.IsEmpty()) {
+      StateObj->SetBoolField(TEXT("exists"), false);
+      StateObj->SetStringField(TEXT("state"), TEXT("invalid_path"));
+      StatesArray.Add(MakeShared<FJsonValueObject>(StateObj));
+      continue;
+    }
+
+    // Check if asset exists
+    if (!McpAssetExists(SafeAssetPath)) {
+      StateObj->SetBoolField(TEXT("exists"), false);
+      StateObj->SetStringField(TEXT("state"), TEXT("not_found"));
+      StatesArray.Add(MakeShared<FJsonValueObject>(StateObj));
+      continue;
+    }
+
+    StateObj->SetBoolField(TEXT("exists"), true);
+
+    // The engine's resolution, which finds the package on disk first, as submit does: joining the asset extension
+    // succeeded for every mounted package, so a level's state was asked for Level.uasset.
+    const FString FilePath = SourceControlHelpers::PackageFilename(FPackageName::ObjectPathToPackageName(SafeAssetPath));
+
+    // Get source control state
+    FSourceControlStatePtr SourceControlState = SourceControlProvider.GetState(
+        FilePath, EStateCacheUsage::Use);
+
+    if (!SourceControlState.IsValid()) {
+      StateObj->SetStringField(TEXT("state"), TEXT("unknown"));
+      StatesArray.Add(MakeShared<FJsonValueObject>(StateObj));
+      continue;
+    }
+
+    // Populate state info
+    StateObj->SetBoolField(TEXT("isSourceControlled"), SourceControlState->IsSourceControlled());
+    StateObj->SetBoolField(TEXT("isCheckedOut"), SourceControlState->IsCheckedOut());
+    StateObj->SetBoolField(TEXT("isCurrent"), SourceControlState->IsCurrent());
+    StateObj->SetBoolField(TEXT("isAdded"), SourceControlState->IsAdded());
+    StateObj->SetBoolField(TEXT("isDeleted"), SourceControlState->IsDeleted());
+    StateObj->SetBoolField(TEXT("isModified"), SourceControlState->IsModified());
+    StateObj->SetBoolField(TEXT("isIgnored"), SourceControlState->IsIgnored());
+    StateObj->SetBoolField(TEXT("isUnknown"), SourceControlState->IsUnknown());
+    StateObj->SetBoolField(TEXT("canCheckIn"), SourceControlState->CanCheckIn());
+    StateObj->SetBoolField(TEXT("canCheckout"), SourceControlState->CanCheckout());
+    StateObj->SetBoolField(TEXT("canRevert"), SourceControlState->CanRevert());
+    StateObj->SetBoolField(TEXT("canEdit"), SourceControlState->CanEdit());
+    StateObj->SetBoolField(TEXT("canDelete"), SourceControlState->CanDelete());
+    StateObj->SetBoolField(TEXT("canAdd"), SourceControlState->CanAdd());
+    StateObj->SetBoolField(TEXT("isConflicted"), SourceControlState->IsConflicted());
+
+    // Check if checked out by other
+    FString WhoCheckedOut;
+    bool bIsCheckedOutOther = SourceControlState->IsCheckedOutOther(&WhoCheckedOut);
+    StateObj->SetBoolField(TEXT("isCheckedOutOther"), bIsCheckedOutOther);
+    if (bIsCheckedOutOther && !WhoCheckedOut.IsEmpty()) {
+      StateObj->SetStringField(TEXT("checkedOutBy"), WhoCheckedOut);
+    }
+
+    // Determine primary state string
+    FString StateString = TEXT("unknown");
+    if (!SourceControlState->IsSourceControlled()) {
+      StateString = TEXT("not_controlled");
+    } else if (SourceControlState->IsAdded()) {
+      StateString = TEXT("added");
+    } else if (SourceControlState->IsDeleted()) {
+      StateString = TEXT("deleted");
+    } else if (SourceControlState->IsConflicted()) {
+      StateString = TEXT("conflicted");
+    } else if (SourceControlState->IsCheckedOut()) {
+      StateString = TEXT("checked_out");
+    } else if (SourceControlState->IsModified()) {
+      StateString = TEXT("modified");
+    } else if (!SourceControlState->IsCurrent()) {
+      StateString = TEXT("out_of_date");
+    } else {
+      StateString = TEXT("current");
+    }
+    StateObj->SetStringField(TEXT("state"), StateString);
+
+    // Get display name
+    StateObj->SetStringField(TEXT("displayName"), SourceControlState->GetDisplayName().ToString());
+
+    StatesArray.Add(MakeShared<FJsonValueObject>(StateObj));
+  }
+
+  TSharedPtr<FJsonObject> Result = McpHandlerUtils::CreateResultObject();
+  Result->SetBoolField(TEXT("sourceControlEnabled"), true);
+  Result->SetArrayField(TEXT("states"), StatesArray);
+  Result->SetNumberField(TEXT("queriedCount"), AssetPaths.Num());
+
+  SendAutomationResponse(Socket, RequestId, true,
+                         TEXT("Source control state retrieved"), Result, FString());
+  return true;
+}

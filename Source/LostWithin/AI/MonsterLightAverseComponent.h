@@ -12,6 +12,10 @@ class AAIController;
 class ALostWithinCharacter;
 class USpotLightComponent;
 class UMonsterAIComponent;
+class UMonsterHearingComponent;
+class UPointLightComponent;
+class USoundAttenuation;
+class USoundBase;
 
 UENUM(BlueprintType)
 enum class EGhoulLightState : uint8
@@ -29,6 +33,7 @@ enum class EGhoulLightState : uint8
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnGhoulLightRepelled, float, LightIntensity);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnGhoulLightRecovered);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnGhoulDarkStalkChanged, bool, bIsStalking);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnGhoulTorchSnuffed, FVector, TorchLocation);
 
 /**
  * Manages light-averse / shadow stalker behavior for BP_Ghoul.
@@ -108,6 +113,53 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Light Aversion|Dark Stalking", meta=(ClampMin="0.0", Units="cm/s"))
 	float DarkStalkApproachSpeed = 360.0f;
 
+	/** The Ghoul is blind: the dark chase starts only from a heard player footstep and heads for where it was heard.
+	 *  False restores the older chase of any player within DarkStalkDetectionRadius. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Light Aversion|Dark Stalking")
+	bool bDarkStalkRequiresHearing = true;
+
+	/** With bDarkStalkRequiresHearing: the chase ends after this long without hearing the player again. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Light Aversion|Dark Stalking", meta=(ClampMin="0.0", Units="s"))
+	float DarkStalkHearingMemory = 6.0f;
+
+	/** With bDarkStalkRequiresHearing: chase speeds, one step up every DarkStalkSpeedStepInterval of the chase.
+	 *  Empty uses DarkStalkApproachSpeed. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Light Aversion|Dark Stalking")
+	TArray<float> DarkStalkSpeedSteps = { 360.0f, 420.0f, 480.0f };
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Light Aversion|Dark Stalking", meta=(ClampMin="0.1", Units="s"))
+	float DarkStalkSpeedStepInterval = 3.0f;
+
+	/** While held at a torch's edge, the Ghoul circles along the dark rim of its light toward its target. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Light Aversion|Torches")
+	bool bOrbitTorchEdge = true;
+
+	/** Held at the same torch's edge this long, the Ghoul puts that torch out. 0 never snuffs. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Light Aversion|Torches", meta=(ClampMin="0.0", Units="s"))
+	float TorchSnuffHoldTime = 4.0f;
+
+	/** How long a snuffed torch stays dark before it relights. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Light Aversion|Torches", meta=(ClampMin="0.0", Units="s"))
+	float TorchSnuffDuration = 20.0f;
+
+	/** Cold-draft inhale at the torch, PreSnuffLeadTime before it goes out. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Light Aversion|Audio")
+	TObjectPtr<USoundBase> PreSnuffSound = nullptr;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Light Aversion|Audio", meta=(ClampMin="0.0", Units="s"))
+	float PreSnuffLeadTime = 1.5f;
+
+	/** The torch going out. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Light Aversion|Audio")
+	TObjectPtr<USoundBase> SnuffSound = nullptr;
+
+	/** Head-snap hiss toward a player footstep it just heard (at most once per DarkStalkHearingMemory). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Light Aversion|Audio")
+	TObjectPtr<USoundBase> HeardYouSound = nullptr;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Light Aversion|Audio")
+	TObjectPtr<USoundAttenuation> SoundAttenuation = nullptr;
+
 	/** Current light aversion state */
 	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category="Light Aversion|State")
 	EGhoulLightState CurrentLightState = EGhoulLightState::DarkStalking;
@@ -160,6 +212,10 @@ public:
 	UPROPERTY(BlueprintAssignable, Category="Light Aversion|Events")
 	FOnGhoulDarkStalkChanged OnDarkStalkChanged;
 
+	/** Broadcast when the Ghoul puts a wall torch out */
+	UPROPERTY(BlueprintAssignable, Category="Light Aversion|Events")
+	FOnGhoulTorchSnuffed OnTorchSnuffed;
+
 	UFUNCTION(BlueprintPure, Category="Monster AI|Light Averse")
 	bool IsLitByFlashlight() const { return bIsIlluminatedByFlashlight; }
 
@@ -204,6 +260,21 @@ public:
 	/** True when Actor has a light averse component that is chasing the player in darkness */
 	static bool IsActorDarkStalkingPlayer(const AActor* Actor);
 
+	/** True when Actor's dark chase is driven by its hearing (the hearing component hands player footsteps to it) */
+	static bool IsActorHuntingByEar(const AActor* Actor);
+
+	/** Where the hearing-driven chase is heading (the last heard player footstep) */
+	FVector GetHeardChaseTarget() const { return HeardTarget; }
+
+	/** Seconds since the Ghoul last heard the player (large when never) */
+	float GetSecondsSinceHeardPlayer() const { return SecondsSinceHeard; }
+
+	/** Seconds held at the current torch's edge */
+	float GetTorchEdgeHoldSeconds() const { return EdgeHoldSeconds; }
+
+	/** Dark chase speed right now (after its steps) */
+	float GetCurrentDarkStalkSpeed() const;
+
 	/** Calculates flashlight cone intersection, distance attenuation, and intensity from player */
 	UFUNCTION(BlueprintCallable, Category="Monster AI|Light Averse")
 	bool EvaluateFlashlightExposure(const ALostWithinCharacter* PlayerChar, float& OutIntensity, FVector& OutBeamDirection);
@@ -235,6 +306,11 @@ private:
 
 	void ApplyRetreatSpeed();
 	void ApplyDarkStalkSpeed();
+	/** Updates the heard target and the time since the last heard player footstep */
+	void UpdateHearingMemory(float DeltaTime);
+	/** Holding at a torch's edge: counts toward the snuff and circles the rim */
+	void UpdateTorchEdgeHold(float DeltaTime, const FVector& ChaseTarget);
+	void PlaySoundAt(USoundBase* Sound, const FVector& Location) const;
 	void RestoreWalkSpeed();
 	/** Cancels the current path move (chase or retreat) so a light change takes effect in the same frame */
 	void StopOwnerMove() const;
@@ -247,4 +323,14 @@ private:
 	float SavedMaxWalkSpeed = 0.0f;
 	bool bDirectMovementFallback = false;
 	bool bChasingPlayer = false;
+
+	int32 LastHeardCount = 0;
+	bool bHasHeardTarget = false;
+	FVector HeardTarget = FVector::ZeroVector;
+	FVector LastRequestedTarget = FVector::ZeroVector;
+	float SecondsSinceHeard = 1.0e6f;
+	float HeardChaseSeconds = 0.0f;
+	float EdgeHoldSeconds = 0.0f;
+	bool bPreSnuffPlayed = false;
+	TWeakObjectPtr<UPointLightComponent> EdgeTorch;
 };

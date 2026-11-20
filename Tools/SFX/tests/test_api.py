@@ -118,6 +118,14 @@ class KeyLookupTests(unittest.TestCase):
                 handle.write("from-file\r\n")
             self.assertEqual(load_api_key({"LOCALAPPDATA": base}), "from-file")
 
+    def test_key_file_under_linux_config_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as home:
+            os.makedirs(os.path.join(home, ".config", "LostWithin"))
+            with open(os.path.join(home, ".config", "LostWithin", "elevenlabs-api-key.txt"), "w", encoding="utf-8") as handle:
+                handle.write("linux-key\n")
+            self.assertEqual(load_api_key({"HOME": home}), "linux-key")
+            self.assertEqual(load_api_key({"HOME": "/nowhere", "XDG_CONFIG_HOME": os.path.join(home, ".config")}), "linux-key")
+
     def test_empty_key_file_is_reported_as_empty(self) -> None:
         with tempfile.TemporaryDirectory() as base:
             os.makedirs(os.path.join(base, "LostWithin"))

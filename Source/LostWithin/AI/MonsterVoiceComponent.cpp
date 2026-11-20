@@ -4,6 +4,7 @@
 
 #include "AI/MonsterAIComponent.h"
 #include "AI/MonsterHearingComponent.h"
+#include "AI/MonsterSenseProfile.h"
 #include "Components/AudioComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Engine/World.h"
@@ -126,6 +127,14 @@ UMonsterVoiceComponent::UMonsterVoiceComponent()
 	Attenuation.LPFFrequencyAtMin = 20000.0f;
 	Attenuation.LPFFrequencyAtMax = 3000.0f;
 
+	// Headphones: binaural HRTF panning (Resonance Audio in the project audio settings), muffled through walls.
+	Attenuation.SpatializationAlgorithm = ESoundSpatializationAlgorithm::SPATIALIZATION_HRTF;
+	Attenuation.bEnableOcclusion = true;
+	Attenuation.OcclusionTraceChannel = ECC_Visibility;
+	Attenuation.OcclusionLowPassFilterFrequency = 1500.0f;
+	Attenuation.OcclusionVolumeAttenuation = 0.5f;
+	Attenuation.OcclusionInterpolationTime = 0.2f;
+
 	LastEventTime.Init(NeverPlayed, NumVoiceEvents);
 	LastSoundIndex.Init(INDEX_NONE, NumVoiceEvents);
 	Stream.GenerateNewSeed();
@@ -189,6 +198,8 @@ FMonsterVoiceState UMonsterVoiceComponent::ReadObservedState()
 	{
 		State.bInvestigating = Ears->IsInvestigating();
 	}
+	// Every specialty sense (nose, sight rush, ear chase, tremor lunge) counts as hunting, not only hearing.
+	State.bInvestigating = State.bInvestigating || UMonsterSenseProfile::IsActorHunting(GetOwner());
 	return State;
 }
 

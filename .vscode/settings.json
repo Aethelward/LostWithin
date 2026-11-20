@@ -1,0 +1,19 @@
+{
+    "C_Cpp.intelliSenseEngine": "disabled",
+    "clangd.path": "/usr/bin/clangd",
+    "clangd.arguments": [
+        "--background-index",
+        "--clang-tidy=false",
+        "--header-insertion=never",
+        "--pch-storage=memory",
+        "--completion-style=detailed",
+        "-j=8"
+    ],
+    "files.exclude": {
+        "**/.git": true,
+        "**/Binaries": true,
+        "**/Intermediate": true,
+        "**/DerivedDataCache": true,
+        "**/Saved": true
+    }
+}

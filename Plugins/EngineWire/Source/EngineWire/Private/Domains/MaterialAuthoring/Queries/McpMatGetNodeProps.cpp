@@ -1,0 +1,141 @@
+#include "Domains/MaterialAuthoring/McpMatPrivate.h"
+
+namespace McpMaterialAuthoringHandlers
+{
+bool HandleGetNodeProperties(UEngineWireSubsystem* Bridge, const FString& RequestId, const FString& SubAction, const TSharedPtr<FJsonObject>& Payload, TSharedPtr<FMcpBridgeWebSocket> Socket)
+{
+  if (SubAction == TEXT("get_node_properties")) {
+    LOAD_MATERIAL_OR_FUNCTION_OR_RETURN();
+
+    // A node is named by nodeId, or by its position in the expression list (get_material_node_details, its alias).
+    FString NodeId;
+    double ExpressionIndex = -1.0;
+    const bool bHasIndex = Payload->TryGetNumberField(TEXT("expressionIndex"), ExpressionIndex);
+    if ((!Payload->TryGetStringField(TEXT("nodeId"), NodeId) || NodeId.IsEmpty()) && !bHasIndex) {
+      Bridge->SendAutomationError(Socket, RequestId, TEXT("Missing 'nodeId' (or 'expressionIndex')."), TEXT("INVALID_ARGUMENT"));
+      return true;
+    }
+
+    UMaterialExpression *Expr = nullptr;
+    if (!NodeId.IsEmpty()) {
+      Expr = FIND_EXPR_IN_HOST(NodeId);
+    } else {
+      const auto& Exprs = Material ? MCP_GET_MATERIAL_EXPRESSIONS(Material) : MCP_GET_FUNCTION_EXPRESSIONS(Function);
+      const int32 Index = static_cast<int32>(ExpressionIndex);
+      if (Exprs.IsValidIndex(Index)) { Expr = Exprs[Index]; }
+    }
+    if (!Expr) {
+      Bridge->SendAutomationError(Socket, RequestId, TEXT("Node not found."), TEXT("NODE_NOT_FOUND"));
+      return true;
+    }
+
+    TSharedPtr<FJsonObject> Result = McpHandlerUtils::CreateResultObject();
+    Result->SetStringField(TEXT("nodeId"), MCP_NODE_ID(Expr));
+    Result->SetStringField(TEXT("type"), Expr->GetClass()->GetName());
+    Result->SetStringField(TEXT("desc"), Expr->GetDescription());
+    Result->SetNumberField(TEXT("x"), Expr->MaterialExpressionEditorX);
+    Result->SetNumberField(TEXT("y"), Expr->MaterialExpressionEditorY);
+
+    // Type-specific properties
+    if (UMaterialExpressionCustom *CE = Cast<UMaterialExpressionCustom>(Expr)) {
+      Result->SetStringField(TEXT("code"), CE->Code);
+      Result->SetStringField(TEXT("description"), CE->Description);
+      Result->SetStringField(TEXT("outputType"),
+                             MaterialEnumShortName(StaticEnum<ECustomMaterialOutputType>(), CE->OutputType));
+      TArray<TSharedPtr<FJsonValue>> InputsArr;
+      for (const FCustomInput &CI : CE->Inputs) {
+        TSharedPtr<FJsonObject> IO = MakeShared<FJsonObject>();
+        IO->SetStringField(TEXT("name"), CI.InputName.ToString());
+        InputsArr.Add(MakeShared<FJsonValueObject>(IO));
+      }
+      Result->SetArrayField(TEXT("inputs"), InputsArr);
+      TArray<TSharedPtr<FJsonValue>> OutputsArr;
+      for (const FCustomOutput &CO : CE->AdditionalOutputs) {
+        TSharedPtr<FJsonObject> OO = MakeShared<FJsonObject>();
+        OO->SetStringField(TEXT("name"), CO.OutputName.ToString());
+        OO->SetStringField(TEXT("type"),
+                           MaterialEnumShortName(StaticEnum<ECustomMaterialOutputType>(), CO.OutputType));
+        OutputsArr.Add(MakeShared<FJsonValueObject>(OO));
+      }
+      Result->SetArrayField(TEXT("additionalOutputs"), OutputsArr);
+    } else if (UMaterialExpressionScalarParameter *SP = Cast<UMaterialExpressionScalarParameter>(Expr)) {
+      Result->SetStringField(TEXT("parameterName"), SP->ParameterName.ToString());
+      Result->SetNumberField(TEXT("defaultValue"), McpHandlerUtils::ReadableFloat(SP->DefaultValue));
+      Result->SetStringField(TEXT("group"), SP->Group.ToString());
+      Result->SetNumberField(TEXT("sliderMin"), McpHandlerUtils::ReadableFloat(SP->SliderMin));
+      Result->SetNumberField(TEXT("sliderMax"), McpHandlerUtils::ReadableFloat(SP->SliderMax));
+    } else if (UMaterialExpressionVectorParameter *VP = Cast<UMaterialExpressionVectorParameter>(Expr)) {
+      Result->SetStringField(TEXT("parameterName"), VP->ParameterName.ToString());
+      Result->SetObjectField(TEXT("defaultValue"), McpHandlerUtils::LinearColorToJson(VP->DefaultValue));
+      Result->SetStringField(TEXT("group"), VP->Group.ToString());
+    } else if (UMaterialExpressionStaticSwitchParameter *SSP = Cast<UMaterialExpressionStaticSwitchParameter>(Expr)) {
+      Result->SetStringField(TEXT("parameterName"), SSP->ParameterName.ToString());
+      Result->SetBoolField(TEXT("defaultValue"), SSP->DefaultValue);
+      Result->SetStringField(TEXT("group"), SSP->Group.ToString());
+    } else if (UMaterialExpressionComponentMask *CM = Cast<UMaterialExpressionComponentMask>(Expr)) {
+      Result->SetBoolField(TEXT("r"), CM->R != 0);
+      Result->SetBoolField(TEXT("g"), CM->G != 0);
+      Result->SetBoolField(TEXT("b"), CM->B != 0);
+      Result->SetBoolField(TEXT("a"), CM->A != 0);
+    } else if (UMaterialExpressionMaterialFunctionCall *MFC = Cast<UMaterialExpressionMaterialFunctionCall>(Expr)) {
+      if (MFC->MaterialFunction) {
+        Result->SetStringField(TEXT("functionPath"), MFC->MaterialFunction->GetPathName());
+      }
+      // The names saved on the call (UMaterialFunction::GetInputsAndOutputs writes them): the ExpressionInput and
+      // ExpressionOutput pointers beside them are transient, and null for a call whose function went away under it.
+      TArray<TSharedPtr<FJsonValue>> FInputsArr;
+      for (const FFunctionExpressionInput &FI : MFC->FunctionInputs) {
+        TSharedPtr<FJsonObject> IO = MakeShared<FJsonObject>();
+        IO->SetStringField(TEXT("name"), FI.Input.InputName.ToString());
+        FInputsArr.Add(MakeShared<FJsonValueObject>(IO));
+      }
+      Result->SetArrayField(TEXT("inputPins"), FInputsArr);
+      TArray<TSharedPtr<FJsonValue>> FOutputsArr;
+      for (const FFunctionExpressionOutput &FO : MFC->FunctionOutputs) {
+        TSharedPtr<FJsonObject> OO = MakeShared<FJsonObject>();
+        OO->SetStringField(TEXT("name"), FO.Output.OutputName.ToString());
+        FOutputsArr.Add(MakeShared<FJsonValueObject>(OO));
+      }
+      Result->SetArrayField(TEXT("outputPins"), FOutputsArr);
+    } else if (UMaterialExpressionFunctionInput *FI = Cast<UMaterialExpressionFunctionInput>(Expr)) {
+      Result->SetStringField(TEXT("inputName"), FI->InputName.ToString());
+      Result->SetStringField(TEXT("inputType"), FunctionInputTypeToString(FI->InputType));
+      Result->SetBoolField(TEXT("usePreviewValueAsDefault"), FI->bUsePreviewValueAsDefault);
+      Result->SetNumberField(TEXT("sortPriority"), FI->SortPriority);
+      Result->SetStringField(TEXT("description"), FI->Description);
+    } else if (UMaterialExpressionFunctionOutput *FO = Cast<UMaterialExpressionFunctionOutput>(Expr)) {
+      Result->SetStringField(TEXT("outputName"), FO->OutputName.ToString());
+      Result->SetNumberField(TEXT("sortPriority"), FO->SortPriority);
+      Result->SetStringField(TEXT("description"), FO->Description);
+    } else if (UMaterialExpressionTextureSample *TS = Cast<UMaterialExpressionTextureSample>(Expr)) {
+      Result->SetStringField(TEXT("texturePath"), TS->Texture ? TS->Texture->GetPathName() : TEXT(""));
+      // A texture parameter is a sample too: this arm took it before any parameter arm, so its name and group went unread.
+      if (const UMaterialExpressionTextureSampleParameter *TP = Cast<UMaterialExpressionTextureSampleParameter>(TS)) {
+        Result->SetStringField(TEXT("parameterName"), TP->ParameterName.ToString());
+        Result->SetStringField(TEXT("group"), TP->Group.ToString());
+      }
+    } else if (UMaterialExpressionTextureCoordinate *TC = Cast<UMaterialExpressionTextureCoordinate>(Expr)) {
+      Result->SetNumberField(TEXT("coordinateIndex"), TC->CoordinateIndex);
+      Result->SetNumberField(TEXT("uTiling"), McpHandlerUtils::ReadableFloat(TC->UTiling));
+      Result->SetNumberField(TEXT("vTiling"), McpHandlerUtils::ReadableFloat(TC->VTiling));
+    } else {
+      // Generic fallback: every property the node class adds, typed as Foundation's reflection reads answer it (this
+      // answered export text, '(R=1.000000,G=0.000000,...)', where the other reads answer {r, g, b, a}).
+      TSharedPtr<FJsonObject> PropsObj = MakeShared<FJsonObject>();
+      for (TFieldIterator<FProperty> PropIt(Expr->GetClass()); PropIt; ++PropIt) {
+        FProperty *Prop = *PropIt;
+        // Skip inherited UMaterialExpression properties
+        if (Prop->GetOwnerClass() == UMaterialExpression::StaticClass()) continue;
+        if (Prop->GetOwnerClass() == UObject::StaticClass()) continue;
+        PropsObj->SetField(Prop->GetName(), McpPropertyReflection::ExportPropertyToJsonValueOrText(Expr, Prop));
+      }
+      Result->SetObjectField(TEXT("properties"), PropsObj);
+    }
+
+    Bridge->SendAutomationResponse(Socket, RequestId, true, TEXT("Node properties retrieved."), Result);
+    return true;
+  }
+
+  return false;
+}
+}

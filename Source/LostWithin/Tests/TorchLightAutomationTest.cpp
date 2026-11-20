@@ -178,6 +178,11 @@ bool FLostWithinTorchLightGhoulTest::RunTest(const FString& Parameters)
 	ACharacter* Ghoul = SpawnMonster(Env.World, FVector(300.0f, 0.0f, 0.0f), [&Averse](ACharacter* Monster)
 	{
 		Averse = NewObject<UMonsterLightAverseComponent>(Monster, TEXT("LightAverse"));
+		// Pins the distance-based dark chase and the plain edge hold; the hearing chase, orbit and snuff are tested
+		// in LostWithin.AI.Senses.
+		Averse->bDarkStalkRequiresHearing = false;
+		Averse->bOrbitTorchEdge = false;
+		Averse->TorchSnuffHoldTime = 0.0f;
 		Averse->RegisterComponent();
 	});
 	UPointLightComponent* Torch = SpawnTorch(Env.World, FVector(500.0f, 0.0f, 100.0f));
@@ -260,6 +265,12 @@ bool FLostWithinTorchLightDollTest::RunTest(const FString& Parameters)
 	{
 		Freeze = NewObject<UMonsterSightFreezeComponent>(Monster, TEXT("SightFreezeAI"));
 		Freeze->bRequireLineOfSight = false; // no level geometry here
+		// Pins the older always-stalking Doll; dormancy, lit sight and the gaze flicker are tested in LostWithin.AI.Senses.
+		Freeze->bDormantInDarkness = false;
+		Freeze->bFreezeWhenWatched = true;
+		Freeze->bRequireSightOfPlayer = false;
+		Freeze->GazeFlickerTime = 0.0f;
+		Freeze->MimicPlayerRange = 0.0f;
 		Freeze->RegisterComponent();
 	});
 	UPointLightComponent* Torch = SpawnTorch(Env.World, FVector(500.0f, 0.0f, 300.0f));

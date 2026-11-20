@@ -76,6 +76,8 @@ namespace
 		Result.AI->RegisterComponent();
 
 		Result.Vibration = NewObject<UMonsterVibrationComponent>(Result.Actor, TEXT("VibrationSense"));
+		// Pins the walk-and-search reaction; the coil, lunge and jam are tested in LostWithin.AI.Senses.
+		Result.Vibration->bEnableLunge = false;
 		Result.Vibration->RegisterComponent();
 
 		Result.Actor->FinishSpawning(Transform);
@@ -166,8 +168,12 @@ bool FLostWithinMonsterFloorTremorsTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Can sense floor vibration in range"),
 		Monster.Vibration->CanSenseFloorVibration(SprintLocation, Monster.Vibration->SprintVibrationRadius));
 
-	// Sprint footstep reported via noise subsystem.
-	ULostWithinNoiseSubsystem::ReportNoise(World, SprintLocation, 1000.0f, ELostWithinNoiseKind::Footstep, nullptr);
+	// A running footstep (9 m noise) is below the 12 m sprint tremor radius: only a sprint shakes the floor.
+	ULostWithinNoiseSubsystem::ReportNoise(World, SprintLocation, 900.0f, ELostWithinNoiseKind::Footstep, nullptr);
+	TestFalse(TEXT("A running footstep is not a floor tremor"), Monster.Vibration->IsInvestigating());
+
+	// Sprint footstep (16 m noise) reported via noise subsystem.
+	ULostWithinNoiseSubsystem::ReportNoise(World, SprintLocation, 1600.0f, ELostWithinNoiseKind::Footstep, nullptr);
 
 	TestTrue(TEXT("Monster senses sprint tremor and investigates"), Monster.Vibration->IsInvestigating());
 	TestEqual(TEXT("Target location set to vibration origin"), Monster.Vibration->InvestigationLocation, SprintLocation);

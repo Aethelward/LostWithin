@@ -1,0 +1,158 @@
+#include "Domains/MetaHuman/McpMetaHumanHandlers.h"
+
+#include "Safety/McpSafeOperations.h"
+
+namespace McpMetaHumanHandlers
+{
+// rig_metahuman -- request auto-rigging for a character.
+//
+// This is the step that gates assembly: CanBuildMetaHuman refuses an unrigged
+// character. Auto-rigging is an Epic CLOUD service (FAutoRigServiceRequest), so
+// it needs the editor signed in to an Epic account and can fail with an
+// authorization error that has nothing to do with the character.
+bool HandleRigMetaHuman(UEngineWireSubsystem* Self, const FString& RequestId,
+    const TSharedPtr<FJsonObject>& Payload, FMetaHumanSocket Socket)
+{
+    UObject* Subsystem = nullptr;
+    UObject* Character = RequireEditableCharacter(Self, RequestId, Payload, Socket, Subsystem);
+    if (!Character)
+    {
+        return true;
+    }
+
+    const FString RigType = GetJsonStringField(Payload, TEXT("rigType"), TEXT("JointsAndBlendShapes"));
+    if (RigType != TEXT("JointsOnly") && RigType != TEXT("JointsAndBlendShapes"))
+    {
+        Self->SendAutomationError(Socket, RequestId,
+            FString::Printf(TEXT("Unknown rigType '%s'. Use 'JointsOnly' or 'JointsAndBlendShapes'."), *RigType),
+            TEXT("INVALID_ARGUMENT"));
+        return true;
+    }
+
+    // Field names are the UPROPERTY names on FMetaHumanCharacterAutoRiggingRequestParams;
+    // the reflected binder converts the enum from its string name.
+    TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+    // Non-blocking by default: the blocking mode parks the game thread on an
+    // Epic cloud round-trip, which freezes the editor and silences every
+    // transport heartbeat for as long as the service takes. The caller polls
+    // metahuman_status for canBuild instead, or passes blocking:true to wait.
+    const bool bBlocking = GetJsonBoolField(Payload, TEXT("blocking"), false);
+    Params->SetStringField(TEXT("RigType"), RigType);
+    Params->SetBoolField(TEXT("bBlocking"), bBlocking);
+    Params->SetBoolField(TEXT("bReportProgress"), GetJsonBoolField(Payload, TEXT("reportProgress"), false));
+
+    TSharedPtr<FJsonObject> Args = MakeShared<FJsonObject>();
+    Args->SetObjectField(TEXT("InParams"), Params);
+
+    TSharedPtr<FJsonObject> Results;
+    FString Error;
+    if (!InvokeMetaHumanFunction(Subsystem, TEXT("RequestAutoRigging"), Args, Character, Results, Error))
+    {
+        Self->SendAutomationError(Socket, RequestId, Error, TEXT("OPERATION_FAILED"));
+        return true;
+    }
+
+    // The request reports its own outcome through delegates, not a return value,
+    // so re-read build readiness rather than claiming the rig succeeded.
+    const bool bCanBuild = QueryCanBuild(Subsystem, Character, false);
+
+    TSharedPtr<FJsonObject> Result = McpHandlerUtils::CreateResultObject();
+    Result->SetBoolField(TEXT("saved"), McpSafeAssetSave(Character));
+    Result->SetStringField(TEXT("characterPath"), Character->GetOutermost()->GetName());
+    Result->SetBoolField(TEXT("canBuild"), bCanBuild);
+    if (!bCanBuild && bBlocking)
+    {
+        Result->SetStringField(TEXT("detail"),
+            TEXT("Auto-rigging did not leave the character buildable. Auto-rigging runs on Epic's ")
+            TEXT("cloud service: confirm the editor is signed in to an Epic account, then re-run."));
+    }
+    else if (!bCanBuild)
+    {
+        Result->SetStringField(TEXT("detail"),
+            TEXT("Auto-rigging is running on Epic's cloud service. Poll manage_character ")
+            TEXT("metahuman_status until canBuild is true, then run build_metahuman. Pass ")
+            TEXT("blocking:true to wait here instead; the editor is unresponsive while it waits."));
+    }
+    McpHandlerUtils::AddVerification(Result, Character);
+    const TCHAR* Message = bCanBuild
+        ? TEXT("MetaHuman rigged")
+        : (bBlocking ? TEXT("Auto-rigging requested but the character is still not buildable")
+                     : TEXT("Auto-rigging requested; poll metahuman_status for canBuild"));
+    Self->SendAutomationResponse(Socket, RequestId, true, Message, Result);
+    return true;
+}
+
+// build_metahuman -- run the assembly pipeline, producing the usable assets.
+bool HandleBuildMetaHuman(UEngineWireSubsystem* Self, const FString& RequestId,
+    const TSharedPtr<FJsonObject>& Payload, FMetaHumanSocket Socket)
+{
+    UObject* Subsystem = nullptr;
+    UObject* Character = RequireEditableCharacter(Self, RequestId, Payload, Socket, Subsystem);
+    if (!Character)
+    {
+        return true;
+    }
+
+    // Refuse up front rather than letting BuildMetaHuman fail with only a log
+    // line and report success to the caller.
+    if (!QueryCanBuild(Subsystem, Character, true))
+    {
+        Self->SendAutomationError(Socket, RequestId,
+            TEXT("The character is not ready to build (most often: not rigged). ")
+            TEXT("Run rig_metahuman first, and use metahuman_status to see every blocker."),
+            TEXT("PRECONDITION_FAILED"));
+        return true;
+    }
+
+    const FString PipelineType = GetJsonStringField(Payload, TEXT("pipelineType"), TEXT("Cinematic"));
+    const FString Quality = GetJsonStringField(Payload, TEXT("pipelineQuality"), TEXT("Cinematic"));
+
+    TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+    Params->SetStringField(TEXT("PipelineType"), PipelineType);
+    Params->SetStringField(TEXT("PipelineQuality"), Quality);
+    // The engine writes the assembled assets into these folders itself, past McpSafeAssetSave: they take the shared
+    // canonicalizer and the engine-content rule here, and the folder name is one plain name.
+    FString BuildPath = GetJsonStringField(Payload, TEXT("buildPath"));
+    if (!BuildPath.IsEmpty())
+    {
+        if (!ReadContentFolderOrReply(Self, RequestId, Socket, TEXT("buildPath"), BuildPath, BuildPath)) { return true; }
+        Params->SetStringField(TEXT("AbsoluteBuildPath"), BuildPath);
+    }
+    FString CommonPath = GetJsonStringField(Payload, TEXT("commonFolderPath"));
+    if (!CommonPath.IsEmpty())
+    {
+        if (!ReadContentFolderOrReply(Self, RequestId, Socket, TEXT("commonFolderPath"), CommonPath, CommonPath)) { return true; }
+        Params->SetStringField(TEXT("CommonFolderPath"), CommonPath);
+    }
+    const FString NameOverride = GetJsonStringField(Payload, TEXT("nameOverride"));
+    if (!NameOverride.IsEmpty())
+    {
+        FText Reason;
+        if (NameOverride.TrimStartAndEnd() != NameOverride || NameOverride.Contains(TEXT("..")) || NameOverride.Contains(TEXT("/")) ||
+            NameOverride.Contains(TEXT("\\")) || !FName(*NameOverride).IsValidObjectName(Reason))
+        {
+            Self->SendAutomationError(Socket, RequestId,
+                FString::Printf(TEXT("nameOverride '%s' is not one plain folder name."), *NameOverride), TEXT("INVALID_ARGUMENT"));
+            return true;
+        }
+        Params->SetStringField(TEXT("NameOverride"), NameOverride);
+    }
+
+    TSharedPtr<FJsonObject> Args = MakeShared<FJsonObject>();
+    Args->SetObjectField(TEXT("InParams"), Params);
+
+    TSharedPtr<FJsonObject> Results;
+    FString Error;
+    if (!InvokeMetaHumanFunction(Subsystem, TEXT("BuildMetaHuman"), Args, Character, Results, Error))
+    {
+        Self->SendAutomationError(Socket, RequestId, Error, TEXT("OPERATION_FAILED"));
+        return true;
+    }
+
+    TSharedPtr<FJsonObject> Result = McpHandlerUtils::CreateResultObject();
+    Result->SetStringField(TEXT("characterPath"), Character->GetOutermost()->GetName());
+    McpHandlerUtils::AddVerification(Result, Character);
+    Self->SendAutomationResponse(Socket, RequestId, true, TEXT("MetaHuman assembled"), Result);
+    return true;
+}
+}
