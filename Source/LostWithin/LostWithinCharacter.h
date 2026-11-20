@@ -394,6 +394,26 @@ public:
 	/** Freezes the player for the death camera: closes the UI, stops movement and blocks gameplay input */
 	void EnterDeathState();
 
+	/** Freezes the player for the opening cinematic: hides HUD, stops movement and blocks gameplay input */
+	UFUNCTION(BlueprintCallable, Category="Cinematic")
+	void EnterCinematicState();
+
+	/** Unfreezes the player after the opening cinematic: restores HUD and gameplay input */
+	UFUNCTION(BlueprintCallable, Category="Cinematic")
+	void ExitCinematicState();
+
+	/** True while playing opening or cutscene cinematic */
+	UFUNCTION(BlueprintPure, Category="Cinematic")
+	bool IsInCinematicState() const { return bIsInCinematic; }
+
+	/** Shows or hides the HUD (InventoryWidget) */
+	UFUNCTION(BlueprintCallable, Category="UI")
+	void SetHUDVisible(bool bVisible);
+
+	/** Returns true if the HUD is currently visible */
+	UFUNCTION(BlueprintPure, Category="UI")
+	bool IsHUDVisible() const;
+
 	/** True after a monster touched the player */
 	UFUNCTION(BlueprintPure, Category="Death")
 	bool IsDead() const { return bIsDead; }
@@ -527,6 +547,8 @@ private:
 	float CurrentBGMVolumeFactor = 1.0f;
 	bool bIsInventoryOpen = false;
 	bool bIsDead = false;
+	bool bIsInCinematic = false;
+	bool bIsHUDVisible = true;
 	bool bIsWalking = false;
 	bool bIsSprintingHeld = false;
 	bool bHasFlashlight = false;

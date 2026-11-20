@@ -3,17 +3,22 @@
 #include "LostWithinGameMode.h"
 
 #include "Engine/World.h"
+#include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/PlayerController.h"
 #include "Gameplay/RunSetupRules.h"
 #include "Interaction/PickupItemActor.h"
 #include "LostWithin.h"
+#include "LostWithinCharacter.h"
 #include "LostWithinPlayerController.h"
+#include "Player/WakeupCinematicActor.h"
 #include "UI/LostWithinMenu.h"
 
 ALostWithinGameMode::ALostWithinGameMode()
 {
 	SpawnableKeys = { APickupItemActor::KeyItemID, APickupItemActor::OldKeyItemID, APickupItemActor::RoyalKeyItemID };
 	NoteActorClass = TSoftClassPtr<APickupItemActor>(FSoftObjectPath(TEXT("/Game/Item/paper/BP_Paper.BP_Paper_C")));
+	bEnableOpeningCinematic = true;
+	OpeningCinematicClass = AWakeupCinematicActor::StaticClass();
 }
 
 void ALostWithinGameMode::StartPlay()
@@ -28,6 +33,124 @@ void ALostWithinGameMode::StartPlay()
 
 	// Every placed spawn point and toolbox has begun play now.
 	RunSummary = LostWithinRunSetup::SetupWorld(GetWorld(), MakeRunConfig(), CombinationDigits, RunStream);
+
+	if (bEnableOpeningCinematic && !ActiveOpeningCinematic)
+	{
+		StartOpeningCinematic();
+	}
+}
+
+void ALostWithinGameMode::RestartPlayer(AController* NewPlayer)
+{
+	Super::RestartPlayer(NewPlayer);
+
+	if (bEnableOpeningCinematic && !ActiveOpeningCinematic)
+	{
+		StartOpeningCinematic();
+	}
+	else if (ActiveOpeningCinematic && ActiveOpeningCinematic->IsPlaying())
+	{
+		if (APlayerController* PC = Cast<APlayerController>(NewPlayer))
+		{
+			if (ALostWithinCharacter* LostChar = Cast<ALostWithinCharacter>(PC->GetPawn()))
+			{
+				LostChar->EnterCinematicState();
+			}
+			PC->SetIgnoreMoveInput(true);
+			PC->SetIgnoreLookInput(true);
+			PC->SetViewTarget(ActiveOpeningCinematic);
+		}
+	}
+}
+
+void ALostWithinGameMode::StartOpeningCinematic()
+{
+	if (!bEnableOpeningCinematic)
+	{
+		return;
+	}
+
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+
+	const FString MapName = World->GetMapName();
+	if (MapName.Contains(TEXT("MainMenu")))
+	{
+		return;
+	}
+
+	UClass* CinematicClass = OpeningCinematicClass ? OpeningCinematicClass.Get() : AWakeupCinematicActor::StaticClass();
+	if (!CinematicClass)
+	{
+		return;
+	}
+
+	FActorSpawnParameters SpawnParams;
+	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	SpawnParams.Owner = this;
+
+	ActiveOpeningCinematic = World->SpawnActor<AWakeupCinematicActor>(CinematicClass, FVector::ZeroVector, FRotator::ZeroRotator, SpawnParams);
+	if (!ActiveOpeningCinematic)
+	{
+		UE_LOG(LogLostWithin, Warning, TEXT("Failed to spawn OpeningCinematicClass in GameMode."));
+		return;
+	}
+
+	APlayerController* PC = World->GetFirstPlayerController();
+	APawn* Pawn = PC ? PC->GetPawn() : nullptr;
+
+	if (ALostWithinCharacter* LostChar = Cast<ALostWithinCharacter>(Pawn))
+	{
+		LostChar->EnterCinematicState();
+	}
+	else if (Pawn)
+	{
+		if (ACharacter* Char = Cast<ACharacter>(Pawn))
+		{
+			if (UCharacterMovementComponent* MoveComp = Char->GetCharacterMovement())
+			{
+				MoveComp->StopMovementImmediately();
+			}
+		}
+	}
+
+	if (PC)
+	{
+		PC->SetIgnoreMoveInput(true);
+		PC->SetIgnoreLookInput(true);
+	}
+
+	ActiveOpeningCinematic->OnCinematicFinished.AddDynamic(this, &ALostWithinGameMode::HandleOpeningCinematicFinished);
+	ActiveOpeningCinematic->StartSequence(Pawn, PC);
+}
+
+void ALostWithinGameMode::HandleOpeningCinematicFinished()
+{
+	UE_LOG(LogLostWithin, Log, TEXT("ALostWithinGameMode: Opening cinematic finished. Restoring controls and HUD."));
+
+	UWorld* World = GetWorld();
+	APlayerController* PC = World ? World->GetFirstPlayerController() : nullptr;
+	APawn* Pawn = PC ? PC->GetPawn() : nullptr;
+
+	if (PC)
+	{
+		PC->ResetIgnoreMoveInput();
+		PC->ResetIgnoreLookInput();
+	}
+
+	if (ALostWithinCharacter* LostChar = Cast<ALostWithinCharacter>(Pawn))
+	{
+		LostChar->ExitCinematicState();
+		LostChar->SetHUDVisible(true);
+	}
+
+	if (ActiveOpeningCinematic)
+	{
+		ActiveOpeningCinematic->OnCinematicFinished.RemoveDynamic(this, &ALostWithinGameMode::HandleOpeningCinematicFinished);
+	}
 }
 
 FLostWithinRunConfig ALostWithinGameMode::MakeRunConfig() const

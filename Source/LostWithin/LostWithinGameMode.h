@@ -8,6 +8,7 @@
 #include "LostWithinGameMode.generated.h"
 
 class APickupItemActor;
+class AWakeupCinematicActor;
 
 /** Where the current run stands. */
 UENUM(BlueprintType)
@@ -75,6 +76,26 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Run|Notes")
 	TSoftClassPtr<APickupItemActor> NoteActorClass;
 
+	/** If true, plays the wakeup amnesia cinematic upon starting the run in the gameplay level */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Run|Cinematic")
+	bool bEnableOpeningCinematic = true;
+
+	/** Class of the wakeup cinematic camera director */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Run|Cinematic")
+	TSubclassOf<AWakeupCinematicActor> OpeningCinematicClass;
+
+	/** Active opening cinematic actor playing the sequence */
+	UPROPERTY(Transient, BlueprintReadOnly, Category = "Run|Cinematic")
+	TObjectPtr<AWakeupCinematicActor> ActiveOpeningCinematic = nullptr;
+
+	/** Starts the opening wakeup sequence with the given player and camera director */
+	UFUNCTION(BlueprintCallable, Category = "Run|Cinematic")
+	void StartOpeningCinematic();
+
+	/** Called when the opening wakeup cinematic completes or is skipped */
+	UFUNCTION()
+	void HandleOpeningCinematicFinished();
+
 	/** This run's door combination as the padlock compares it ("307") */
 	UFUNCTION(BlueprintPure, Category = "Run")
 	FString GetDoorCombination() const;
@@ -104,6 +125,7 @@ public:
 protected:
 
 	virtual void StartPlay() override;
+	virtual void RestartPlayer(AController* NewPlayer) override;
 
 private:
 

@@ -249,10 +249,14 @@ void ALostWithinCharacter::BeginPlay()
 				InventoryWidget->AddToViewport(10);
 				ApplyInventoryInputState();
 				UpdateFlashlightBatteryHUD();
+				if (bIsInCinematic)
+				{
+					InventoryWidget->SetVisibility(ESlateVisibility::Collapsed);
+				}
 			}
 		}
 
-		if (bEnableExplorationBGM)
+		if (bEnableExplorationBGM && !bIsInCinematic)
 		{
 			StartExplorationBGM();
 		}
@@ -487,7 +491,7 @@ void ALostWithinCharacter::DoInteract()
 
 void ALostWithinCharacter::DoToggleFlashlight()
 {
-	if (bIsInventoryOpen || bIsDead || !bHasFlashlight)
+	if (bIsInventoryOpen || bIsDead || IsGameplayInputBlocked() || !bHasFlashlight)
 	{
 		return;
 	}
@@ -525,7 +529,7 @@ void ALostWithinCharacter::DoToggleFlashlight()
 
 void ALostWithinCharacter::DoReloadFlashlight()
 {
-	if (bIsInventoryOpen || bIsDead || !bHasFlashlight || !InventoryComponent)
+	if (bIsInventoryOpen || bIsDead || IsGameplayInputBlocked() || !bHasFlashlight || !InventoryComponent)
 	{
 		return;
 	}
@@ -602,6 +606,10 @@ void ALostWithinCharacter::ApplyInventoryInputState()
 
 void ALostWithinCharacter::DoStartWalk()
 {
+	if (IsGameplayInputBlocked())
+	{
+		return;
+	}
 	bIsWalking = true;
 	UpdateMovementSpeed();
 }
@@ -614,6 +622,10 @@ void ALostWithinCharacter::DoEndWalk()
 
 void ALostWithinCharacter::DoStartFastSprint()
 {
+	if (IsGameplayInputBlocked())
+	{
+		return;
+	}
 	bIsSprintingHeld = true;
 	UpdateMovementSpeed();
 }
@@ -1114,7 +1126,7 @@ void ALostWithinCharacter::UpdateInteractionPrompt()
 		return;
 	}
 
-	if (bIsInventoryOpen || bIsDead)
+	if (bIsInventoryOpen || bIsDead || bIsInCinematic)
 	{
 		InventoryWidget->SetInteractionPrompt(FText::GetEmpty());
 		return;
@@ -1436,12 +1448,97 @@ float ALostWithinCharacter::GetCurrentGaitNoiseRadius() const
 
 bool ALostWithinCharacter::IsGameplayInputBlocked() const
 {
-	if (bIsDead)
+	if (bIsDead || bIsInCinematic)
 	{
 		return true;
 	}
 	const APlayerController* PC = Cast<APlayerController>(GetController());
 	return PC && PC->GetViewTarget() && PC->GetViewTarget() != this;
+}
+
+void ALostWithinCharacter::EnterCinematicState()
+{
+	if (bIsInCinematic)
+	{
+		return;
+	}
+	bIsInCinematic = true;
+
+	// Temporarily hide the character model and all attached parts so the player is not visible standing beside the bed
+	SetActorHiddenInGame(true);
+
+	if (bIsInventoryOpen)
+	{
+		bIsInventoryOpen = false;
+		if (InventoryWidget)
+		{
+			InventoryWidget->SetInventoryOpen(false);
+		}
+		ApplyInventoryInputState();
+	}
+	if (InventoryWidget)
+	{
+		InventoryWidget->HideNote();
+		InventoryWidget->SetInteractionPrompt(FText::GetEmpty());
+	}
+	SetHUDVisible(false);
+
+	bIsWalking = false;
+	bIsSprintingHeld = false;
+	StopJumping();
+	if (UCharacterMovementComponent* MoveComp = GetCharacterMovement())
+	{
+		MoveComp->StopMovementImmediately();
+	}
+	if (APlayerController* PC = Cast<APlayerController>(GetController()))
+	{
+		PC->SetIgnoreMoveInput(true);
+		PC->SetIgnoreLookInput(true);
+	}
+}
+
+void ALostWithinCharacter::ExitCinematicState()
+{
+	if (!bIsInCinematic)
+	{
+		return;
+	}
+	bIsInCinematic = false;
+
+	// Restore character model visibility now that the cutscene has ended
+	SetActorHiddenInGame(false);
+
+	if (APlayerController* PC = Cast<APlayerController>(GetController()))
+	{
+		PC->ResetIgnoreMoveInput();
+		PC->ResetIgnoreLookInput();
+	}
+
+	SetHUDVisible(true);
+
+	if (bEnableExplorationBGM && !ExplorationBGMComponent && IsLocallyControlled())
+	{
+		StartExplorationBGM();
+	}
+}
+
+void ALostWithinCharacter::SetHUDVisible(bool bVisible)
+{
+	bIsHUDVisible = bVisible;
+	if (InventoryWidget)
+	{
+		InventoryWidget->SetVisibility(bVisible ? ESlateVisibility::SelfHitTestInvisible : ESlateVisibility::Collapsed);
+	}
+}
+
+bool ALostWithinCharacter::IsHUDVisible() const
+{
+	if (InventoryWidget)
+	{
+		return InventoryWidget->GetVisibility() == ESlateVisibility::SelfHitTestInvisible
+			|| InventoryWidget->GetVisibility() == ESlateVisibility::Visible;
+	}
+	return bIsHUDVisible;
 }
 
 void ALostWithinCharacter::EnterDeathState()
@@ -1470,8 +1567,8 @@ void ALostWithinCharacter::EnterDeathState()
 	{
 		InventoryWidget->HideNote();
 		InventoryWidget->SetInteractionPrompt(FText::GetEmpty());
-		InventoryWidget->SetVisibility(ESlateVisibility::Collapsed);
 	}
+	SetHUDVisible(false);
 
 	bIsWalking = false;
 	bIsSprintingHeld = false;
